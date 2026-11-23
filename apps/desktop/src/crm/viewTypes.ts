@@ -40,8 +40,9 @@ export const initialColumns: ColumnSetting[] = systemColumns.map(column => ({
 }))
 
 export function initialColumnsForView(id: string | undefined): ColumnSetting[] {
-  if (!id?.startsWith('mail_')) return initialColumns
-  const order = ['name', 'country', 'mail_last_sent', 'mail_status', 'mail_count', 'mail_last_reply']
+  const order = id === 'sample' ? ['name', 'country', 'product', 'sample', 'stage', 'last_contact']
+    : id?.startsWith('mail_') ? ['name', 'country', 'mail_last_sent', 'mail_status', 'mail_count', 'mail_last_reply'] : null
+  if (!order) return initialColumns
   return [...order, ...initialColumns.map(column => column.field).filter(field => !order.includes(field))]
     .map(field => ({ ...initialColumns.find(column => column.field === field)!, hidden: !order.includes(field) }))
 }

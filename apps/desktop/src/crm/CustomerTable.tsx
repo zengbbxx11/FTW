@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { columnResizingFeature, columnSizingFeature, functionalUpdate, rowSelectionFeature,
   tableFeatures, useTable, type ColumnDef } from '@tanstack/react-table'
@@ -7,6 +7,8 @@ import { ConfirmButton, Field, Problem } from './components'
 import { displayFieldValue, FieldInput } from './Fields'
 import type { FieldValue } from './fieldTypes'
 import type { AvailableColumn, CellTarget, ColumnSetting } from './viewTypes'
+
+import { CustomerIcon } from './CustomerIcon'
 
 const features = tableFeatures({ columnSizingFeature, columnResizingFeature, rowSelectionFeature })
 const canEdit = new Set(['name', 'company', 'country', 'stage', 'level', 'sample'])
@@ -68,8 +70,8 @@ function SystemEditor({ field, label, value, change, catalog }: {
   return <Field label={label}><input autoFocus value={value} onChange={event => change(event.target.value)} /></Field>
 }
 
-function InlineCell({ row, column, catalog, finish }: {
-  row: ContactRow; column: AvailableColumn; catalog: StateOption[]; finish: (next?: -1 | 1) => void
+function InlineCell({ row, column, catalog, anchor, finish }: {
+  row: ContactRow; column: AvailableColumn; catalog: StateOption[]; anchor: HTMLElement; finish: (next?: -1 | 1, focus?: boolean) => void
 }) {
   const [system, setSystem] = useState(() => systemValue(row,column.id))
   const [customValue, setCustomValue] = useState<FieldValue | null | undefined>(undefined)
@@ -102,9 +104,34 @@ function InlineCell({ row, column, catalog, finish }: {
     },
   })
   const saveable = changed && !save.isPending && (!custom || Boolean(record))
-  return <form className="cell-editor" onSubmit={event => { event.preventDefault(); if (saveable) save.mutate(undefined) }}
+  const popover = useRef<HTMLFormElement>(null)
+  useEffect(() => {
+    const form = popover.current!
+    function place() {
+      const rect = anchor.getBoundingClientRect()
+      const left = Math.max(10, Math.min(rect.left, window.innerWidth - form.offsetWidth - 10))
+      const top = rect.bottom + 8 + form.offsetHeight <= window.innerHeight
+        ? rect.bottom + 6 : Math.max(10, rect.top - form.offsetHeight - 6)
+      Object.assign(form.style, { left: left + 'px', top: top + 'px' })
+    }
+    form.showPopover()
+    place()
+    form.querySelector<HTMLElement>('input,select,textarea')?.focus()
+    const bounds = new ResizeObserver(place)
+    bounds.observe(form)
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      bounds.disconnect()
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [anchor])
+  return <form ref={popover} popover="auto" className="cell-editor" aria-label={'编辑 ' + column.title}
+    onToggle={event => { if (event.newState === 'closed') finish(undefined, false) }}
+    onSubmit={event => { event.preventDefault(); if (saveable) save.mutate(undefined) }}
     onKeyDown={event => {
-      if (event.key === 'Escape') { event.stopPropagation(); finish() }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish() }
       if (event.key === 'Tab' && saveable) { event.preventDefault(); save.mutate(event.shiftKey ? -1 : 1) }
     }}>
     {custom ? (values.isError ? <Problem error={values.error} /> : record ?
@@ -117,12 +144,12 @@ function InlineCell({ row, column, catalog, finish }: {
   </form>
 }
 
-export default function CustomerTable({ data, available, columns, density, catalog, open, resize, sort, activeRow }: {
+export default function CustomerTable({ data, available, columns, density, catalog, open, resize, sort, activeRow, editCustomer, showMail, emailPreview }: {
   data: ContactRow[]; available: AvailableColumn[]; columns: ColumnSetting[]; density: string
   catalog: StateOption[]; open: (id: string) => void; resize: (widths: Record<string,number>) => void
-  sort: (field: string) => void; activeRow: string | null
+  sort: (field: string) => void; activeRow: string | null; editCustomer: (id: string) => void; showMail: (id: string) => void; emailPreview: boolean
 }) {
-  const [editing, setEditing] = useState<string | null>(null)
+  const [editing, setEditing] = useState<{ key: string; anchor: HTMLElement } | null>(null)
   const [clipboardError, setClipboardError] = useState(false)
   const [bulkField, setBulkField] = useState('stage')
   const [bulkValue, setBulkValue] = useState('')
@@ -149,17 +176,19 @@ export default function CustomerTable({ data, available, columns, density, catal
       await Promise.all([cache.invalidateQueries({ queryKey: ['contacts'] }), cache.invalidateQueries({ queryKey: ['contact'] })])
     },
   })
-  function finish(key: string, next?: -1 | 1) {
-    setEditing(null)
+  function finish(key: string, next?: -1 | 1, focus = true) {
+    setEditing(current => current?.key === key ? null : current)
+    if (!focus) return
     window.requestAnimationFrame(() => {
       const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-edit-cell]'))
       const index = buttons.findIndex(button => button.dataset.editCell === key)
       if (index >= 0) (buttons[index + (next ?? 0)] ?? buttons[index]).focus()
     })
   }
+  function start(key: string, anchor: HTMLElement) { setEditing({ key, anchor }) }
   return <>
     {clipboardError && <p className="alert warning" role="status">无法写入剪贴板。<button className="text-button" onClick={() => setClipboardError(false)}>关闭</button></p>}
-    {selected.length > 0 && <div className="row-actions panel">
+    {selected.length > 0 && <div className="row-actions customer-bulk">
       <strong>已选 {selected.length} 位客户</strong>
       <Field label="批量修改字段"><select value={bulkField} onChange={event => { setBulkField(event.target.value); setBulkValue('') }}>
         <option value="stage">客户阶段</option><option value="level">客户等级</option><option value="sample">样品进度</option>
@@ -167,6 +196,7 @@ export default function CustomerTable({ data, available, columns, density, catal
       <SystemEditor field={bulkField} label="目标值" value={bulkValue} change={setBulkValue} catalog={catalog} />
       <ConfirmButton label={'将 ' + selected.length + ' 位客户的选定字段更新为同一值？'}
         disabled={bulk.isPending || !bulkValue || selected.length > 50} onConfirm={() => bulk.mutate()}>确认批量修改</ConfirmButton>
+      <button type="button" className="text-button" onClick={() => table.resetRowSelection()}>取消选择</button>
       {bulk.isError && <Problem error={bulk.error} />}
     </div>}
     <div className={'table-wrap customer-grid is-' + density}><table aria-label="客户表格">
@@ -197,29 +227,42 @@ export default function CustomerTable({ data, available, columns, density, catal
           const display = status && value !== '—'
             ? <span className="customer-status" data-status={column.id === 'mail_status' ? entry.original.mail_outreach.status : column.id} data-stage={column.id === 'stage' ? entry.original.stage : undefined}>{value}</span>
             : value
-          if (editing === cell.id) return <td key={cell.id}><InlineCell row={entry.original} column={column} catalog={catalog} finish={next => finish(cell.id,next)} /></td>
-          return <td key={cell.id} data-field={column.id}>
-            {column.id === 'name' ? <button className="text-button customer-name" aria-current={entry.id === activeRow ? 'true' : undefined} onClick={() => open(entry.id)}>
+          function editOnClick(event: MouseEvent<HTMLButtonElement>) {
+            if (status && column.id !== 'mail_status') start(cell.id,event.currentTarget)
+          }
+          const editor = editing?.key === cell.id && <InlineCell row={entry.original} column={column}
+            anchor={editing.anchor} catalog={catalog} finish={(next, focus) => finish(cell.id,next,focus)} />
+          return <td key={cell.id} data-field={column.id} data-editing={Boolean(editor)}>
+            {column.id === 'name' ? <button className="text-button customer-name" aria-current={entry.id === activeRow ? 'true' : undefined}
+                data-edit-cell={editable ? cell.id : undefined} onClick={() => open(entry.id)}
+                onKeyDown={event => { if (event.key === 'F2' && editable) { event.preventDefault(); start(cell.id,event.currentTarget) } }}>
                 <span className="customer-row-avatar" aria-hidden="true">{Array.from(value)[0]?.toUpperCase()}</span>
-                <span className="customer-name-text" title={value}>{value}</span>
+                <span className="customer-row-identity"><span className="customer-name-text" title={value}>{value}</span>
+                  {emailPreview && entry.original.email && <small title={entry.original.email}>{entry.original.email}</small>}</span>
               </button>
-              : editable ? <button className="grid-cell-button" data-edit-cell={cell.id} onDoubleClick={() => setEditing(cell.id)}
+              : editable ? <button className="grid-cell-button" data-edit-cell={cell.id} onClick={editOnClick}
+                onDoubleClick={event => { if (!status) start(cell.id,event.currentTarget) }}
                 onKeyDown={event => {
                   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
                     event.preventDefault()
-                    void navigator.clipboard.writeText(value).catch(() => setClipboardError(true))
-                  } else if (event.key === 'Enter' || event.key === 'F2') {
+                    void navigator.clipboard.writeText(value === '—' ? '' : value).catch(() => setClipboardError(true))
+                  } else if (event.key === 'F2' || event.key === 'Enter') {
                     event.preventDefault()
-                    setEditing(cell.id)
+                    start(cell.id,event.currentTarget)
                   }
                 }}
-                title="双击或按 Enter 编辑">{display}</button> : <span>{display}</span>}
-            {column.id === 'name' && editable && <button type="button" data-edit-cell={cell.id} className="grid-edit-name text-button"
-              aria-label={'编辑姓名 ' + value} onClick={() => setEditing(cell.id)}>编辑</button>}
+                title={status ? '点击修改' : value + ' · 双击或按 F2 编辑'}>{display}</button> : <span title={value}>{display}</span>}
+              {editor}
           </td>
         })}
-        <td className="customer-row-actions"><button type="button" className="button" aria-label={'打开 ' + entry.original.display_name}
-          onClick={() => open(entry.id)}>›</button></td>
+        <td className="customer-row-actions"><div className="customer-row-tools">
+          {entry.original.email && <button type="button" className="icon-control" aria-label={'邮件往来 ' + entry.original.display_name} title="邮件往来"
+            onClick={() => showMail(entry.id)}><CustomerIcon name="mail" /></button>}
+          {entry.original.archived_at === null && <button type="button" className="icon-control" aria-label={'编辑客户 ' + entry.original.display_name} title="编辑客户"
+            onClick={() => editCustomer(entry.id)}><CustomerIcon name="edit" /></button>}
+          <button type="button" className="icon-control" aria-label={'打开 ' + entry.original.display_name} title="打开详情"
+            onClick={() => open(entry.id)}><CustomerIcon name="arrow" /></button>
+        </div></td>
       </tr>)}</tbody>
     </table></div>
   </>

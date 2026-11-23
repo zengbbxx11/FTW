@@ -245,3 +245,14 @@ body { background: var(--ftw-bg); color: var(--ftw-ink); }
     background: #52677e;
   }
 }
+
+.app-header { position: relative; isolation: isolate; overflow-x: hidden; }
+.app-header::after {
+  content: ""; pointer-events: none; position: absolute; z-index: -1; inset: auto -1px 0; height: min(23%,12rem);
+  background:
+    radial-gradient(ellipse at 0% 110%, #0d9b9a4b, transparent 65%),
+    radial-gradient(ellipse at 120% 140%, transparent 57%, #15b3b269 58%, #0a686f40 60%, transparent 68%);
+}
+.brand-mark { background: linear-gradient(145deg,#0baba2,#08716e); box-shadow: 0 .3rem .95rem #031b2e52; }
+.app-nav button[aria-current="page"] { background: linear-gradient(105deg,#07958e,#086d70); }
+@media (max-width: 740px) { .app-header::after { display: none; } }

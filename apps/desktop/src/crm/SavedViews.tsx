@@ -4,13 +4,15 @@ import { request } from './api'
 import { Empty, Field, Problem } from './components'
 import { columnsWithDefaults, type AvailableColumn, type ColumnSetting, type SavedView, type ViewConfig, type ViewInput } from './viewTypes'
 
+import { CustomerIcon } from './CustomerIcon'
+
 export function useSavedViews() {
   return useQuery({ queryKey: ['crm-views'], queryFn: () => request({ action: 'list_views', include_archived: true }, 'views') })
 }
 
-export function SavedViewBar({ views, active, config, baseRevision, select, saved }: {
+export function SavedViewBar({ views, active, config, baseRevision, counts, select, saved }: {
   views: SavedView[]; active?: SavedView; config: ViewConfig; baseRevision: number | null
-  select: (id: string) => void; saved: (id: string) => void
+  counts?: { active: number; priority: number; sample: number }; select: (id: string) => void; saved: (id: string) => void
 }) {
   const [manager, setManager] = useState(false)
   const [editor, setEditor] = useState<ViewInput | null>(null)
@@ -44,8 +46,9 @@ export function SavedViewBar({ views, active, config, baseRevision, select, save
       <nav className="customer-view-tabs" aria-label="保存的客户视图">
       {live.filter(view=>!view.hidden || view.id === active?.id).map(view =>
         <button key={view.id} className="button" aria-pressed={active?.id === view.id} onClick={() => select(view.id)}>
-          <span aria-hidden="true">{view.id === 'priority' ? '☆' : view.id === 'sample' ? '◇' : view.config.layout === 'board' ? '▥' : '▤'}</span>
+          <CustomerIcon name={view.id === 'priority' ? 'star' : view.id === 'sample' ? 'box' : view.config.layout === 'board' ? 'board' : 'grid'} />
           {view.name}{dirty && active?.id === view.id ? ' *' : ''}
+          {counts && ['all','priority','sample'].includes(view.id) && <span className="view-count">{counts[view.id === 'all' ? 'active' : view.id as 'priority' | 'sample']}</span>}
         </button>)}
       <button className="button add-view" onClick={() => create()}>＋ 新建视图</button>
       </nav>
@@ -111,9 +114,10 @@ export function ColumnSettings({ available, saved, change, manageFields }: {
     next.splice(neighbor,0,value)
     change(next)
   }
-  return <details className="column-settings"><summary>列设置</summary><div className="panel column-config">
+  return <details className="column-settings"><summary><CustomerIcon name="settings" />列设置</summary><div className="panel column-config">
     <div className="section-heading"><div><h2>显示字段</h2><small>自定义列 {customVisible} / 12</small></div>
       <button className="button" onClick={manageFields}>字段与属性</button></div>
+    <div className="column-config-header" aria-hidden="true"><span></span><span>字段</span><span>显示名称</span><span>列宽</span><span>顺序</span></div>
     <ul className="record-list column-config-rows">{columns.map((column,index)=>{
       const definition = available.find(item=>item.id===column.field)
       if (!definition) return <li key={column.field}><strong>{column.label || '已归档字段'}</strong>
@@ -129,11 +133,11 @@ export function ColumnSettings({ available, saved, change, manageFields }: {
           event.dataTransfer.setData('application/x-ftw-column', column.field)
           setDragged(column.field)
         }} onDragEnd={() => setDragged(null)}>⋮⋮</span>
-        <label><input type="checkbox" checked={!column.hidden} disabled={column.field==='name' || Boolean(definition.custom && column.hidden && customVisible >= 12)}
+        <label className="column-toggle"><input type="checkbox" role="switch" checked={!column.hidden} disabled={column.field==='name' || Boolean(definition.custom && column.hidden && customVisible >= 12)}
           onChange={event=>patch(column.field,{hidden:!event.target.checked})} /> {definition.title}</label>
         <Field label="显示名称"><input value={column.label??''} placeholder={definition.title} maxLength={96}
           onChange={event=>patch(column.field,{label:event.target.value||null})} /></Field>
-        <Field label="宽度"><input type="number" min="72" max="640" defaultValue={column.width}
+        <Field label="宽度"><input type="number" min="72" max="640" key={column.width} defaultValue={column.width}
           onBlur={event=>{const n=event.target.valueAsNumber;if(Number.isInteger(n))patch(column.field,{width:Math.min(640,Math.max(72,n))})}} /></Field>
         <div className="row-actions">
           <button className="button" disabled={index===0} onClick={()=>move(index,index-1)}>上移</button>
