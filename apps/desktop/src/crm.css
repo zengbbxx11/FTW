@@ -225,7 +225,33 @@
   .stage-column { @apply w-60 shrink-0 rounded-xl border border-slate-200 bg-slate-100 p-3; }
   .stage-column h2 { @apply mb-3 font-semibold text-slate-700; }
   .stage-card { @apply mb-2 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm shadow-sm hover:border-teal-600; }
-  .contact-drawer { @apply fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-[min(46rem,96vw)] max-w-none overflow-auto border-l border-slate-200 bg-slate-100 p-5 shadow-xl; }
+  .contact-drawer {
+    @apply fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-[min(46rem,96vw)] max-w-none overflow-hidden border-l border-slate-200 bg-slate-100 shadow-xl;
+  }
+
+  .contact-drawer[open] {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .contact-drawer-header {
+    @apply flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-5 py-3;
+  }
+
+  .contact-drawer-body {
+    @apply min-h-0 min-w-0 overflow-y-auto overscroll-y-contain p-5;
+    scrollbar-gutter: stable;
+    scroll-padding-block-end: 4rem;
+  }
+
+  .contact-drawer-body:focus-visible {
+    @apply outline-2 -outline-offset-2 outline-teal-600;
+  }
+
+  .contact-drawer-body .contact-editor-footer {
+    @apply sticky bottom-0 z-10 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm;
+  }
+
   .contact-drawer::backdrop { @apply bg-slate-950/35; }
   .mail-body { @apply my-4 whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm; overflow-wrap: anywhere; }
 }

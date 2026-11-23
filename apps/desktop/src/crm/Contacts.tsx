@@ -77,7 +77,13 @@ export function ContactList({ compose, create }: { compose: (contact: Contact) =
     </>}
     </>}
     <dialog className="contact-drawer" ref={drawer} onClose={() => setSelected(null)} aria-label="客户详情">
-      {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} drawer />}
+      <header className="contact-drawer-header">
+        <span className="font-semibold">客户详情</span>
+        <button className="button" type="button" onClick={close}>关闭详情</button>
+      </header>
+      <div className="contact-drawer-body" role="region" aria-label="客户资料和跟进" tabIndex={0}>
+        {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} drawer />}
+      </div>
     </dialog>
   </>
 }
@@ -205,7 +211,7 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
       </section>
       {mutation.isError && <Problem error={mutation.error} />}
       <Duplicates matches={duplicate}><button className="button" type="button" onClick={() => mutation.mutate(true)}>确认继续保存</button></Duplicates>
-      <div className="form-footer"><button className="button primary" type="submit">{mutation.isPending ? '正在保存…' : '保存客户'}</button></div>
+      <div className="form-footer contact-editor-footer"><button className="button primary" type="submit">{mutation.isPending ? '正在保存…' : '保存客户'}</button></div>
     </fieldset>
   </form>
 }
@@ -222,14 +228,14 @@ export function ContactDetail({ id, back, compose, drawer }: {
       cache.invalidateQueries({ queryKey: ['contacts'] }), cache.invalidateQueries({ queryKey: ['contact', id] }),
     ]),
   })
-  if (!query.data) return <><button className="button" onClick={back}>{drawer ? '关闭详情' : '返回客户列表'}</button>
+  if (!query.data) return <>{!drawer && <button className="button" onClick={back}>返回客户列表</button>}
     {query.isError ? <Problem error={query.error} /> : <Empty>正在读取客户…</Empty>}</>
   const record = query.data.record
   const { input } = record
   const archived = record.archived_at !== null
   if (editing) return <ContactEditor record={record} cancel={() => setEditing(false)} saved={() => setEditing(false)} />
   return <>
-    <button className="text-button back-link" onClick={back}>返回客户列表</button>
+    {!drawer && <button className="text-button back-link" onClick={back}>返回客户列表</button>}
     <div className="page-heading">
       <div><h1>{input.display_name}</h1><p>{[input.company_name, input.country_region, stages[input.stage], sourceLabel(record.source), archived ? '已归档' : ''].filter(Boolean).join(' · ')}</p></div>
       <div className="row-actions">
