@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { invoke } from '@tauri-apps/api/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ContactDetail, ContactEditor, ContactList } from './crm/Contacts'
+import { CustomerQuality } from './crm/Quality'
 import { LeadDetail, LeadEditor, LeadList } from './crm/Leads'
 import { Timeline } from './crm/Timeline'
 import type { Contact } from './crm/api'
@@ -123,14 +124,14 @@ function SystemStatus() {
 }
 
 type Page =
-  | { kind: 'contacts' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' | 'dashboard' }
+  | { kind: 'contacts' | 'customer-quality' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' | 'dashboard' }
   | { kind: 'data'; initialTab?: 'csv' }
   | { kind: 'contact' | 'lead'; id: string }
-  | { kind: 'mail'; contact?: Contact; inboxContact?: string; inboxOnly?: boolean }
+  | { kind: 'mail'; contact?: Contact; inboxContact?: string; draftContact?: string; inboxOnly?: boolean; reviewInbox?: boolean }
 
 const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'mail' | 'system' | 'data'; label: string; sections: Page['kind'][]; icon: string }[] = [
   { kind: 'dashboard', label: '工作台', sections: ['dashboard'], icon: 'M3 10l9-7 9 7M5 9v11h14V9m-10 11v-7h6v7' },
-  { kind: 'contacts', label: '客户', sections: ['contacts','contact','new-contact'], icon: 'M16 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2m14-6a4 4 0 0 1 4 4v2M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M17 4a3 3 0 0 1 0 6' },
+  { kind: 'contacts', label: '客户', sections: ['contacts','customer-quality','contact','new-contact'], icon: 'M16 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2m14-6a4 4 0 0 1 4 4v2M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M17 4a3 3 0 0 1 0 6' },
   { kind: 'leads', label: '候选客户', sections: ['leads','lead','new-lead'], icon: 'M4 20v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2H4m7-10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7' },
   { kind: 'activities', label: '跟进记录', sections: ['activities'], icon: 'M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1m3 5h6m-6 4h6m-6 4h4' },
   { kind: 'mail', label: '邮件中心', sections: ['mail'], icon: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm-1 2 9 6 9-6' },
@@ -162,16 +163,17 @@ function App() {
       </nav>
     </header>
     <main className="workspace" id="workbench" data-page={page.kind} tabIndex={-1}>
-      {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true })} />}
-      {page.kind === 'data' && <DataTools key={page.initialTab ?? 'backup'} initialTab={page.initialTab} />}
-      {page.kind === 'contacts' && <ContactList compose={compose} history={history} importCsv={() => setPage({ kind: 'data', initialTab: 'csv' })} create={() => setPage({ kind: 'new-contact' })} />}
-      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} compose={compose} history={history} />}
+      {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true, reviewInbox: true })} />}
+      {page.kind === 'data' && <DataTools key={page.initialTab ?? 'backup'} initialTab={page.initialTab} openContact={openContact} />}
+      {page.kind === 'contacts' && <ContactList compose={compose} history={history} quality={() => setPage({ kind: 'customer-quality' })} importCsv={() => setPage({ kind: 'data', initialTab: 'csv' })} create={() => setPage({ kind: 'new-contact' })} />}
+      {page.kind === 'customer-quality' && <CustomerQuality back={contacts} open={openContact} openMail={id => setPage({ kind: 'mail', draftContact: id })} />}
+      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} openRelated={openContact} compose={compose} history={history} />}
       {page.kind === 'new-contact' && <ContactEditor saved={openContact} cancel={contacts} />}
       {page.kind === 'leads' && <LeadList open={openLead} create={() => setPage({ kind: 'new-lead' })} />}
       {page.kind === 'lead' && <LeadDetail key={page.id} id={page.id} back={leads} openContact={openContact} />}
       {page.kind === 'new-lead' && <LeadEditor saved={openLead} cancel={leads} />}
       {page.kind === 'activities' && <><div className="page-heading"><h1>跟进记录</h1></div><Timeline openContact={openContact} /></>}
-      {page.kind === 'mail' && <MailCenter key={page.contact?.id ?? page.inboxContact ?? (page.inboxOnly ? 'inbox' : 'mail')} initialContact={page.contact} inboxContact={page.inboxContact} initialInbox={page.inboxOnly} pickContact={contacts} openContact={openContact} />}
+      {page.kind === 'mail' && <MailCenter key={page.contact?.id ?? page.inboxContact ?? page.draftContact ?? (page.inboxOnly ? 'inbox' : 'mail')} initialContact={page.contact} inboxContact={page.inboxContact} draftContact={page.draftContact} initialInbox={page.inboxOnly} reviewInbox={page.reviewInbox} pickContact={contacts} openContact={openContact} />}
       {page.kind === 'system' && <SystemStatus />}
     </main>
   </>

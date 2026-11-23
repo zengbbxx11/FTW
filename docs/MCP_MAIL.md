@@ -56,7 +56,7 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 | `list_lead_candidates` | 可选 `status`、`offset` |
 | `create_lead_candidate` | `request_id`、`display_name`，可附公司、国家、邮箱、网站、调查和来源信息 |
 | `create_customer` | `request_id`、`display_name`，可附公司、国家、邮箱、网站、来源和备注 |
-| `update_customer` | `request_id`、`contact_id`，可传 `expected_revision` 和 `expected_epoch` 保护并发。可更新阶段、等级、语言、需求、样品状态及备注 |
+| `update_customer` | `request_id`、`contact_id`，可传 `expected_revision` 和 `expected_epoch` 保护并发。可更新阶段、等级、语言、需求、样品状态及备注。推断或未核实内容使用 `review_only: true` 提交人工核对 |
 | `add_customer_activity` | `request_id`、`contact_id`、`event_type`、`occurred_at`（UTC Unix 秒）、`summary`，可附正文、渠道及 `counts_as_contact` |
 | `list_email_accounts` | 空对象 |
 | `get_pending_approvals` | 可选 `offset` |
@@ -76,6 +76,8 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 | `attach_email_assets` | `draft_id`、`revision`、`asset_ids` |
 | `fetch_inbox_message` | `message_id` |
 | `read_inbox_body` | `message_id`、可选 `offset` |
+
+建议在 `update_customer` 提供从客户详情读到的修订号和数据纪元。同一数据纪元中的修订冲突继续返回 `crm_revision_conflict`，不同于当前值的字段会进入「数据与审计 → Agent 数据变更」。`review_only: true` 返回 `agent_review_pending` 及待核对字段数，不修改客户字段。应用方应把该响应显示为待核对，用户可在工作台选择保留或采纳。客户合并及来信归属人工核对使用桌面入口。
 
 重试写入时使用相同的 `request_id` 和参数。Core 会返回已记录的结果，参数改变时需要新的请求 ID。若 Core 返回 `agent_request_uncertain`，先查看客户资料或草稿确认执行结果。
 

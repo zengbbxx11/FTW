@@ -100,6 +100,7 @@ export type Contact = {
   source: string
   observed_first_contact_at: number | null
   observed_last_contact_at: number | null
+  merged_into?: string | null
 }
 
 export type ContactQuery = {
@@ -159,6 +160,15 @@ export type ActivityInput = {
 export type Activity = ActivityInput & { id: string; contact_name: string; source: string }
 export type Duplicate = { id: string; entity: 'contact' | 'lead'; display_name: string; reason: string }
 
+export type AgentChange = {
+  id: string; contact_id: string; contact_name: string; field: string; previous_value: string;
+  current_value: string; proposed_value: string; request_id: string; state: string; created_at: number
+}
+
+export type QualityIssue = {
+  category: string; contact_id: string; contact_name: string; other_id: string | null; other_name: string | null; detail: string
+}
+
 export type StateOption = { field: string; code: string; label: string; aliases: string[] }
 
 type Result =
@@ -167,6 +177,8 @@ type Result =
   | { kind: 'fields'; fields: CustomField[] }
   | { kind: 'field_values'; record: FieldValues }
   | { kind: 'state_catalog'; options: StateOption[] }
+  | { kind: 'agent_changes'; rows: AgentChange[]; has_more: boolean }
+  | { kind: 'customer_quality'; rows: QualityIssue[]; counts: Array<[string, number]>; has_more: boolean }
   | { kind: 'customer_stats'; active: number; priority: number; sample: number; in_progress: number; won: number }
   | { kind: 'contacts'; rows: ContactRow[]; has_more: boolean }
   | { kind: 'contact'; record: Contact }
@@ -192,6 +204,10 @@ type Command =
   | { action: 'state_catalog' }
   | { action: 'save_contact_checked'; id: string; input: ContactInput; allow_duplicate: boolean; expected_revision: number; expected_epoch: string }
   | { action: 'customer_stats' }
+  | { action: 'customer_quality'; category: string; offset: number }
+  | { action: 'merge_contacts'; primary: CellTarget; secondary: CellTarget }
+  | { action: 'list_agent_changes'; offset: number; pending: boolean }
+  | { action: 'resolve_agent_change'; id: string; accept: boolean }
   | { action: 'list_contacts'; query: ContactQuery }
   | { action: 'get_contact' | 'get_lead'; id: string }
   | { action: 'save_contact'; id: string | null; input: ContactInput; allow_duplicate: boolean }
@@ -251,6 +267,9 @@ export function errorMessage(error: unknown): string {
     const code = String(error.code)
     const detail = 'detail' in error ? String(error.detail) : ''
     if (code === 'crm_revision_conflict') return '这位客户已由其他操作更新。本次修改仍在表单中，请核对最新资料后再保存。'
+    if (detail === 'merge_open_mail') return '待归档客户仍有草稿、审批或发送任务，请先处理这些邮件。'
+    if (detail === 'contact_already_merged') return '这条记录已合并，请打开保留的客户。'
+    if (detail === 'agent_change_superseded') return '这个字段在发生冲突后又被修改。请核对最新值后在客户详情中编辑。'
     if (code === 'crm_invalid_field') {
       return '请检查：' + (fieldLabels[detail] ?? detail)
     }

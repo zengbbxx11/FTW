@@ -60,11 +60,13 @@ async fn dashboard(pool: &SqlitePool) -> Result<Reply> {
             .fetch_one(pool)
             .await
             .map_err(|_| "database_unavailable")?;
-    let unmatched =
-        sqlx::query_scalar("SELECT COUNT(*) FROM inbox_messages WHERE contact_id IS NULL")
-            .fetch_one(pool)
-            .await
-            .map_err(|_| "database_unavailable")?;
+    let unmatched = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM inbox_messages i WHERE {}",
+        crate::mail::INBOX_NEEDS_REVIEW
+    ))
+    .fetch_one(pool)
+    .await
+    .map_err(|_| "database_unavailable")?;
     let recent = sqlx::query(
         "SELECT a.summary title,c.display_name detail,a.occurred_at FROM activities a JOIN contacts c ON c.id=a.contact_id
          ORDER BY a.occurred_at DESC,a.id LIMIT 8",

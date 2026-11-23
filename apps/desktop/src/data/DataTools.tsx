@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateLabel, sourceLabel } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
+import { AgentChanges } from './AgentChanges'
 
 type Summary = { title: string; detail: string; occurred_at: number | null }
 type AuditRow = { occurred_at: number; actor: string; source: string; entity: string; entity_id: string; operation: string }
@@ -69,16 +70,17 @@ export function Dashboard({ mail, inbox }: { mail: () => void; inbox: () => void
   </>
 }
 
-export function DataTools({ initialTab = 'backup' }: { initialTab?: 'backup' | 'csv' | 'audit' }) {
-  const [tab, setTab] = useState(initialTab)
+export function DataTools({ initialTab = 'backup', openContact }: { initialTab?: 'backup' | 'csv' | 'audit'; openContact: (id: string) => void }) {
+  const [tab, setTab] = useState<'backup' | 'csv' | 'audit' | 'agent-changes'>(initialTab)
   return <>
     <div className="page-heading"><h1>数据与审计</h1></div>
-    <div className="customer-views">
+    <div className="customer-views data-tool-tabs">
       <button className="button" aria-pressed={tab === 'backup'} onClick={() => setTab('backup')}>备份与恢复</button>
       <button className="button" aria-pressed={tab === 'csv'} onClick={() => setTab('csv')}>客户 CSV</button>
+      <button className="button" aria-pressed={tab === 'agent-changes'} onClick={() => setTab('agent-changes')}>Agent 数据变更</button>
       <button className="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>操作审计</button>
     </div>
-    {tab === 'backup' ? <Backups /> : tab === 'csv' ? <Transfer /> : <Audit />}
+    {tab === 'backup' ? <Backups /> : tab === 'csv' ? <Transfer /> : tab === 'agent-changes' ? <AgentChanges openContact={openContact} /> : <Audit />}
   </>
 }
 

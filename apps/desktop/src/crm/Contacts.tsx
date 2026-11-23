@@ -20,7 +20,7 @@ const defaultQuery: ContactQuery = {
   keyword: '', quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
 }
 
-export function ContactList({ compose, history, create, importCsv }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void; importCsv: () => void }) {
+export function ContactList({ compose, history, create, importCsv, quality }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void; importCsv: () => void; quality: () => void }) {
   const catalog = useStateCatalog()
   const fields = useCustomerFields()
   const views = useSavedViews()
@@ -108,6 +108,7 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
     <header className="page-heading customer-heading">
       <div><h1><CustomerIcon name="users" />客户管理</h1><p>跟进客户沟通、样品进度与邮件开发</p></div>
       <div className="row-actions">
+        <button className="button" onClick={quality}>数据质量</button>
         <button className="button" onClick={importCsv}>导入 CSV</button>
         <button className="button primary" onClick={create}><CustomerIcon name="plus" />新增客户</button>
       </div>
@@ -223,7 +224,7 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
         </div>
       </header>
       <div className="contact-drawer-body" role="region" aria-label="客户资料和跟进" tabIndex={0}>
-        {selection && <ContactDetail key={selection.id + selection.sequence} id={selection.id} entry={selection.entry} back={close} compose={compose} history={history} drawer />}
+        {selection && <ContactDetail key={selection.id + selection.sequence} id={selection.id} entry={selection.entry} back={close} openRelated={open} compose={compose} history={history} drawer />}
       </div>
     </dialog>
   </section>
@@ -517,8 +518,8 @@ function CustomerEditorDialog({ record, group, close }: { record: Contact; group
 
 const detailSections = { overview: '基本资料', channels: '联系渠道', interests: '采购需求', activity: '沟通时间线', mail: '邮件往来' } as const
 
-export function ContactDetail({ id, entry, back, compose, history, drawer }: {
-  id: string; back: () => void; compose: (contact: Contact) => void; history: (id: string) => void; drawer?: boolean; entry?: 'edit' | 'mail'
+export function ContactDetail({ id, entry, back, openRelated, compose, history, drawer }: {
+  id: string; back: () => void; openRelated: (id: string) => void; compose: (contact: Contact) => void; history: (id: string) => void; drawer?: boolean; entry?: 'edit' | 'mail'
 }) {
   const [editing, setEditing] = useState<EditorGroup | null>(entry === 'edit' ? 'basic' : null)
   const [section, setSection] = useState<keyof typeof detailSections>(entry === 'mail' ? 'mail' : 'overview')
@@ -557,8 +558,9 @@ export function ContactDetail({ id, entry, back, compose, history, drawer }: {
       <div className="row-actions">
         {!archived && input.methods.some(method => method.kind === 'email') && <button className="button primary" onClick={() => compose(record)}><CustomerIcon name="mail" />写邮件</button>}
         <button className="button" onClick={() => setSection('activity')}><CustomerIcon name="clock" />跟进记录</button>
-        <ConfirmButton label={archived ? '恢复这个客户？' : '归档这个客户？已有跟进仍可查看。'}
-          disabled={archive.isPending} onConfirm={() => archive.mutate(!archived)}>{archived ? '恢复客户' : '归档客户'}</ConfirmButton>
+        {!record.merged_into && <ConfirmButton label={archived ? '恢复这个客户？' : '归档这个客户？已有跟进仍可查看。'}
+          disabled={archive.isPending} onConfirm={() => archive.mutate(!archived)}>{archived ? '恢复客户' : '归档客户'}</ConfirmButton>}
+        {record.merged_into && <button className="button" onClick={() => openRelated(record.merged_into!)}>打开合并后的客户</button>}
       </div>
     </div>
     {archive.isError && <Problem error={archive.error} />}

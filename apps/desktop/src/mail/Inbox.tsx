@@ -1,9 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useState, type FormEvent } from 'react'
+import { useDeferredValue, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateLabel, request, type ContactQuery } from '../crm/api'
 import { Empty, Field, Pagination } from '../crm/components'
 import { mailError } from './api'
+import { CustomerIcon } from '../crm/CustomerIcon'
 
 type Account = {
   account_id: string; display_name: string; email_address: string; host: string | null
@@ -13,11 +14,13 @@ type Row = {
   id: string; account_id: string; contact_id: string | null; contact_name: string | null
   thread_id: string; sender: string; subject: string; received_at: number; kind: string; received: boolean; message_role: string; match_state: string; body_complete: boolean; download_outcome: string | null
 }
+type ReviewCandidate = { id: string; name: string; company: string; country: string; exact_sender: boolean }
 type Message = Row & { body: string; attachments: string[] }
 type Reply =
   | { kind: 'body'; text: string; next_offset: number | null }
   | { kind: 'accounts'; rows: Account[] }
   | { kind: 'rows'; rows: Row[]; has_more: boolean }
+  | { kind: 'review_candidates'; rows: ReviewCandidate[] }
   | { kind: 'message'; record: Message }
   | { kind: 'thread'; messages: Message[]; has_more: boolean }
   | { kind: 'saved'; id: string }
@@ -29,6 +32,8 @@ type Command =
   | { action: 'configure'; account_id: string; host: string; port: number; username: string; password: string }
   | { action: 'test' | 'sync'; account_id: string }
   | { action: 'list'; account_id: string | null; contact_id: string | null; unmatched: boolean; offset: number }
+  | { action: 'review_candidates'; id: string }
+  | { action: 'review_link'; id: string; contact_id: string; expected_contact: string | null; expected_match: string }
   | { action: 'get'; id: string }
   | { action: 'thread'; id: string; offset: number }
   | { action: 'download_full'; id: string }
@@ -102,10 +107,12 @@ export function ImapSettings() {
   </section>
 }
 
-export function InboxView({ contactId, openContact }: { contactId?: string; openContact: (id: string) => void }) {
+export function InboxView({ contactId, initiallyReviewing, openContact }: { contactId?: string; initiallyReviewing?: boolean; openContact: (id: string) => void }) {
   const accounts = useAccounts()
   const [accountId, setAccount] = useState('')
-  const [unmatched, setUnmatched] = useState(false)
+  const [unmatched, setUnmatched] = useState(Boolean(!contactId && initiallyReviewing))
+  const [reviewId, setReviewId] = useState('')
+  const [notice, setNotice] = useState('')
   const [offset, setOffset] = useState(0)
   const [opened, setOpened] = useState<string | null>(null)
   const active = accounts.data?.rows.find(row => row.account_id === accountId)
@@ -118,18 +125,21 @@ export function InboxView({ contactId, openContact }: { contactId?: string; open
     mutationFn: () => call({ action: 'sync', account_id: accountId }, 'sync_started'),
     onSuccess: () => cache.invalidateQueries({ queryKey: ['imap-accounts'] }),
   })
+  const page = rows.data?.rows ?? []
+  const current = page.find(row => row.id === reviewId) ?? page[0]
   if (opened) return <MailThread id={opened} close={() => setOpened(null)} openContact={openContact} />
-  return <section className="panel">
-    <div className="section-heading"><h2>{contactId ? '此客户的收件记录' : '收件箱'}</h2>
+  return <section className="panel inbox-workspace">
+    <div className="section-heading"><h2>{contactId ? '此客户的收件记录' : unmatched ? '客户回复匹配与待确认' : '收件箱'}</h2>
       <button className="button primary" disabled={!active?.host || sync.isPending || active.outcome === 'running'}
         onClick={() => sync.mutate()}>{active?.outcome === 'running' ? '同步中…' : '同步当前账户'}</button></div>
     <div className="filters">
       <Field label="邮箱账户"><select value={accountId} onChange={e => { setAccount(e.target.value); setOffset(0); sync.reset() }}>
         <option value="">全部邮箱</option>{accounts.data?.rows.map(row => <option key={row.account_id} value={row.account_id}>{row.display_name}</option>)}
       </select></Field>
-      {!contactId && <Field label="关联状态"><select value={unmatched ? 'unmatched' : 'all'} onChange={e => { setUnmatched(e.target.value === 'unmatched'); setOffset(0) }}>
-        <option value="all">全部</option><option value="unmatched">待关联</option>
-      </select></Field>}
+      {!contactId && <div className="row-actions" aria-label="收件箱视图">
+        <button type="button" className="button" aria-pressed={!unmatched} onClick={() => { setUnmatched(false); setOffset(0); setNotice('') }}>全部来信</button>
+        <button type="button" className="button" aria-pressed={unmatched} onClick={() => { setUnmatched(true); setOffset(0); setNotice('') }}>待核对归属</button>
+      </div>}
     </div>
     {active && <p className="muted">{active.host ? (active.outcome ? syncLabels[active.outcome] ?? mailError(active.outcome) : '尚未同步') : '请在收件设置中配置 IMAP'}
       {active.last_sync && <> · {dateLabel(active.last_sync)}</>}</p>}
@@ -137,8 +147,25 @@ export function InboxView({ contactId, openContact }: { contactId?: string; open
     {sync.isError && <ErrorBox error={sync.error} />}
     {rows.isError && <ErrorBox error={rows.error} />}
     {rows.isPending && <Empty>正在读取收件箱…</Empty>}
-    {rows.data?.rows.length === 0 && <Empty>当前没有符合条件的来信。</Empty>}
-    {!!rows.data?.rows.length && <div className="table-wrap"><table>
+    {notice && <p role="status" className="review-notice">{notice}</p>}
+    {rows.data?.rows.length === 0 && <Empty>{unmatched ? '当前没有待核对归属的来信。' : '当前没有符合条件的来信。'}</Empty>}
+    {unmatched && current && <div className="review-layout">
+      <section className="panel review-list" aria-label="待核对邮件">
+        <h3>待核对邮件</h3>
+        {page.map(row => <button className="review-list-item" key={row.id} aria-pressed={current.id === row.id}
+          onClick={() => { setReviewId(row.id); setNotice('') }}>
+          <span className="review-item-icon"><CustomerIcon name="mail" /></span>
+          <span><strong>{row.subject || '（无主题）'}</strong><small>{row.sender || '无可识别发件地址'} · {dateLabel(row.received_at)}</small></span>
+          <span className="review-badge">{row.message_role === 'automatic' ? '自动来信' : row.message_role === 'delivery_report' ? '投递报告' : row.contact_id ? '会话待确认' : '待关联'}</span>
+        </button>)}
+      </section>
+      <ReviewMail key={current.id} row={current} openThread={() => setOpened(current.id)} saved={name => {
+        setReviewId('')
+        setNotice('已关联客户 ' + name)
+        if (page.length === 1 && offset) setOffset(previous => previous - 20)
+      }} />
+    </div>}
+    {!unmatched && !!rows.data?.rows.length && <div className="table-wrap"><table>
       <thead><tr><th>主题</th><th>发件邮箱</th><th>客户</th><th>收件时间</th></tr></thead>
       <tbody>{rows.data.rows.map(row => <tr key={row.id}>
         <td><button className="text-button" onClick={() => setOpened(row.id)}>{row.subject}</button></td><td>{row.sender || '—'}</td>
@@ -146,6 +173,67 @@ export function InboxView({ contactId, openContact }: { contactId?: string; open
       </tr>)}</tbody>
     </table></div>}
     {rows.data && <Pagination offset={offset} more={rows.data.has_more} change={setOffset} />}
+  </section>
+}
+
+function ReviewMail({ row, openThread, saved }: { row: Row; openThread: () => void; saved: (name: string) => void }) {
+  const cache = useQueryClient()
+  const [filter, setFilter] = useState('')
+  const [selection, setSelection] = useState<ReviewCandidate | null>(null)
+  const keyword = useDeferredValue(filter.trim())
+  const preview = useQuery({ queryKey: ['inbox-record', row.id], queryFn: () => call({ action: 'get', id: row.id }, 'message') })
+  const matches = useQuery({ queryKey: ['contacts', 'inbox-review', row.id], queryFn: () => call({ action: 'review_candidates', id: row.id }, 'review_candidates') })
+  const criteria: ContactQuery = {
+    keyword, quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '',
+    archive: 'active', sort: 'name', offset: 0,
+  }
+  const search = useQuery({ queryKey: ['contacts', criteria], enabled: Boolean(keyword),
+    queryFn: () => request({ action: 'list_contacts', query: criteria }, 'contacts') })
+  const link = useMutation({
+    mutationFn: (candidate: ReviewCandidate) => call({
+      action: 'review_link', id: row.id, contact_id: candidate.id,
+      expected_contact: row.contact_id, expected_match: row.match_state,
+    }, 'saved'),
+    onSuccess: (_, candidate) => {
+      saved(candidate.name)
+      return Promise.all(['inbox', 'inbox-record', 'inbox-thread', 'activities', 'contacts', 'contact', 'dashboard']
+        .map(key => cache.invalidateQueries({ queryKey: [key] })))
+    },
+    onError: () => cache.invalidateQueries({ queryKey: ['inbox'] }),
+  })
+  const candidates = keyword ? (search.data?.rows ?? []).map(customer => ({
+    id: customer.id, name: customer.display_name, company: customer.company_name, country: customer.country_region,
+    exact_sender: matches.data?.rows.some(item => item.id === customer.id && item.exact_sender) ?? false,
+  })) : matches.data?.rows ?? []
+  return <section className="panel review-detail" aria-label="邮件核验">
+    <div className="section-heading"><h3>{row.subject || '（无主题）'}</h3><button className="button" onClick={openThread}>打开完整会话</button></div>
+    <dl className="review-properties">
+      <div><dt>发件人</dt><dd>{row.sender || '—'}</dd></div>
+      <div><dt>收到时间</dt><dd>{dateLabel(row.received_at)}</dd></div>
+      {row.contact_name && <div><dt>当前关联</dt><dd>{row.contact_name}</dd></div>}
+    </dl>
+    {preview.isError && <ErrorBox error={preview.error} />}
+    {preview.isPending && <p className="muted">正在读取正文预览…</p>}
+    {preview.data && <div className="review-preview">
+      <p className="mail-body">{preview.data.record.body || '没有可显示的纯文本正文。'}</p>
+      {!preview.data.record.body_complete && <small>正文不完整，可在完整会话中下载原邮件。</small>}
+    </div>}
+    <Field label="查找其他客户"><input type="search" placeholder="姓名、公司或邮箱" value={filter}
+      onChange={event => { setFilter(event.target.value); setSelection(null) }} /></Field>
+    {(matches.isError || search.isError) && <ErrorBox error={search.error ?? matches.error} />}
+    {((keyword && search.isPending) || (!keyword && matches.isPending)) && <small>正在查找客户…</small>}
+    {candidates.length > 0 && <fieldset className="review-candidates" disabled={link.isPending}>
+      <legend>{keyword ? '搜索结果' : '相关客户'}</legend>
+      {candidates.map(candidate => <label key={candidate.id}><input type="radio" name="mail-review-candidate"
+        checked={selection?.id === candidate.id} onChange={() => setSelection(candidate)} />
+        <span><strong>{candidate.name}</strong><small>{[candidate.company, candidate.country].filter(Boolean).join(' · ')}</small></span>
+        {candidate.exact_sender && <span className="review-badge">邮箱相同</span>}
+      </label>)}
+    </fieldset>}
+    {!candidates.length && (keyword ? search.data : matches.data) && <small>{keyword ? '未找到符合条件的客户。' : '没有可靠的邮箱匹配，请搜索客户核对。'}</small>}
+    <div className="form-footer"><button type="button" className="button primary" disabled={!selection || link.isPending}
+      onClick={() => selection && link.mutate(selection)}>{link.isPending ? '正在关联…' : '关联所选客户'}</button></div>
+    {link.isError && <ErrorBox error={link.error} />}
   </section>
 }
 

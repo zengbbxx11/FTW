@@ -12,8 +12,8 @@ function ErrorNotice({ error }: { error: unknown }) {
   return <p className="alert error" role="alert">{mailError(error)}</p>
 }
 
-export function MailCenter({ initialContact, inboxContact, initialInbox, pickContact, openContact }: {
-  initialContact?: Contact; inboxContact?: string; initialInbox?: boolean; pickContact: () => void; openContact: (id: string) => void
+export function MailCenter({ initialContact, inboxContact, draftContact, initialInbox, reviewInbox, pickContact, openContact }: {
+  initialContact?: Contact; inboxContact?: string; draftContact?: string; initialInbox?: boolean; reviewInbox?: boolean; pickContact: () => void; openContact: (id: string) => void
 }) {
   const [view, setView] = useState<View>({ kind: (initialInbox || inboxContact) ? 'inbox' : 'drafts' })
   const [compose, setCompose] = useState(initialContact !== undefined)
@@ -21,8 +21,8 @@ export function MailCenter({ initialContact, inboxContact, initialInbox, pickCon
   const openDraft = (id: string) => { setCompose(false); setView({ kind: 'draft', id }) }
   const showList = () => { setCompose(false); setView({ kind: 'drafts' }) }
   const drafts = useQuery({
-    queryKey: ['mail-drafts', offset], enabled: !compose && view.kind === 'drafts',
-    queryFn: () => mailCall({ action: 'list_drafts', contact_id: null, offset }, 'drafts'),
+    queryKey: ['mail-drafts', draftContact ?? null, offset], enabled: !compose && view.kind === 'drafts',
+    queryFn: () => mailCall({ action: 'list_drafts', contact_id: draftContact ?? null, offset }, 'drafts'),
   })
   return <>
     <div className="page-heading"><h1>邮件中心</h1>
@@ -39,11 +39,12 @@ export function MailCenter({ initialContact, inboxContact, initialInbox, pickCon
       : view.kind === 'accounts' ? <Accounts />
       : view.kind === 'imap' ? <ImapSettings />
       : view.kind === 'agent' ? <AgentMail />
-      : view.kind === 'inbox' ? <InboxView contactId={inboxContact} openContact={openContact} />
+      : view.kind === 'inbox' ? <InboxView contactId={inboxContact} initiallyReviewing={reviewInbox} openContact={openContact} />
       : view.kind === 'draft' || view.kind === 'edit' ?
         <DraftView key={view.id} id={view.id} editing={view.kind === 'edit'} openContact={openContact}
           edit={() => setView({ kind: 'edit', id: view.id })} saved={openDraft} back={showList} />
       : <>
+        {draftContact && <div className="section-heading"><h2>客户发信记录</h2><button className="button" onClick={() => openContact(draftContact)}>返回客户资料</button></div>}
         {drafts.isError && <ErrorNotice error={drafts.error} />}
         {drafts.isPending && <Empty>正在读取邮件草稿…</Empty>}
         {drafts.data?.kind === 'drafts' && (drafts.data.rows.length === 0 ? <Empty>当前没有邮件草稿。</Empty>

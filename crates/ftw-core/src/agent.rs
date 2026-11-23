@@ -1,5 +1,5 @@
 use ftw_ipc::{
-    agent::{Command, ContactPatch},
+    agent::Command,
     crm::{self, Source},
     Response,
 };
@@ -129,15 +129,17 @@ pub async fn crm_call(pool: &SqlitePool, command: Command) -> Response {
             if let Err(reply) = claim {
                 return reply;
             }
-            let response = update(
-                pool,
-                id,
-                *patch,
-                &request_id,
-                expected_revision,
-                expected_epoch,
-            )
-            .await;
+            let response = crate::crm::response(
+                crate::crm::changes::apply(
+                    pool,
+                    id,
+                    *patch,
+                    &request_id,
+                    expected_revision,
+                    expected_epoch.as_deref(),
+                )
+                .await,
+            );
             finish(pool, "update_customer", &request_id, response).await
         }
         Command::AddActivity { request_id, input } => {
@@ -165,58 +167,6 @@ async fn run(pool: &SqlitePool, cmd: crm::Command, request_id: Option<&str>) -> 
             id: "mcp",
             agent_run_id: request_id,
         },
-    )
-    .await
-}
-
-async fn update(
-    pool: &SqlitePool,
-    id: String,
-    patch: ContactPatch,
-    request_id: &str,
-    expected_revision: Option<i64>,
-    expected_epoch: Option<String>,
-) -> Response {
-    let reply = run(
-        pool,
-        crm::Command::GetContact { id: id.clone() },
-        Some(request_id),
-    )
-    .await;
-    let Response::Crm { data } = reply else {
-        return reply;
-    };
-    let crm::Result::Contact { record } = *data else {
-        return error("agent_invalid_response");
-    };
-    let revision = expected_revision.unwrap_or(record.record_revision);
-    let epoch = expected_epoch.or(Some(record.data_epoch));
-    let mut input = record.input;
-
-    for (field, value) in [
-        (&mut input.stage, patch.stage),
-        (&mut input.customer_level, patch.customer_level),
-        (&mut input.primary_language, patch.primary_language),
-        (&mut input.main_need, patch.main_need),
-        (&mut input.sample_status, patch.sample_status),
-        (&mut input.notes, patch.notes),
-    ] {
-        if let Some(value) = value {
-            *field = value;
-        }
-    }
-    // The patch leaves the identity and contact methods untouched. Existing duplicate
-    // warnings should not block changes to status or notes.
-    run(
-        pool,
-        crm::Command::SaveContactChecked {
-            id,
-            expected_revision: revision,
-            expected_epoch: epoch,
-            input: Box::new(input),
-            allow_duplicate: true,
-        },
-        Some(request_id),
     )
     .await
 }

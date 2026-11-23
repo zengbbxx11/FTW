@@ -38,6 +38,15 @@ pub enum Command {
     Get {
         id: String,
     },
+    ReviewCandidates {
+        id: String,
+    },
+    ReviewLink {
+        id: String,
+        contact_id: String,
+        expected_contact: Option<String>,
+        expected_match: String,
+    },
     Thread {
         id: String,
         offset: u32,
@@ -106,6 +115,15 @@ pub struct Row {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ReviewCandidate {
+    pub id: String,
+    pub name: String,
+    pub company: String,
+    pub country: String,
+    pub exact_sender: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Message {
     #[serde(flatten)]
     pub row: Row,
@@ -126,6 +144,9 @@ pub enum Result {
     Rows {
         rows: Vec<Row>,
         has_more: bool,
+    },
+    ReviewCandidates {
+        rows: Vec<ReviewCandidate>,
     },
     Message {
         record: Box<Message>,

@@ -184,12 +184,20 @@ fn outreach(row: &SqliteRow) -> MailOutreach {
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
     let mut tx = pool.begin().await?;
+    let record = record_on(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Reply::Contact {
+        record: Box::new(record),
+    })
+}
+
+pub(super) async fn record_on(db: &mut SqliteConnection, id: &str) -> Result<Contact> {
     let row = sqlx::query(
         "SELECT c.*,dates.observed_first,dates.observed_last,dates.effective_first,dates.effective_last,
                 (SELECT epoch FROM app_change_epoch WHERE singleton=1) data_epoch, outreach.*
          FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id
          JOIN mail_contact_outreach outreach ON outreach.contact_id=c.id WHERE c.id=?",
-    ).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    ).bind(id).fetch_optional(&mut *db).await?.ok_or(Error::NotFound)?;
 
     let methods = sqlx::query("SELECT * FROM contact_methods WHERE contact_id=? ORDER BY position")
         .bind(id)
@@ -201,7 +209,7 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
             is_primary: row.get("is_primary"),
             is_verified: row.get("is_verified"),
         })
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut *db)
         .await?;
     let interests =
         sqlx::query("SELECT * FROM customer_interests WHERE contact_id=? ORDER BY position")
@@ -213,45 +221,43 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
                 quantity_is_estimate: row.get("quantity_is_estimate"),
                 requirement: row.get("requirement"),
             })
-            .fetch_all(&mut *tx)
+            .fetch_all(&mut *db)
             .await?;
-    tx.commit().await?;
-    Ok(Reply::Contact {
-        record: Box::new(Contact {
-            id: row.get("id"),
-            archived_at: row.get("archived_at"),
-            source: row.get("source"),
-            record_revision: row.get("record_revision"),
-            data_epoch: row.get("data_epoch"),
-            effective_first_contact_at: row.get("effective_first"),
-            effective_last_contact_at: row.get("effective_last"),
-            updated_at: row.get("updated_at"),
-            latest_thread_reply_at: row.get("last_reply_at"),
-            mail_outreach: outreach(&row),
-            observed_first_contact_at: row.get("observed_first"),
-            observed_last_contact_at: row.get("observed_last"),
-            input: ContactInput {
-                display_name: row.get("display_name"),
-                company_name: row.get("company_name"),
-                country_region: row.get("country_region"),
-                customer_type: row.get("customer_type"),
-                customer_source: row.get("customer_source"),
-                customer_level: row.get("customer_level"),
-                stage: row.get("stage"),
-                first_contact_channel: row.get("first_contact_channel"),
-                primary_language: row.get("primary_language"),
-                main_need: row.get("main_need"),
-                sample_status: row.get("sample_status"),
-                bulk_order_status: row.get("bulk_order_status"),
-                first_contact_at: row.get("first_contact_at"),
-                last_contact_at: row.get("last_contact_at"),
-                website_url: row.get("website_url"),
-                alibaba_buyer_id: row.get("alibaba_buyer_id"),
-                notes: row.get("notes"),
-                methods,
-                interests,
-            },
-        }),
+    Ok(Contact {
+        id: row.get("id"),
+        archived_at: row.get("archived_at"),
+        merged_into: row.get("merged_into"),
+        source: row.get("source"),
+        record_revision: row.get("record_revision"),
+        data_epoch: row.get("data_epoch"),
+        effective_first_contact_at: row.get("effective_first"),
+        effective_last_contact_at: row.get("effective_last"),
+        updated_at: row.get("updated_at"),
+        latest_thread_reply_at: row.get("last_reply_at"),
+        mail_outreach: outreach(&row),
+        observed_first_contact_at: row.get("observed_first"),
+        observed_last_contact_at: row.get("observed_last"),
+        input: ContactInput {
+            display_name: row.get("display_name"),
+            company_name: row.get("company_name"),
+            country_region: row.get("country_region"),
+            customer_type: row.get("customer_type"),
+            customer_source: row.get("customer_source"),
+            customer_level: row.get("customer_level"),
+            stage: row.get("stage"),
+            first_contact_channel: row.get("first_contact_channel"),
+            primary_language: row.get("primary_language"),
+            main_need: row.get("main_need"),
+            sample_status: row.get("sample_status"),
+            bulk_order_status: row.get("bulk_order_status"),
+            first_contact_at: row.get("first_contact_at"),
+            last_contact_at: row.get("last_contact_at"),
+            website_url: row.get("website_url"),
+            alibaba_buyer_id: row.get("alibaba_buyer_id"),
+            notes: row.get("notes"),
+            methods,
+            interests,
+        },
     })
 }
 
@@ -438,11 +444,15 @@ pub async fn archive(
     actor: Actor<'_>,
 ) -> Result<Reply> {
     let mut tx = pool.begin().await?;
-    let current: Option<i64> = sqlx::query_scalar("SELECT archived_at FROM contacts WHERE id=?")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Error::NotFound)?;
+    let (current, merged): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT archived_at,merged_into FROM contacts WHERE id=?")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::NotFound)?;
+    if !archived && merged.is_some() {
+        return Err(Error::Invalid("contact_already_merged"));
+    }
     if current.is_some() != archived {
         sqlx::query("UPDATE contacts SET archived_at=CASE WHEN ? THEN unixepoch() END, updated_at=unixepoch(), updated_by=?, record_revision=record_revision+1 WHERE id=?")
             .bind(archived).bind(actor.id).bind(&id).execute(&mut *tx).await?;

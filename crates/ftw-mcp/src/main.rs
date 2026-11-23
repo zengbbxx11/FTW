@@ -187,6 +187,10 @@ struct CustomerUpdate {
     main_need: Option<String>,
     sample_status: Option<String>,
     notes: Option<String>,
+    #[schemars(
+        description = "Record inferred or unverified values for human review without updating customer data."
+    )]
+    review_only: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -452,7 +456,7 @@ impl Ftw {
     }
 
     #[tool(
-        description = "Patch a customer's allowed business fields. Only supplied fields change. Reuse request_id for an identical retry."
+        description = "Patch a customer's allowed business fields. Only supplied fields change. Set review_only for inferred facts. A stale revision saves a proposal for review, without overwriting the record."
     )]
     async fn update_customer(
         &self,
@@ -465,6 +469,7 @@ impl Ftw {
             main_need: data.main_need,
             sample_status: data.sample_status,
             notes: data.notes,
+            review_only: data.review_only,
         };
         self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::UpdateCustomer {
             request_id: data.request_id,

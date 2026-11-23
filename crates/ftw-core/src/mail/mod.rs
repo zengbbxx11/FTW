@@ -3,6 +3,7 @@ pub(crate) mod attachments;
 mod authorized;
 mod credentials;
 mod inbox;
+pub(crate) use inbox::NEEDS_REVIEW as INBOX_NEEDS_REVIEW;
 mod ledger;
 mod policy;
 mod smtp;
@@ -449,8 +450,8 @@ impl MailService {
     }
 
     async fn drafts(&self, contact: Option<String>, offset: u32) -> Result<Reply> {
-        let mut rows = sqlx::query("SELECT * FROM mail_drafts_review WHERE (? IS NULL OR contact_id=?) ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?")
-            .bind(contact.as_deref()).bind(contact.as_deref()).bind(i64::from(offset)).map(draft_row)
+        let mut rows = sqlx::query("SELECT * FROM mail_drafts_review WHERE (? IS NULL OR contact_id=? OR contact_id IN (SELECT id FROM contacts WHERE merged_into=?)) ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?")
+            .bind(contact.as_deref()).bind(contact.as_deref()).bind(contact.as_deref()).bind(i64::from(offset)).map(draft_row)
             .fetch_all(&self.pool).await?;
         let has_more = rows.len() > 20;
         rows.truncate(20);

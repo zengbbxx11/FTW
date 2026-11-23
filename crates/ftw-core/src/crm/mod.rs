@@ -1,8 +1,11 @@
 mod cells;
+pub(crate) mod changes;
 pub(crate) mod contacts;
 mod duplicates;
 mod fields;
 mod leads;
+mod merge;
+mod quality;
 mod query;
 mod timeline;
 mod validation;
@@ -49,7 +52,11 @@ pub(crate) enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 pub async fn dispatch(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Response {
-    match execute(pool, command, actor).await {
+    response(execute(pool, command, actor).await)
+}
+
+pub(crate) fn response(result: Result<Reply>) -> Response {
+    match result {
         Ok(data) => Response::Crm {
             data: Box::new(data),
         },
@@ -76,6 +83,16 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
             field,
             value,
         } => cells::update(pool, actor, targets, &field, &value).await,
+        Command::ListAgentChanges { offset, pending } => changes::list(pool, offset, pending).await,
+        Command::ResolveAgentChange { id, accept } => {
+            changes::resolve(pool, actor, &id, accept).await
+        }
+        Command::MergeContacts { primary, secondary } => {
+            merge::merge(pool, actor, primary, secondary).await
+        }
+        Command::CustomerQuality { category, offset } => {
+            quality::list(pool, &category, offset).await
+        }
         Command::CustomerStats => contacts::stats(pool).await,
         Command::ListContacts { query } => contacts::list(pool, query, actor).await,
         Command::ListViews { include_archived } => views::list(pool, actor, include_archived).await,

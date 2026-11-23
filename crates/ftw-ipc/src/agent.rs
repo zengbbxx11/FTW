@@ -9,6 +9,8 @@ pub struct ContactPatch {
     pub main_need: Option<String>,
     pub sample_status: Option<String>,
     pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

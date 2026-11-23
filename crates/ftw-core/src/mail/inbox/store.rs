@@ -321,7 +321,37 @@ async fn activity(db: &mut SqliteConnection, message: &str, contact: &str) -> Re
 }
 
 pub(super) async fn link(pool: &SqlitePool, id: &str, contact: &str) -> Result<Reply> {
-    let mut tx = pool.begin().await?;
+    link_contact(pool, id, contact, None).await
+}
+
+pub(super) async fn review_link(
+    pool: &SqlitePool,
+    id: &str,
+    contact: &str,
+    expected_contact: Option<String>,
+    expected_match: String,
+) -> Result<Reply> {
+    link_contact(pool, id, contact, Some((expected_contact, expected_match))).await
+}
+
+async fn link_contact(
+    pool: &SqlitePool,
+    id: &str,
+    contact: &str,
+    expected: Option<(Option<String>, String)>,
+) -> Result<Reply> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(expected) = expected {
+        let current: (Option<String>, String) =
+            sqlx::query_as("SELECT contact_id,match_state FROM inbox_messages WHERE id=?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Failure::Code("mail_not_found"))?;
+        if current != expected {
+            return Err(Failure::Code("mail_link_changed"));
+        }
+    }
     let allowed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM contacts WHERE id=? AND archived_at IS NULL)",
     )
@@ -348,6 +378,24 @@ pub(super) async fn link(pool: &SqlitePool, id: &str, contact: &str) -> Result<R
     Ok(Reply::Saved { id: id.to_owned() })
 }
 
+pub(super) async fn review_candidates(pool: &SqlitePool, id: &str) -> Result<Reply> {
+    use ftw_ipc::inbox::ReviewCandidate;
+    let rows = sqlx::query(
+        "SELECT c.id,c.display_name,c.company_name,c.country_region,
+            EXISTS(SELECT 1 FROM contact_methods e WHERE e.kind='email' AND e.contact_id=c.id
+              AND e.normalized=lower(i.sender)) exact_sender
+         FROM inbox_messages i JOIN contacts c ON c.id=i.contact_id OR c.id IN (
+             SELECT contact_id FROM contact_methods m WHERE m.kind='email' AND m.normalized=lower(i.sender))
+         WHERE i.id=? AND c.archived_at IS NULL ORDER BY exact_sender DESC,c.display_name,c.id LIMIT 21",
+    ).bind(id).map(|row: SqliteRow| ReviewCandidate {
+        id: row.get("id"), name: row.get("display_name"), company: row.get("company_name"),
+        country: row.get("country_region"), exact_sender: row.get("exact_sender"),
+    }).fetch_all(pool).await?;
+    Ok(Reply::ReviewCandidates { rows })
+}
+
+pub(crate) const NEEDS_REVIEW: &str = "(i.contact_id IS NULL OR i.match_state='contact')";
+
 const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names,i.message_role,i.match_state,i.body_complete,i.download_outcome
     FROM inbox_messages i LEFT JOIN contacts c ON c.id=i.contact_id";
 
@@ -367,7 +415,7 @@ pub(super) async fn list(
         query.push(" AND i.contact_id=").push_bind(contact);
     }
     if unmatched {
-        query.push(" AND (i.contact_id IS NULL OR i.match_state='contact')");
+        query.push(" AND ").push(NEEDS_REVIEW);
     }
     query
         .push(" ORDER BY i.received_at DESC,i.id LIMIT 21 OFFSET ")

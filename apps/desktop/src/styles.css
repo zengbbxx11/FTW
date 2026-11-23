@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./crm.css";
+@import "./review.css";
 
 @theme {
   --font-sans: "Segoe UI", "Microsoft YaHei UI", sans-serif;

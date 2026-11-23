@@ -45,13 +45,13 @@ export function Duplicates({ matches, children }: { matches: Duplicate[]; childr
   )
 }
 
-export function ConfirmButton({ children, label, onConfirm, disabled }: {
-  children: ReactNode; label: string; onConfirm: () => void; disabled?: boolean
+export function ConfirmButton({ children, label, onConfirm, disabled, primary }: {
+  children: ReactNode; label: string; onConfirm: () => void; disabled?: boolean; primary?: boolean
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const id = useId()
   return <>
-    <button className="button" type="button" disabled={disabled}
+    <button className={primary ? 'button primary' : 'button'} type="button" disabled={disabled}
       onClick={() => dialog.current?.showModal()}>
       {children}
     </button>

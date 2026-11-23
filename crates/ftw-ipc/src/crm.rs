@@ -162,6 +162,22 @@ pub enum Command {
         direction: i8,
     },
     CustomerStats,
+    CustomerQuality {
+        category: String,
+        offset: u32,
+    },
+    MergeContacts {
+        primary: crate::views::CellTarget,
+        secondary: crate::views::CellTarget,
+    },
+    ListAgentChanges {
+        offset: u32,
+        pending: bool,
+    },
+    ResolveAgentChange {
+        id: String,
+        accept: bool,
+    },
     ListContacts {
         query: ContactQuery,
     },
@@ -262,6 +278,19 @@ pub enum Result {
     StateCatalog {
         options: Vec<StateOption>,
     },
+    AgentReviewPending {
+        id: String,
+        count: usize,
+    },
+    AgentChanges {
+        rows: Vec<AgentChange>,
+        has_more: bool,
+    },
+    CustomerQuality {
+        rows: Vec<QualityIssue>,
+        counts: Vec<(String, i64)>,
+        has_more: bool,
+    },
     CustomerStats {
         active: i64,
         priority: i64,
@@ -357,6 +386,8 @@ pub struct Contact {
     #[serde(default)]
     pub updated_at: i64,
     pub latest_thread_reply_at: Option<i64>,
+    #[serde(default)]
+    pub merged_into: Option<String>,
     pub input: ContactInput,
     pub archived_at: Option<i64>,
     pub source: String,
@@ -398,6 +429,30 @@ pub struct Activity {
     pub followup_category: String,
     pub customer_feedback: String,
     pub source: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AgentChange {
+    pub id: String,
+    pub contact_id: String,
+    pub contact_name: String,
+    pub field: String,
+    pub previous_value: String,
+    pub proposed_value: String,
+    pub current_value: String,
+    pub request_id: String,
+    pub state: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct QualityIssue {
+    pub category: String,
+    pub contact_id: String,
+    pub contact_name: String,
+    pub other_id: Option<String>,
+    pub other_name: Option<String>,
+    pub detail: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

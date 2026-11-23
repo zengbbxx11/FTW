@@ -1,4 +1,5 @@
 mod store;
+pub(crate) use store::NEEDS_REVIEW;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -51,6 +52,22 @@ impl MailService {
                 unmatched,
                 offset,
             } => store::list(&self.pool, account_id, contact_id, unmatched, offset).await,
+            Command::ReviewCandidates { id } => store::review_candidates(&self.pool, &id).await,
+            Command::ReviewLink {
+                id,
+                contact_id,
+                expected_contact,
+                expected_match,
+            } => {
+                store::review_link(
+                    &self.pool,
+                    &id,
+                    &contact_id,
+                    expected_contact,
+                    expected_match,
+                )
+                .await
+            }
             Command::Get { id } => store::get(&self.pool, &id).await,
             Command::Thread { id, offset } => store::thread(&self.pool, &id, offset).await,
             Command::Link { id, contact_id } => store::link(&self.pool, &id, &contact_id).await,

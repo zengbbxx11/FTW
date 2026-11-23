@@ -122,6 +122,7 @@ const mailErrorLabels: Record<string, string> = {
   approval_window_failed: 'Windows 审批窗口未能正常完成，可重新发起审批。',
   approval_interrupted: '审批过程被中断，可重新发起审批。',
   approval_required: '需在 FTW 工作台人工批准这封草稿。',
+  mail_link_changed: '来信归属已经变化。请核对当前结果后再关联。',
   approval_already_open: '已有一个邮件审批对话框正在等待确认。',
   approval_expired: '批准已过期，请重新审核。',
   approval_snapshot_changed: '邮件内容已变化，请重新审核。',
