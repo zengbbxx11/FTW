@@ -4,7 +4,7 @@ import { dateLabel, request, sourceLabel, type Contact } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
 import { AgentMail } from './AgentMail'
 import { ImapSettings, InboxView, MailThread } from './Inbox'
-import { mailCall, mailError, states, type Attachment, type Draft, type DraftInput, type MailCommand } from './api'
+import { chooseMailAssets, mailCall, mailError, states, type Asset, type Draft, type DraftInput, type MailCommand } from './api'
 
 type View = { kind: 'drafts' | 'accounts' | 'inbox' | 'imap' | 'agent' } | { kind: 'draft' | 'edit'; id: string }
 
@@ -160,7 +160,7 @@ function DraftForm({ contact, existing, saved, close }: {
   const [recipient, setRecipient] = useState(existing?.recipient ?? (emails.find(m => m.is_primary) ?? emails[0])?.value ?? '')
   const [subject, setSubject] = useState(existing?.subject ?? '')
   const [body, setBody] = useState(existing?.body ?? '')
-  const [files, setFiles] = useState<Attachment[]>([])
+  const [files, setFiles] = useState<Asset[]>([])
   const [replace, setReplace] = useState(false)
   const [fileError, setFileError] = useState('')
   const [readingFiles, setReadingFiles] = useState(false)
@@ -172,36 +172,23 @@ function DraftForm({ contact, existing, saved, close }: {
   const save = useMutation({
     mutationFn: () => {
       const input: DraftInput = { contact_id: contact.id, account_id: sender, recipient: currentRecipient,
-        subject, body, attachments: files, replace_attachments: replace }
-      return mailCall({ action: 'save_draft', id: existing?.id ?? null, input }, 'saved')
+        subject, body, attachments: [], replace_attachments: replace }
+      return replace
+        ? mailCall({ action: 'save_draft_with_assets', id: existing?.id ?? null, input, asset_ids: files.map(file => file.id) }, 'saved')
+        : mailCall({ action: 'save_draft', id: existing?.id ?? null, input }, 'saved')
     },
     onSuccess: async result => {
       await Promise.all([cache.invalidateQueries({ queryKey: ['mail-drafts'] }), cache.invalidateQueries({ queryKey: ['mail-draft', result.id] })])
       saved(result.id)
     },
   })
-  const selectFiles = async (input: FileList | null) => {
-    const selected = [...(input ?? [])]
+  const selectFiles = async () => {
     setFileError('')
-    if (selected.length > 4 || selected.reduce((sum, file) => sum + file.size, 0) > 384 * 1024) {
-      setFileError('最多选择 4 个附件，总大小上限 384 KiB。')
-      return
-    }
-    if (!selected.length) return
     setReadingFiles(true)
     try {
-      const parts = await Promise.all(selected.map(file => new Promise<Attachment>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onerror = reject
-        reader.onload = () => {
-          const encoded = String(reader.result)
-          resolve({ filename: file.name, content_base64: encoded.slice(encoded.indexOf(',') + 1) })
-        }
-        reader.readAsDataURL(file)
-      })))
-      setFiles(parts)
-      setReplace(true)
-    } catch { setFileError('附件读取失败。') }
+      const selected = await chooseMailAssets()
+      if (selected.length) { setFiles(selected); setReplace(true) }
+    } catch (error) { setFileError(mailError(error)) }
     finally { setReadingFiles(false) }
   }
   return <form onSubmit={event => { event.preventDefault(); save.mutate() }}>
@@ -223,7 +210,11 @@ function DraftForm({ contact, existing, saved, close }: {
         const signature = senderRows.find(row => row.id === sender)?.signature
         if (signature && !body.trimEnd().endsWith(signature)) setBody(body.trimEnd() + (body.trim() ? '\n\n' : '') + signature)
       }}>插入账户签名</button>}
-      <Field label="附件"><input type="file" multiple disabled={readingFiles} onChange={e => void selectFiles(e.target.files)} /></Field>
+      <div className="row-actions">
+        <button className="button" type="button" disabled={readingFiles} onClick={() => void selectFiles()}>
+          {readingFiles ? '正在读取附件…' : (files.length || existing?.attachments.length) ? '替换附件' : '选择附件'}
+        </button><small>PDF、JPEG、PNG 或 WebP，最多 4 件，合计 10 MiB</small>
+      </div>
       {(replace ? files : existing?.attachments ?? []).map((file, i) => <small key={i}>{file.filename}</small>)}
       {(files.length > 0 || Boolean(existing?.attachments.length && !replace)) && <button className="text-button" type="button"
         onClick={() => { setFiles([]); setReplace(true); setFileError('') }}>移除所有附件</button>}

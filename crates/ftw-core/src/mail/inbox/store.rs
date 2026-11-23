@@ -348,7 +348,7 @@ pub(super) async fn link(pool: &SqlitePool, id: &str, contact: &str) -> Result<R
     Ok(Reply::Saved { id: id.to_owned() })
 }
 
-const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names,i.message_role,i.match_state,i.body_complete
+const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names,i.message_role,i.match_state,i.body_complete,i.download_outcome
     FROM inbox_messages i LEFT JOIN contacts c ON c.id=i.contact_id";
 
 pub(super) async fn list(
@@ -395,7 +395,7 @@ pub(super) async fn thread(pool: &SqlitePool, id: &str, offset: u32) -> Result<R
     let query = format!(
         "{RECEIVE} WHERE i.thread_id=?
          UNION ALL SELECT e.id,e.account_id,e.contact_id,c.display_name,'sent:' || e.id,
-            e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]','outgoing','thread',1
+            e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]','outgoing','thread',1,NULL
          FROM email_messages e JOIN contacts c ON c.id=e.contact_id
            WHERE 'sent:' || e.id=?
          ORDER BY 8,1 LIMIT ? OFFSET ?",
@@ -441,5 +441,104 @@ fn row(r: SqliteRow) -> InboxRow {
         message_role: r.get("message_role"),
         match_state: r.get("match_state"),
         body_complete: r.get("body_complete"),
+        download_outcome: r.get("download_outcome"),
     }
+}
+
+pub(super) async fn complete(
+    pool: &SqlitePool,
+    root: &std::path::Path,
+    id: &str,
+    raw: &[u8],
+) -> Result<()> {
+    use crate::mail::attachments;
+    let parsed = parse(raw, false);
+    if parsed.role == "unparsed" {
+        return Err(Failure::Code("imap_download_incomplete"));
+    }
+    let sha = attachments::store(root, raw)
+        .await
+        .map_err(attachments::file_error)?;
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE inbox_messages SET body_text=?,attachment_names=?,body_complete=1,full_sha256=?,
+        full_size=?,download_outcome='ok' WHERE id=?",
+    )
+    .bind(parsed.body)
+    .bind(serde_json::json!(parsed.attachments).to_string())
+    .bind(sha)
+    .bind(raw.len() as i64)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    if let Some(report) = parsed.delivery {
+        let account: String =
+            sqlx::query_scalar("SELECT account_id FROM inbox_messages WHERE id=?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if let Some((job,contact,thread)) = sqlx::query_as::<_,(String,String,String)>(
+            "SELECT outbox_id,contact_id,'sent:' || id FROM email_messages WHERE account_id=? AND message_id_header=? AND lower(to_address)=?",
+        ).bind(account).bind(report.original_id).bind(report.recipient).fetch_optional(&mut *tx).await? {
+            sqlx::query("INSERT OR IGNORE INTO mail_delivery_events(inbox_id,outbox_id,action,status) VALUES (?,?,?,?)")
+                .bind(id).bind(job).bind(report.action).bind(report.status).execute(&mut *tx).await?;
+            sqlx::query("UPDATE inbox_messages SET contact_id=?,thread_id=?,match_state='delivery' WHERE id=? AND match_state<>'manual'")
+                .bind(contact).bind(thread).bind(id).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(super) async fn full_bytes(
+    pool: &SqlitePool,
+    root: &std::path::Path,
+    id: &str,
+) -> Result<Vec<u8>> {
+    let (inline, sha, size): (Vec<u8>, Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT raw,full_sha256,full_size FROM inbox_messages WHERE id=? AND body_complete",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(Failure::Code("imap_body_not_loaded"))?;
+    match (sha, size) {
+        (Some(sha), Some(size)) => crate::mail::attachments::read_object(root, &sha, size as usize)
+            .await
+            .map_err(crate::mail::attachments::file_error),
+        _ => Ok(inline),
+    }
+}
+
+pub(super) fn body_page(raw: &[u8], offset: u32) -> Result<Reply> {
+    let mail = MessageParser::new()
+        .max_parts(160)
+        .parse(raw)
+        .ok_or(Failure::Code("imap_download_incomplete"))?;
+    let text = mail.body_text(0).unwrap_or_default();
+    let text = clip(&text, text.len());
+    let start = offset as usize;
+    if !text.is_char_boundary(start) {
+        return Err(Failure::Code("invalid_mail_field"));
+    }
+    let part = clip(&text[start..], 65_536);
+    let end = start + part.len();
+    Ok(Reply::Body {
+        text: part,
+        next_offset: (end < text.len()).then_some(end as u32),
+    })
+}
+
+pub(super) fn inbound_attachment(raw: &[u8], index: u16) -> Result<Vec<u8>> {
+    let parser = MessageParser::new().max_parts(160);
+    let mail = parser
+        .parse(raw)
+        .ok_or(Failure::Code("imap_download_incomplete"))?;
+    let part = mail
+        .attachments()
+        .filter(|part| part.attachment_name().is_some())
+        .take(25)
+        .nth(index as usize)
+        .ok_or(Failure::Code("attachment_not_available"))?;
+    Ok(part.decoded().into_owned())
 }

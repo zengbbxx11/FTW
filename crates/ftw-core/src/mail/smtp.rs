@@ -24,7 +24,11 @@ pub(super) fn transport(
         .build())
 }
 
-pub(super) fn message(snapshot: &Snapshot, message_id: String) -> Result<Message, Failure> {
+pub(super) fn message(
+    snapshot: &Snapshot,
+    message_id: String,
+    assets: Vec<Vec<u8>>,
+) -> Result<Message, Failure> {
     let from = snapshot
         .sender
         .parse()
@@ -38,7 +42,7 @@ pub(super) fn message(snapshot: &Snapshot, message_id: String) -> Result<Message
         .to(to)
         .subject(&snapshot.subject)
         .message_id(Some(message_id));
-    if snapshot.attachments.is_empty() {
+    if snapshot.attachments.is_empty() && assets.is_empty() {
         return builder
             .body(snapshot.body.clone())
             .map_err(|_| Failure::Code("smtp_message_invalid"));
@@ -51,6 +55,15 @@ pub(super) fn message(snapshot: &Snapshot, message_id: String) -> Result<Message
             Attachment::new(name).body(
                 bytes,
                 lettre::message::header::ContentType::parse("application/octet-stream")
+                    .map_err(|_| Failure::Code("smtp_message_invalid"))?,
+            ),
+        );
+    }
+    for (asset, bytes) in snapshot.assets.iter().zip(assets) {
+        parts = parts.singlepart(
+            Attachment::new(asset.filename.clone()).body(
+                bytes,
+                lettre::message::header::ContentType::parse(&asset.content_type)
                     .map_err(|_| Failure::Code("smtp_message_invalid"))?,
             ),
         );

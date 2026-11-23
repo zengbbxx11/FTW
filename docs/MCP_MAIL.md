@@ -30,7 +30,7 @@ codex mcp add ftw -- "D:\FTW-Portable\ftw-mcp.exe"
 
 1. 打开 FTW，在「邮件中心 → 发件账户」配置账户名、发件邮箱、SMTP 主机、端口、登录名及授权码，选择 TLS 或强制 STARTTLS。点「测试 SMTP」验证连接和认证。凭据加密使用当前 Windows 用户的 DPAPI，移动到其他用户或设备时可通过「更新授权码」重新授权。
 2. 在「客户」维护收件邮箱。可在客户详情点「写邮件」，也可让 Codex 或 WorkBuddy 通过 `list_customers` 和 `get_customer` 找到联系人，通过 `list_email_accounts` 选取发件账号。
-3. 让 Agent 调用 `create_email_draft`，再调用 `request_email_approval`。草稿会显示在邮件中心。MCP 起草支持定向单收件人和纯文本，附件由工作台本地文件选择添加。工作台每封最多 4 个附件，合计 384 KiB。
+3. 让 Agent 调用 `create_email_draft`，再调用 `request_email_approval`。草稿会显示在邮件中心。MCP 起草支持定向单收件人和纯文本，附件由工作台本地文件选择添加。工作台每封最多 4 个 PDF 或图片附件，合计 10 MiB。
 4. 在 FTW 打开草稿，核对发件人、收件人、标题、正文和附件，点「人工批准」并在 Windows 对话框确认。审批对当前修订和内容哈希有效，有效期为 30 分钟。编辑正文、收发信息或附件后需重新审核。
 5. 在工作台点击「发送已批准版本」，或让 Agent 用 `send_approved_email` 提交。Agent 显示队列返回后，用 `get_email_draft` 查询实际状态。SMTP 接受表示服务端接受提交。结果未知时先核对发件记录，Core 保留该作业状态供复核。
 
@@ -40,7 +40,7 @@ Core 在入队及提交前检查审批、最新快照、收件人关系和拒发
 
 在「邮件中心 → 收件设置」为对应发件账户配置 IMAP 主机、端口、登录名及凭据。支持使用密码或应用授权码的隐式 TLS IMAP。点击「测试 IMAP」，然后从收件箱同步。每次同步至多拉取 25 封新邮件，收件箱会显示同步结果及是否还有新邮件。
 
-Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台选择客户。Agent 可通过 `sync_mailbox` 触发同一同步，通过 `list_inbox` 查找来信，再用 `get_email_thread` 读取纯文本会话并生成新的跟进草稿。超过 2 MiB 的来信只保留邮件头。常规来信面板展示附件名称和正文预览。
+Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台选择客户。Agent 可通过 `sync_mailbox` 触发同一同步，通过 `list_inbox` 查找来信，再用 `get_email_thread` 读取纯文本会话并生成新的跟进草稿。超过 2 MiB 的来信先保留邮件头，支持按需下载完整邮件。常规来信面板展示附件名称和正文预览。
 
 ## 工具参数与结果
 
@@ -88,3 +88,11 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 `send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`，禁止模式下 Agent 仍可创建草稿和读邮件。
 
 便携复制整个停用后的数据目录时保留 `agent-send-safety.sqlite`。业务备份恢复会撤销已登记 Agent、关闭自动授权并冻结旧的待发送任务。安全账本留在同一数据目录，防止业务数据回退后重复提交。
+
+## 目录、图片和完整邮件
+
+桌面写邮件支持 PDF、JPEG、PNG、WebP，最多四件，合计 10 MiB 原文件，实际收发上限仍受邮箱服务器限制。保存位置是数据目录下的 `mail-objects`。同名文件内容变化会产生新的校验值，批准和发送以草稿保存的文件为准。
+
+在「Agent 发信权限 → Agent 可用附件」导入并核验授权后，已登记 Agent 用 `list_email_assets` 查文件 ID，用 `attach_email_assets` 更新自己的草稿附件，再读回最新修订送审或授权入队。
+
+收件同步对超过 2 MiB 的邮件保存邮件头，桌面可在会话中按需下载最多 16 MiB 的完整邮件。Agent 可用 `fetch_inbox_message` 开始下载，并用 `read_inbox_body` 的分页偏移读取纯文本。附件可在桌面通过 Windows 另存窗口写入指定新文件。迁移前或手工备份复制 `backups/mail-objects` 与 `workbench-*.db`，恢复时 Core 校验引用的对象完整性。

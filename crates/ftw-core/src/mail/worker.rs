@@ -53,9 +53,15 @@ impl MailService {
             }
             Err(error) => return Err(error),
         };
-        let prepared = build(&account).and_then(|transport| {
-            smtp::message(&draft, job.message_id_header.clone()).map(|message| (transport, message))
-        });
+        let prepared = async {
+            let mut assets = Vec::new();
+            for asset in &draft.assets {
+                assets.push(super::attachments::read_asset(self.objects()?, asset).await?);
+            }
+            let message = smtp::message(&draft, job.message_id_header.clone(), assets)?;
+            Ok::<_, Failure>((build(&account)?, message))
+        }
+        .await;
         let (transport, message) = match prepared {
             Ok(value) => value,
             Err(error) => {

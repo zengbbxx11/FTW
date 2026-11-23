@@ -151,3 +151,55 @@ where
     }
     Ok(more)
 }
+
+pub(super) async fn full_message(settings: &Settings, validity: u32, uid: u32) -> Result<Vec<u8>> {
+    let mut session = connect(settings).await?;
+    let result = async {
+        let selected = session
+            .examine(FOLDER)
+            .await
+            .map_err(|_| Failure::Code("imap_inbox_unavailable"))?;
+        if selected.uid_validity != Some(validity) {
+            return Err(Failure::Code("imap_uid_changed"));
+        }
+        let uid_set = uid.to_string();
+        let sizes: Vec<_> = session
+            .uid_fetch(&uid_set, "(UID RFC822.SIZE)")
+            .await
+            .map_err(|_| Failure::Code("imap_fetch_failed"))?
+            .try_collect()
+            .await
+            .map_err(|_| Failure::Code("imap_fetch_failed"))?;
+        let total = sizes
+            .iter()
+            .find(|item| item.uid == Some(uid))
+            .and_then(|item| item.size)
+            .ok_or(Failure::Code("mail_not_found"))? as usize;
+        if total == 0 || total > crate::mail::attachments::INBOX_LIMIT {
+            return Err(Failure::Code("imap_download_limit"));
+        }
+        let mut data = Vec::with_capacity(total);
+        while data.len() < total {
+            let count = (total - data.len()).min(512 * 1024);
+            let request = format!("(UID BODY.PEEK[]<{}.{count}>)", data.len());
+            let parts: Vec<_> = session
+                .uid_fetch(&uid_set, &request)
+                .await
+                .map_err(|_| Failure::Code("imap_fetch_failed"))?
+                .try_collect()
+                .await
+                .map_err(|_| Failure::Code("imap_fetch_failed"))?;
+            let bytes = parts
+                .iter()
+                .find(|item| item.uid == Some(uid))
+                .and_then(|item| item.body())
+                .filter(|bytes| bytes.len() == count)
+                .ok_or(Failure::Code("imap_download_incomplete"))?;
+            data.extend_from_slice(bytes);
+        }
+        Ok(data)
+    }
+    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), session.logout()).await;
+    result
+}

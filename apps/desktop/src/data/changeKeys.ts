@@ -10,6 +10,8 @@ const keysByDomain: Record<string, string[]> = {
   audit: ['audit'],
   custom_fields: ['crm-fields', 'contact-fields', 'contacts', 'crm-views'],
   crm_views: ['crm-views'],
+  mail_assets: ['mail-assets', 'inbox-body'],
+  mail_agent_policy: ['agent-mail-settings'],
 }
 
 

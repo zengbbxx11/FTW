@@ -62,13 +62,7 @@ impl MailService {
         check_text(&submission.task, 96)?;
         check_text(&submission.request, 96)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let agent: String = sqlx::query_scalar(
-            "SELECT id FROM mail_agent_clients WHERE token_digest=? AND NOT revoked",
-        )
-        .bind(submission.digest)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Failure::Code("mail_agent_unregistered"))?;
+        let agent = policy::registered(&mut tx, submission.digest).await?;
         let config = policy::current(&mut tx).await?;
         let (draft, revision, state) = snapshot(&mut tx, &submission.id).await?;
         if revision != submission.revision {
@@ -161,6 +155,7 @@ pub(super) async fn check_scope(
 ) -> Result<()> {
     if config.mode != "automatic"
         || config.revision != revision
+        || draft.assets.iter().any(|asset| !asset.agent_allowed)
         || !config.accounts.contains(&draft.account_id)
         || !config.purposes.iter().any(|item| item == purpose)
     {

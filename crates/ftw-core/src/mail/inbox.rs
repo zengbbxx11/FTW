@@ -25,6 +25,13 @@ struct Settings {
 impl MailService {
     pub async fn inbox(&self, command: Command) -> Response {
         let result = match command {
+            Command::DownloadFull { id } => self.download_full(id).await,
+            Command::ReadBody { id, offset } => self.read_inbox_body(&id, offset).await,
+            Command::SaveAttachment {
+                id,
+                index,
+                destination,
+            } => self.save_inbox_attachment(&id, index, &destination).await,
             Command::Accounts => self.imap_accounts().await,
             Command::Configure {
                 account_id,
@@ -53,6 +60,8 @@ impl MailService {
 
     pub async fn agent_inbox(&self, command: AgentCommand) -> Response {
         let result = match command {
+            AgentCommand::DownloadFull { id } => self.download_full(id).await,
+            AgentCommand::ReadBody { id, offset } => self.read_inbox_body(&id, offset).await,
             AgentCommand::Sync { account_id } => self.start_sync(account_id).await,
             AgentCommand::List { contact_id, offset } => {
                 store::list(&self.pool, None, contact_id, false, offset).await
@@ -153,6 +162,98 @@ impl MailService {
         })
         .await;
         outcome.unwrap_or(Err(Failure::Code("imap_timeout")))
+    }
+
+    async fn download_full(&self, id: String) -> Result<Reply> {
+        let guard = self
+            .imap
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| Failure::Code("imap_busy"))?;
+        let available: bool =
+            sqlx::query_scalar("SELECT body_complete FROM inbox_messages WHERE id=?")
+                .bind(&id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(Failure::Code("mail_not_found"))?;
+        if available {
+            return Ok(Reply::Saved { id });
+        }
+        let (account, validity, uid): (String, u32, u32) = sqlx::query_as(
+            "SELECT l.account_id,l.uid_validity,l.uid FROM inbox_locations l JOIN imap_sync_state s
+                ON s.account_id=l.account_id AND s.folder=l.folder AND s.uid_validity=l.uid_validity
+             WHERE l.message_id=? AND l.folder='INBOX' ORDER BY l.uid DESC LIMIT 1",
+        )
+        .bind(&id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Failure::Code("imap_uid_changed"))?;
+        let settings = self.settings(&account).await?;
+        let root = self.objects()?.to_owned();
+        sqlx::query("UPDATE inbox_messages SET download_outcome='running' WHERE id=?")
+            .bind(&id)
+            .execute(&self.pool)
+            .await?;
+        let service = self.clone();
+        let expected = id.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            let result = async {
+                let raw = tokio::time::timeout(
+                    Duration::from_secs(90),
+                    transport::full_message(&settings, validity, uid),
+                )
+                .await
+                .unwrap_or(Err(Failure::Code("imap_timeout")))?;
+                store::complete(&service.pool, &root, &expected, &raw).await
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = sqlx::query("UPDATE inbox_messages SET download_outcome=? WHERE id=?")
+                    .bind(error.code())
+                    .bind(expected)
+                    .execute(&service.pool)
+                    .await;
+            }
+        });
+        Ok(Reply::Saved { id })
+    }
+
+    async fn read_inbox_body(&self, id: &str, offset: u32) -> Result<Reply> {
+        let raw = store::full_bytes(&self.pool, self.objects()?, id).await?;
+        store::body_page(&raw, offset)
+    }
+
+    async fn save_inbox_attachment(
+        &self,
+        id: &str,
+        index: u16,
+        destination: &str,
+    ) -> Result<Reply> {
+        use tokio::io::AsyncWriteExt;
+        let path = std::path::Path::new(destination);
+        if !path.is_absolute() {
+            return Err(Failure::Code("invalid_attachments"));
+        }
+        let raw = store::full_bytes(&self.pool, self.objects()?, id).await?;
+        let attachment = store::inbound_attachment(&raw, index)?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .await
+            .map_err(|_| Failure::Code("attachment_destination_unavailable"))?;
+        let result = async {
+            file.write_all(&attachment).await?;
+            file.sync_all().await
+        }
+        .await;
+        drop(file);
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(path).await;
+            return Err(Failure::Code("attachment_destination_unavailable"));
+        }
+        Ok(Reply::Saved { id: id.to_owned() })
     }
 
     async fn start_sync(&self, account_id: String) -> Result<Reply> {

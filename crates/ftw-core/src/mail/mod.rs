@@ -1,4 +1,5 @@
 mod approval;
+pub(crate) mod attachments;
 mod authorized;
 mod credentials;
 mod inbox;
@@ -68,6 +69,8 @@ struct Snapshot {
     subject: String,
     body: String,
     attachments: Vec<mail::Attachment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    assets: Vec<mail::Asset>,
 }
 
 impl Snapshot {
@@ -82,6 +85,7 @@ impl Snapshot {
 pub struct MailService {
     pool: SqlitePool,
     ledger: Option<ledger::Ledger>,
+    object_root: Option<std::path::PathBuf>,
     prompt: Arc<Mutex<()>>,
     imap: Arc<Mutex<()>>,
     delivery: Arc<Mutex<()>>,
@@ -97,6 +101,8 @@ impl MailService {
             .execute(&mut *tx).await?;
         sqlx::query("UPDATE email_outbox_jobs SET state='delivery_unknown', outcome='interrupted_during_submission' WHERE state='sending'")
             .execute(&mut *tx).await?;
+        sqlx::query("UPDATE inbox_messages SET download_outcome='approval_interrupted' WHERE download_outcome='running'")
+            .execute(&mut *tx).await?;
         sqlx::query("UPDATE imap_sync_state SET outcome='interrupted' WHERE outcome='running'")
             .execute(&mut *tx)
             .await?;
@@ -104,6 +110,7 @@ impl MailService {
         Ok(Self {
             pool,
             ledger: None,
+            object_root: None,
             prompt: Arc::new(Mutex::new(())),
             imap: Arc::new(Mutex::new(())),
             delivery: Arc::new(Mutex::new(())),
@@ -111,6 +118,7 @@ impl MailService {
     }
 
     pub async fn with_send_ledger(mut self, data: &std::path::Path) -> Self {
+        self.object_root = Some(data.join("mail-objects"));
         let path = data.join("agent-send-safety.sqlite");
         let required = sqlx::query_scalar::<_, bool>(
             "SELECT ledger_required FROM mail_agent_policy WHERE id=1",
@@ -177,6 +185,16 @@ impl MailService {
                     agent_actor(),
                 )
                 .await
+            }
+            AgentCommand::ListAssets { token } => self.list_agent_assets(&token.0).await,
+            AgentCommand::AttachDraftAssets {
+                token,
+                id,
+                revision,
+                asset_ids,
+            } => {
+                self.attach_agent_assets(&token.0, &id, revision, &asset_ids)
+                    .await
             }
             AgentCommand::CheckOutreach { recipient } => self.outreach_check(&recipient).await,
             AgentCommand::ListAccounts => self.accounts(false).await,
@@ -270,6 +288,24 @@ impl MailService {
 
     async fn desktop_call(&self, command: Command) -> Result<Reply> {
         match command {
+            Command::ImportAssets { paths } => self.import_assets(paths).await,
+            Command::ListAssets => self.list_assets(false).await,
+            Command::SaveDraftWithAssets {
+                id,
+                input,
+                asset_ids,
+            } => {
+                self.save_with_assets(id, input, Source::Manual, Some(asset_ids))
+                    .await
+            }
+            Command::SetAssetAccess { id, allowed } => {
+                if allowed {
+                    self.start_policy_change(policy::Change::AllowAsset { id })
+                        .await
+                } else {
+                    self.disable_asset_access(id).await
+                }
+            }
             Command::AgentMailSettings => self.policy_settings().await,
             Command::SetAgentMailPolicy { policy } => {
                 self.start_policy_change(policy::Change::Policy(policy))
@@ -455,10 +491,19 @@ impl MailService {
              EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.message_role='correspondence' AND i.match_state IN ('thread','manual')) has_reply
              FROM mail_drafts_review d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
         ).bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_not_found"))?;
-        let attachments = attachments(&row)?
+        let mut attachments = attachments(&row)?
             .iter()
             .map(attachment_info)
             .collect::<Result<Vec<_>>>()?;
+        let ids = attachments::ids(&row)?;
+        let mut db = self.pool.acquire().await?;
+        attachments.extend(
+            attachments::select(&mut db, &ids, false)
+                .await?
+                .iter()
+                .map(asset_info),
+        );
+        drop(db);
         let approval_attempt = sqlx::query("SELECT id,revision,state,outcome FROM email_approval_attempts WHERE draft_id=? ORDER BY rowid DESC LIMIT 1")
             .bind(id).map(|r: SqliteRow| mail::ApprovalAttempt { id:r.get("id"), revision:r.get("revision"), state:r.get("state"), outcome:r.get("outcome") })
             .fetch_optional(&self.pool).await?;
@@ -485,11 +530,16 @@ impl MailService {
         })
     }
 
-    async fn save(
+    async fn save(&self, id: Option<String>, input: DraftInput, source: Source) -> Result<Reply> {
+        self.save_with_assets(id, input, source, None).await
+    }
+
+    async fn save_with_assets(
         &self,
         id: Option<String>,
         mut input: DraftInput,
         source: Source,
+        asset_ids: Option<Vec<String>>,
     ) -> Result<Reply> {
         input.recipient = email_address(&input.recipient)?;
         check_text(&input.subject, 360)?;
@@ -509,16 +559,28 @@ impl MailService {
         if !exists {
             return Err(Failure::Code("mail_not_found"));
         }
+        let replace =
+            asset_ids.is_some() || input.replace_attachments || !input.attachments.is_empty();
+        let ids = asset_ids.unwrap_or_default();
+        if !ids.is_empty() && !input.attachments.is_empty() {
+            return Err(Failure::Code("invalid_attachments"));
+        }
+        let assets = attachments::select(&mut tx, &ids, false).await?;
+        for asset in &assets {
+            attachments::read_asset(self.objects()?, asset).await?;
+        }
         let encoded = json!(input.attachments).to_string();
+        let encoded_ids = json!(ids).to_string();
         let affected = if updating {
             sqlx::query("UPDATE email_drafts SET contact_id=?,account_id=?,recipient=?,subject=?,body_text=?,attachments_json=CASE WHEN ? THEN ? ELSE attachments_json END,
+                asset_ids_json=CASE WHEN ? THEN ? ELSE asset_ids_json END,
                 revision=revision+1,state='draft',updated_at=unixepoch() WHERE id=? AND state IN ('draft','pending_approval','approved')")
                 .bind(input.contact_id).bind(input.account_id).bind(input.recipient).bind(input.subject.trim()).bind(input.body)
-                .bind(input.replace_attachments || !input.attachments.is_empty()).bind(encoded).bind(&id).execute(&mut *tx).await?.rows_affected()
+                .bind(replace).bind(encoded).bind(replace).bind(encoded_ids).bind(&id).execute(&mut *tx).await?.rows_affected()
         } else {
-            sqlx::query("INSERT INTO email_drafts(id,contact_id,account_id,recipient,subject,body_text,attachments_json,source) VALUES (?,?,?,?,?,?,?,?)")
+            sqlx::query("INSERT INTO email_drafts(id,contact_id,account_id,recipient,subject,body_text,attachments_json,source,asset_ids_json) VALUES (?,?,?,?,?,?,?,?,?)")
                 .bind(&id).bind(input.contact_id).bind(input.account_id).bind(input.recipient).bind(input.subject.trim()).bind(input.body)
-                .bind(encoded).bind(source.as_str()).execute(&mut *tx).await?.rows_affected()
+                .bind(encoded).bind(source.as_str()).bind(encoded_ids).execute(&mut *tx).await?.rows_affected()
         };
         if affected != 1 {
             return Err(Failure::Code("mail_read_only"));
@@ -668,10 +730,20 @@ fn attachment_bytes(attachment: &mail::Attachment) -> Result<Vec<u8>> {
 fn attachment_info(attachment: &mail::Attachment) -> Result<mail::AttachmentInfo> {
     let bytes = attachment_bytes(attachment)?;
     Ok(mail::AttachmentInfo {
+        asset_id: None,
         filename: attachment.filename.clone(),
         size: bytes.len(),
         sha256: format!("{:x}", Sha256::digest(bytes)),
     })
+}
+
+fn asset_info(asset: &mail::Asset) -> mail::AttachmentInfo {
+    mail::AttachmentInfo {
+        asset_id: Some(asset.id.clone()),
+        filename: asset.filename.clone(),
+        size: asset.size as usize,
+        sha256: asset.sha256.clone(),
+    }
 }
 
 fn validate_attachments(attachments: &[mail::Attachment]) -> Result<()> {
@@ -694,7 +766,7 @@ fn validate_attachments(attachments: &[mail::Attachment]) -> Result<()> {
 
 async fn snapshot(db: &mut SqliteConnection, id: &str) -> Result<(Snapshot, i64, String)> {
     let row = sqlx::query("SELECT d.*,a.email_address FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?")
-        .bind(id).fetch_optional(db).await?.ok_or(Failure::Code("mail_not_found"))?;
+        .bind(id).fetch_optional(&mut *db).await?.ok_or(Failure::Code("mail_not_found"))?;
     Ok((
         Snapshot {
             contact_id: row.get("contact_id"),
@@ -704,6 +776,7 @@ async fn snapshot(db: &mut SqliteConnection, id: &str) -> Result<(Snapshot, i64,
             subject: row.get("subject"),
             body: row.get("body_text"),
             attachments: attachments(&row)?,
+            assets: attachments::select(db, &attachments::ids(&row)?, false).await?,
         },
         row.get("revision"),
         row.get("state"),

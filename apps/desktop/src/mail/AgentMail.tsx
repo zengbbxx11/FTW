@@ -1,14 +1,14 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Field } from '../crm/components'
-import { mailCall, mailError, type Account, type AgentMailPolicy, type MailCommand } from './api'
+import { chooseMailAssets, mailCall, mailError, type Account, type AgentMailPolicy, type MailCommand } from './api'
 
 const purposes = {
   first_outreach: '首次开发信', outreach_followup: '开发跟进',
   quote_communication: '报价沟通', sample_communication: '样品沟通', other_business: '其他业务邮件',
 }
 
-type ReviewCommand = Extract<MailCommand, { action: 'set_agent_mail_policy' | 'register_mail_agent' | 'revoke_mail_agent' }>
+type ReviewCommand = Extract<MailCommand, { action: 'set_agent_mail_policy' | 'register_mail_agent' | 'revoke_mail_agent' | 'set_asset_access' }>
 
 export function AgentMail() {
   const [name, setName] = useState('')
@@ -25,17 +25,25 @@ export function AgentMail() {
     },
   })
   const accounts = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
+  const assets = useQuery({ queryKey: ['mail-assets'], queryFn: () => mailCall({ action: 'list_assets' }, 'assets') })
+  const importFiles = useMutation({
+    mutationFn: chooseMailAssets,
+    onSuccess: () => cache.invalidateQueries({ queryKey: ['mail-assets'] }),
+  })
   const change = useMutation({
     mutationFn: (command: ReviewCommand) => mailCall(command, 'saved'),
     onSuccess: async (result, command) => {
       setReceipt(result.id)
       setIssued(command.action === 'register_mail_agent' ? command.token : '')
       setCopied(false)
-      await cache.invalidateQueries({ queryKey: ['agent-mail-settings'] })
+      await Promise.all([cache.invalidateQueries({ queryKey: ['agent-mail-settings'] }), cache.invalidateQueries({ queryKey: ['mail-assets'] })])
     },
   })
   const current = settings.data
   const review = current?.review
+  useEffect(() => {
+    if (review?.state === 'saved') void cache.invalidateQueries({ queryKey: ['mail-assets'] })
+  }, [cache, review?.id, review?.state])
   const busy = change.isPending || review?.state === 'waiting'
   function register(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -72,6 +80,17 @@ export function AgentMail() {
         }}>{copied ? '已复制' : '复制令牌'}</button>
         <button className="button" onClick={() => setIssued('')}>关闭</button></div>
       </div>}
+    </section>
+    <section className="panel">
+      <div className="section-heading"><h2>Agent 可用附件</h2><button className="button" disabled={importFiles.isPending}
+        onClick={() => importFiles.mutate()}>导入 PDF 或图片</button></div>
+      {(assets.isError || importFiles.isError) && <p className="alert error" role="alert">{mailError(assets.error ?? importFiles.error)}</p>}
+      {assets.data?.rows.length ? <ul className="record-list">{assets.data.rows.map(asset => <li key={asset.id}>
+        <strong>{asset.filename}</strong><span>{Math.ceil(asset.size / 1024)} KiB</span>
+        <button className="button" disabled={busy} onClick={() => change.mutate({ action: 'set_asset_access', id: asset.id, allowed: !asset.agent_allowed })}>
+          {asset.agent_allowed ? '撤销 Agent 使用权' : '核验并授权使用'}
+        </button>
+      </li>)}</ul> : <p className="muted">尚无本地附件。</p>}
     </section>
   </>
 }

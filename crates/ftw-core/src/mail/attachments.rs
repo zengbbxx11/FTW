@@ -1,0 +1,278 @@
+use super::{audit, check_text, new_id, Failure, MailService, Reply, Result};
+use ftw_ipc::{crm::Source, mail::Asset};
+use sha2::{Digest, Sha256};
+use sqlx::{Row, SqliteConnection};
+use std::{
+    collections::HashSet,
+    io,
+    os::windows::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+};
+
+pub const LIMIT: usize = 10 * 1024 * 1024;
+pub const INBOX_LIMIT: usize = 16 * 1024 * 1024;
+
+impl MailService {
+    pub(super) async fn import_assets(&self, paths: Vec<String>) -> Result<Reply> {
+        let root = self.objects()?;
+        if paths.is_empty() || paths.len() > 4 {
+            return Err(Failure::Code("attachment_limit"));
+        }
+        let mut imported = Vec::new();
+        let mut remaining = LIMIT;
+        for path in paths {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err(Failure::Code("invalid_attachments"));
+            }
+            let filename = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or(Failure::Code("invalid_attachments"))?;
+            check_text(filename, 180)?;
+            let data = read_bounded(&path, remaining).await.map_err(file_error)?;
+            let content_type = mime_for(filename, &data).ok_or(Failure::Code("attachment_type"))?;
+            remaining -= data.len();
+            let sha = store(root, &data).await.map_err(file_error)?;
+            imported.push((filename.to_owned(), data.len() as i64, content_type, sha));
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut rows = Vec::new();
+        for (filename, size, content_type, sha) in imported {
+            let row = sqlx::query(
+                "INSERT INTO mail_assets(id,filename,sha256,size,content_type) VALUES (?,?,?,?,?)
+                ON CONFLICT(sha256,filename) DO UPDATE SET filename=excluded.filename RETURNING *",
+            )
+            .bind(new_id())
+            .bind(filename)
+            .bind(sha)
+            .bind(size)
+            .bind(content_type)
+            .map(asset)
+            .fetch_one(&mut *tx)
+            .await?;
+            audit(&mut tx, Source::Manual, "mail_asset", &row.id, "import").await?;
+            rows.push(row);
+        }
+        tx.commit().await?;
+        Ok(Reply::Assets { rows })
+    }
+
+    pub(super) async fn list_assets(&self, agent: bool) -> Result<Reply> {
+        let rows = sqlx::query(
+            "SELECT * FROM mail_assets WHERE NOT ? OR agent_allowed ORDER BY filename,id LIMIT 100",
+        )
+        .bind(agent)
+        .map(asset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(Reply::Assets { rows })
+    }
+
+    pub(super) async fn list_agent_assets(&self, token: &str) -> Result<Reply> {
+        let mut db = self.pool.acquire().await?;
+        super::policy::registered(&mut db, super::policy::digest(token)?).await?;
+        drop(db);
+        self.list_assets(true).await
+    }
+
+    pub(super) async fn attach_agent_assets(
+        &self,
+        token: &str,
+        id: &str,
+        revision: i64,
+        ids: &[String],
+    ) -> Result<Reply> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        super::policy::registered(&mut tx, super::policy::digest(token)?).await?;
+        let assets = select(&mut tx, ids, true).await?;
+        for asset in &assets {
+            read_asset(self.objects()?, asset).await?;
+        }
+        let changed = sqlx::query("UPDATE email_drafts SET asset_ids_json=?,attachments_json='[]',revision=revision+1,
+                updated_at=unixepoch() WHERE id=? AND source='agent' AND revision=? AND state='draft'")
+            .bind(serde_json::json!(ids).to_string()).bind(id).bind(revision).execute(&mut *tx).await?;
+        if changed.rows_affected() != 1 {
+            return Err(Failure::Code("approval_snapshot_changed"));
+        }
+        audit(&mut tx, Source::Agent, "email_draft", id, "attach_assets").await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id: id.to_owned() })
+    }
+
+    pub(super) async fn disable_asset_access(&self, id: String) -> Result<Reply> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE mail_assets SET agent_allowed=0 WHERE id=?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        audit(
+            &mut tx,
+            Source::Manual,
+            "mail_asset",
+            &id,
+            "revoke_agent_access",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
+    pub(super) fn objects(&self) -> Result<&Path> {
+        self.object_root
+            .as_deref()
+            .ok_or(Failure::Code("attachment_storage_unavailable"))
+    }
+}
+
+pub(super) async fn select(
+    db: &mut SqliteConnection,
+    ids: &[String],
+    agent: bool,
+) -> Result<Vec<Asset>> {
+    let mut bytes = 0;
+    let mut rows = Vec::new();
+    let mut seen = HashSet::new();
+    if ids.len() > 4 {
+        return Err(Failure::Code("attachment_limit"));
+    }
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(Failure::Code("invalid_attachments"));
+        }
+        let row = sqlx::query("SELECT * FROM mail_assets WHERE id=? AND (NOT ? OR agent_allowed)")
+            .bind(id)
+            .bind(agent)
+            .map(asset)
+            .fetch_optional(&mut *db)
+            .await?
+            .ok_or(Failure::Code("attachment_not_available"))?;
+        bytes += row.size;
+        if bytes > LIMIT as i64 {
+            return Err(Failure::Code("attachment_limit"));
+        }
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+pub(super) fn ids(row: &sqlx::sqlite::SqliteRow) -> Result<Vec<String>> {
+    serde_json::from_str(row.get("asset_ids_json"))
+        .map_err(|_| Failure::Code("invalid_attachments"))
+}
+
+pub(super) async fn read_asset(root: &Path, asset: &Asset) -> Result<Vec<u8>> {
+    read_object(root, &asset.sha256, asset.size as usize)
+        .await
+        .map_err(file_error)
+}
+
+pub fn hash(data: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(data))
+}
+
+pub async fn store(root: &Path, data: &[u8]) -> io::Result<String> {
+    let sha = hash(data);
+    fs::create_dir_all(root).await?;
+    let target = object_path(root, &sha).await?;
+    if fs::try_exists(&target).await? {
+        read_object(root, &sha, data.len()).await?;
+        return Ok(sha);
+    }
+    let pending = root.join(format!(".{}.partial", new_id()));
+    let result = async {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pending)
+            .await?;
+        file.write_all(data).await?;
+        file.sync_all().await?;
+        drop(file);
+        fs::rename(&pending, &target).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = fs::remove_file(&pending).await;
+    }
+    result?;
+    Ok(sha)
+}
+
+pub async fn read_object(root: &Path, sha: &str, size: usize) -> io::Result<Vec<u8>> {
+    let path = object_path(root, sha).await?;
+    let data = read_bounded(&path, size.min(INBOX_LIMIT)).await?;
+    if data.len() != size || hash(&data) != sha {
+        return Err(io::Error::other("mail object checksum mismatch"));
+    }
+    Ok(data)
+}
+
+async fn object_path(root: &Path, sha: &str) -> io::Result<PathBuf> {
+    if sha.len() != 64
+        || !sha.bytes().all(|c| c.is_ascii_hexdigit())
+        || reparse(&fs::symlink_metadata(root).await?)
+    {
+        return Err(io::Error::other("invalid mail object path"));
+    }
+    Ok(root.join(sha))
+}
+
+async fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).await?;
+    if !metadata.is_file() || reparse(&metadata) {
+        return Err(io::Error::other("not a regular file"));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(io::ErrorKind::FileTooLarge.into());
+    }
+    let mut data = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(path)
+        .await?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut data)
+        .await?;
+    if data.len() > limit {
+        return Err(io::ErrorKind::FileTooLarge.into());
+    }
+    Ok(data)
+}
+
+fn reparse(meta: &std::fs::Metadata) -> bool {
+    meta.file_attributes() & 0x400 != 0
+}
+
+pub(super) fn file_error(error: io::Error) -> Failure {
+    Failure::Code(if error.kind() == io::ErrorKind::FileTooLarge {
+        "attachment_limit"
+    } else {
+        "attachment_storage_unavailable"
+    })
+}
+
+fn asset(row: sqlx::sqlite::SqliteRow) -> Asset {
+    Asset {
+        id: row.get("id"),
+        filename: row.get("filename"),
+        sha256: row.get("sha256"),
+        size: row.get("size"),
+        content_type: row.get("content_type"),
+        agent_allowed: row.get("agent_allowed"),
+    }
+}
+
+fn mime_for(name: &str, data: &[u8]) -> Option<&'static str> {
+    match name.rsplit_once('.')?.1.to_ascii_lowercase().as_str() {
+        "pdf" if data.starts_with(b"%PDF-") => Some("application/pdf"),
+        "png" if data.starts_with(b"\x89PNG\r\n\x1a\n") => Some("image/png"),
+        "jpg" | "jpeg" if data.starts_with(b"\xff\xd8\xff") => Some("image/jpeg"),
+        "webp" if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") => {
+            Some("image/webp")
+        }
+        _ => None,
+    }
+}

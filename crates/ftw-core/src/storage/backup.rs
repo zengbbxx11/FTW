@@ -1,5 +1,5 @@
 use super::{schema_version, MIGRATOR};
-use crate::CoreError;
+use crate::{mail::attachments, CoreError};
 use ftw_ipc::{data::Backup, display_path};
 use libsqlite3_sys::{
     sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_step, SQLITE_DONE, SQLITE_OK,
@@ -39,7 +39,27 @@ pub async fn create(pool: &SqlitePool, root: &Path, reason: &str) -> Result<Path
     let name = format!("workbench-{reason}-{}", Uuid::new_v4());
     let partial = directory.join(format!("{name}.partial"));
     let mut source = pool.acquire().await?;
-    if let Err(error) = copy_to(&mut source, &partial).await {
+    let written = copy_to(&mut source, &partial).await;
+    drop(source);
+    let result = async {
+        written?;
+        let mut snapshot = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&partial)
+                .read_only(true),
+        )
+        .await?;
+        copy_objects(
+            &mut snapshot,
+            &root.join("data/mail-objects"),
+            &directory.join("mail-objects"),
+        )
+        .await?;
+        snapshot.close().await?;
+        Ok::<_, CoreError>(())
+    }
+    .await;
+    if let Err(error) = result {
         let _ = fs::remove_file(&partial);
         return Err(error);
     }
@@ -102,6 +122,7 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
     let stage = directory.join(format!("restore-{}.partial", Uuid::new_v4()));
     let result = async {
         validate(&mut original).await?;
+        copy_objects(&mut original, &directory.join("mail-objects"), &root.join("data/mail-objects")).await?;
         copy_to(&mut original, &stage).await?;
         let mut staging = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&stage)).await?;
         let prepared = async {
@@ -116,7 +137,9 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
                 UPDATE email_approval_attempts SET state='interrupted',outcome='approval_interrupted',finished_at=unixepoch() WHERE state='waiting';
                 UPDATE mail_agent_policy SET mode='manual',revision=revision+1 WHERE mode='automatic';
                 UPDATE mail_agent_clients SET revoked=1 WHERE NOT revoked;
+                UPDATE mail_assets SET agent_allowed=0 WHERE agent_allowed;
                 UPDATE mail_agent_reviews SET state='failed',outcome='approval_interrupted' WHERE state='waiting';
+                UPDATE inbox_messages SET download_outcome='approval_interrupted' WHERE download_outcome='running';
                 UPDATE imap_sync_state SET outcome='interrupted' WHERE outcome='running';")
                 .execute(&mut staging).await?;
             sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation)
@@ -133,6 +156,36 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
     let _ = original.close().await;
     let _ = fs::remove_file(&stage);
     result
+}
+
+async fn copy_objects(
+    db: &mut SqliteConnection,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), CoreError> {
+    let available: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='mail_assets' AND type='table')",
+    )
+    .fetch_one(&mut *db)
+    .await?;
+    if !available {
+        return Ok(());
+    }
+    let objects: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT sha256,size FROM mail_assets
+        UNION SELECT full_sha256,full_size FROM inbox_messages WHERE full_sha256 IS NOT NULL",
+    )
+    .fetch_all(db)
+    .await?;
+    for (sha, size) in objects {
+        let bytes = attachments::read_object(source, &sha, size as usize)
+            .await
+            .map_err(backup_error)?;
+        attachments::store(destination, &bytes)
+            .await
+            .map_err(backup_error)?;
+    }
+    Ok(())
 }
 
 fn valid_name(name: &str) -> bool {

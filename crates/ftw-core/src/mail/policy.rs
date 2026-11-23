@@ -19,6 +19,7 @@ pub(super) enum Change {
     Register { name: String, digest: Vec<u8> },
     Revoke { id: String },
     Unblock { target: String },
+    AllowAsset { id: String },
 }
 
 impl MailService {
@@ -95,6 +96,15 @@ impl MailService {
                 .ok_or(Failure::Code("mail_not_found"))?;
                 format!("撤销 Agent「{name}」的邮件自动发送身份。")
             }
+            Change::AllowAsset { id } => {
+                let filename: String =
+                    sqlx::query_scalar("SELECT filename FROM mail_assets WHERE id=?")
+                        .bind(id)
+                        .fetch_optional(&mut *db)
+                        .await?
+                        .ok_or(Failure::Code("attachment_not_available"))?;
+                format!("允许已登记的 FTW Agent 使用附件「{filename}」。发信仍按当前策略检查。")
+            }
             Change::Unblock { target } => format!("将「{target}」移出邮件拒发名单。"),
         };
         let id = new_id();
@@ -160,6 +170,13 @@ impl MailService {
                     .execute(&mut *tx)
                     .await?;
                 (id, "revoke_agent")
+            }
+            Change::AllowAsset { id } => {
+                sqlx::query("UPDATE mail_assets SET agent_allowed=1 WHERE id=?")
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await?;
+                (id, "allow_agent_attachment")
             }
             Change::Unblock { target } => {
                 sqlx::query("DELETE FROM suppression_list WHERE normalized=?")
@@ -237,4 +254,12 @@ fn decode(data: &str) -> Result<Vec<String>> {
 
 fn encode(data: &[String]) -> Result<String> {
     serde_json::to_string(data).map_err(|_| Failure::Code("agent_policy_invalid"))
+}
+
+pub(super) async fn registered(db: &mut SqliteConnection, digest: Vec<u8>) -> Result<String> {
+    sqlx::query_scalar("SELECT id FROM mail_agent_clients WHERE token_digest=? AND NOT revoked")
+        .bind(digest)
+        .fetch_optional(db)
+        .await?
+        .ok_or(Failure::Code("mail_agent_unregistered"))
 }

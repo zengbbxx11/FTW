@@ -1,6 +1,6 @@
 use super::{
-    attachment_info, audit, check_recipient, check_suppression, new_id, snapshot, Failure,
-    MailService, Reply, Result, Snapshot,
+    asset_info, attachment_info, audit, check_recipient, check_suppression, new_id, snapshot,
+    Failure, MailService, Reply, Result, Snapshot,
 };
 use ftw_ipc::crm::Source;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -148,11 +148,12 @@ impl MailService {
 }
 
 fn prompt_text(draft: &Snapshot, revision: i64) -> Result<String> {
-    let files = draft
+    let mut files = draft
         .attachments
         .iter()
         .map(attachment_info)
         .collect::<Result<Vec<_>>>()?;
+    files.extend(draft.assets.iter().map(asset_info));
     let names = files
         .iter()
         .map(|file| format!("{} ({} 字节)", file.filename, file.size))
@@ -631,12 +632,13 @@ mod tests {
             recipient: "receiver@example.test".into(),
             subject: "Attachment review".into(),
             body: "Review body".into(),
+            assets: vec![],
             attachments: vec![ftw_ipc::mail::Attachment {
                 filename: "example.txt".into(),
                 content_base64: "Ym9keQ==".into(),
             }],
         };
-        let rendered = smtp::message(&snapshot, "<test@ftw.local>".into()).unwrap();
+        let rendered = smtp::message(&snapshot, "<test@ftw.local>".into(), Vec::new()).unwrap();
         let mime = String::from_utf8(rendered.formatted()).unwrap();
         assert!(
             mime.contains("example.txt")

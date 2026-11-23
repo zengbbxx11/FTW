@@ -11,10 +11,11 @@ type Account = {
 }
 type Row = {
   id: string; account_id: string; contact_id: string | null; contact_name: string | null
-  thread_id: string; sender: string; subject: string; received_at: number; kind: string; received: boolean; message_role: string; match_state: string; body_complete: boolean
+  thread_id: string; sender: string; subject: string; received_at: number; kind: string; received: boolean; message_role: string; match_state: string; body_complete: boolean; download_outcome: string | null
 }
 type Message = Row & { body: string; attachments: string[] }
 type Reply =
+  | { kind: 'body'; text: string; next_offset: number | null }
   | { kind: 'accounts'; rows: Account[] }
   | { kind: 'rows'; rows: Row[]; has_more: boolean }
   | { kind: 'message'; record: Message }
@@ -30,6 +31,8 @@ type Command =
   | { action: 'list'; account_id: string | null; contact_id: string | null; unmatched: boolean; offset: number }
   | { action: 'get'; id: string }
   | { action: 'thread'; id: string; offset: number }
+  | { action: 'download_full'; id: string }
+  | { action: 'read_body'; id: string; offset: number }
   | { action: 'link'; id: string; contact_id: string }
 
 async function call<K extends Reply['kind']>(command: Command, expected: K): Promise<Extract<Reply, { kind: K }>> {
@@ -202,8 +205,56 @@ export function MailThread({ id, threadId, close, openContact }: {
       {message.message_role === 'automatic' && <p className="muted">自动来信</p>}
       {message.match_state === 'contact' && <p className="muted">已找到同邮箱联系人，所属会话待确认。</p>}
       <p className="mail-body">{message.body || '此邮件没有可显示的纯文本内容。'}</p>
-      {message.attachments.length > 0 && <small>附件 {message.attachments.join('、')}</small>}
+      {message.received && <InboxContents message={message} />}
     </article>)}
     {thread.data && <Pagination offset={offset} more={thread.data.has_more} change={setOffset} pageSize={10} />}
   </section>
+}
+
+function InboxContents({ message }: { message: Message }) {
+  const cache = useQueryClient()
+  const [offset, setOffset] = useState(0)
+  const [expanded, setExpanded] = useState(false)
+  const [saved, setSaved] = useState('')
+  const body = useQuery({
+    queryKey: ['inbox-body',message.id,offset], enabled: expanded,
+    queryFn: () => call({ action: 'read_body', id: message.id, offset }, 'body'),
+  })
+  const download = useMutation({
+    mutationFn: () => call({ action: 'download_full', id: message.id }, 'saved'),
+    onSuccess: () => cache.invalidateQueries({ queryKey: ['inbox-thread'] }),
+  })
+  const save = useMutation({
+    mutationFn: ({filename,index}:{filename:string;index:number}) =>
+      invoke<boolean>('save_inbox_attachment',{ id: message.id, filename, index }),
+    onSuccess: (written,part) => { if (written) setSaved(part.filename) },
+  })
+  const pending = message.download_outcome === 'running'
+  return <>
+    {download.isError && <ErrorBox error={download.error} />}
+    {!message.body_complete && <>
+      {message.download_outcome && !['running','ok'].includes(message.download_outcome)
+        && <ErrorBox error={message.download_outcome} />}
+      <button className="button" disabled={download.isPending || pending} onClick={() => download.mutate()}>
+        {pending ? '正在下载完整邮件…' : '下载完整邮件（最大 16 MiB）'}
+      </button></>}
+    {message.body_complete && <>
+      <button className="button" onClick={() => { setExpanded(value => !value); setOffset(0) }}>{expanded ? '关闭完整正文' : '读取完整正文'}</button>
+      {expanded && <>
+        {body.isError && <ErrorBox error={body.error} />}
+        {body.isPending && <p className="muted">正在读取正文…</p>}
+        {body.data && <>
+          <p className="mail-body">{body.data.text || '没有纯文本正文。'}</p>
+          <div className="row-actions">{offset > 0 && <button className="button" onClick={() => setOffset(0)}>回到开头</button>}
+            {body.data.next_offset !== null && <button className="button" onClick={() => setOffset(body.data.next_offset!)}>继续读取</button>}
+          </div>
+        </>}
+      </>}
+      {message.attachments.length > 0 && <ul className="record-list">{message.attachments.map((filename,index) => <li key={index}>
+        <span>{filename}</span><button className="button" disabled={save.isPending} onClick={() => save.mutate({filename,index})}>另存为</button>
+      </li>)}</ul>}
+      {saved && <p className="muted" role="status">已保存 {saved}</p>}
+      {save.isError && <ErrorBox error={save.error} />}
+    </>}
+  </>
 }

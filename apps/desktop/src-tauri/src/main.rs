@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod file_picker;
+use ftw_ipc::mail;
+
 use ftw_ipc::{
     crm, Health, Operation, PipeEndpoint, PipeOpenError, Profile, Response, CORE_ALREADY_RUNNING,
 };
@@ -69,6 +72,42 @@ async fn crm_request(
 }
 
 #[tauri::command]
+async fn choose_mail_assets(
+    window: tauri::WebviewWindow,
+    access: tauri::State<'_, CoreAccess>,
+) -> Result<Vec<mail::Asset>, Issue> {
+    let handle = window
+        .hwnd()
+        .map_err(|error| Issue::new("attachment_picker_failed", error))?
+        .0 as isize;
+    let paths = tokio::task::spawn_blocking(move || file_picker::choose(handle))
+        .await
+        .map_err(|error| Issue::new("attachment_picker_failed", error))?
+        .map_err(|error| Issue::new("attachment_picker_failed", error))?;
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    match call_core(
+        &access,
+        &Operation::Mail(Box::new(mail::Command::ImportAssets { paths })),
+    )
+    .await?
+    {
+        Response::Mail { data } => match *data {
+            mail::Result::Assets { rows } => Ok(rows),
+            _ => Err(Issue::new(
+                "invalid_response",
+                "Unexpected attachment response",
+            )),
+        },
+        _ => Err(Issue::new(
+            "invalid_response",
+            "Unexpected attachment response",
+        )),
+    }
+}
+
+#[tauri::command]
 async fn mail_request(
     access: State<'_, CoreAccess>,
     command: ftw_ipc::mail::Command,
@@ -76,6 +115,50 @@ async fn mail_request(
     match call_core(&access, &Operation::Mail(Box::new(command))).await? {
         Response::Mail { data } => Ok(data),
         _ => Err(Issue::new("core_protocol", "Unexpected mail response")),
+    }
+}
+
+#[tauri::command]
+async fn save_inbox_attachment(
+    window: tauri::WebviewWindow,
+    access: State<'_, CoreAccess>,
+    id: String,
+    index: u16,
+    filename: String,
+) -> Result<bool, Issue> {
+    let handle = window
+        .hwnd()
+        .map_err(|error| Issue::new("attachment_picker_failed", error))?
+        .0 as isize;
+    let filename = filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("attachment")
+        .replace([':', '*', '?', '"', '<', '>', '|', '\r', '\n'], "_");
+    let destination = tokio::task::spawn_blocking(move || file_picker::save(handle, &filename))
+        .await
+        .map_err(|error| Issue::new("attachment_picker_failed", error))?
+        .map_err(|error| Issue::new("attachment_picker_failed", error))?;
+    let Some(destination) = destination else {
+        return Ok(false);
+    };
+    match call_core(
+        &access,
+        &Operation::Inbox(Box::new(ftw_ipc::inbox::Command::SaveAttachment {
+            id,
+            index,
+            destination,
+        })),
+    )
+    .await?
+    {
+        Response::Inbox { data } if matches!(*data, ftw_ipc::inbox::Result::Saved { .. }) => {
+            Ok(true)
+        }
+        _ => Err(Issue::new(
+            "invalid_response",
+            "Unexpected attachment response",
+        )),
     }
 }
 
@@ -228,7 +311,9 @@ fn main() -> ExitCode {
             core_changes,
             crm_request,
             mail_request,
+            choose_mail_assets,
             inbox_request,
+            save_inbox_attachment,
             data_request
         ])
         .setup(|app| {

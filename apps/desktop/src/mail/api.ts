@@ -1,6 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
 
 export type Account = { id: string; name: string; email: string; host?: string; port?: number; security?: 'tls' | 'starttls'; daily_limit?: number; signature?: string }
+export type Asset = { id: string; filename: string; sha256: string; size: number; content_type: string; agent_allowed: boolean }
+export function chooseMailAssets() { return invoke<Asset[]>('choose_mail_assets') }
+
 export type Attachment = { filename: string; content_base64: string }
 export type DraftInput = {
   contact_id: string; account_id: string; recipient: string; subject: string; body: string
@@ -18,7 +21,7 @@ export type DraftRow = {
   purpose: string; job_id: string | null; task_id: string | null; agent_name: string | null
 }
 export type Draft = DraftRow & {
-  sender: string; body: string; attachments: { filename: string; size: number; sha256: string }[]
+  sender: string; body: string; attachments: { asset_id: string | null; filename: string; size: number; sha256: string }[]
   approval_attempt: { id: string; revision: number; state: 'waiting' | 'approved' | 'cancelled' | 'failed' | 'interrupted'; outcome: string | null } | null
   expires_at: number | null; outcome: string | null; thread_id: string | null; has_reply: boolean
 }
@@ -36,7 +39,9 @@ export type AgentMailSettings = {
 }
 
 export type MailCommand =
-  | { action: 'agent_mail_settings' }
+  | { action: 'agent_mail_settings' | 'list_assets' }
+  | { action: 'set_asset_access'; id: string; allowed: boolean }
+  | { action: 'save_draft_with_assets'; id: string | null; input: DraftInput; asset_ids: string[] }
   | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy }
   | { action: 'register_mail_agent'; name: string; token: string }
   | { action: 'revoke_mail_agent'; id: string }
@@ -51,6 +56,7 @@ export type MailCommand =
 
 type MailResult =
   | AgentMailSettings
+  | { kind: 'assets'; rows: Asset[] }
   | { kind: 'accounts'; rows: Account[] }
   | { kind: 'drafts'; rows: DraftRow[]; has_more: boolean }
   | { kind: 'draft'; record: Draft }
@@ -87,6 +93,11 @@ const mailErrorLabels: Record<string, string> = {
   imap_connection_failed: '无法连接 IMAP 服务器。',
   imap_tls_failed: 'IMAP TLS 握手或证书校验失败。',
   imap_login_failed: 'IMAP 登录失败，请核对登录名和授权码。',
+  attachment_destination_unavailable: '无法保存附件。请选择一个新的本地文件名。',
+  imap_download_limit: '完整邮件超过 16 MiB，已保留邮件头。',
+  imap_download_incomplete: '邮件服务器返回的正文不完整，请稍后重新下载。',
+  imap_body_not_loaded: '请先下载完整邮件。',
+  imap_uid_changed: '服务器的邮件位置已变化，请先重新同步收件箱。',
   imap_timeout: 'IMAP 请求超时，可重新同步。',
   imap_inbox_unavailable: '无法打开服务器上的 INBOX。',
   invalid_request: '当前 Core 版本过旧，请结束旧版 Core 并打开新版 FTW。',
@@ -112,7 +123,11 @@ const mailErrorLabels: Record<string, string> = {
   recipient_not_on_contact: '收件邮箱须属于未归档客户的联系渠道。',
   recipient_suppressed: '收件邮箱或域名在拒发名单中。',
   invalid_attachments: '附件名称或内容无效。',
-  attachment_limit: '最多选择 4 个附件，总大小上限 384 KiB。',
+  attachment_limit: '最多选择 4 个 PDF 或图片附件，合计上限 10 MiB。',
+  attachment_type: '仅支持内容与扩展名一致的 PDF、JPEG、PNG 或 WebP。',
+  attachment_storage_unavailable: '本地附件无法读取，或文件与已保存的校验值不一致。',
+  attachment_not_available: '附件不存在，或尚未授权给 Agent。',
+  attachment_picker_failed: '无法打开 Windows 文件选择窗口。',
   smtp_rejected: 'SMTP 服务器明确拒绝了提交。',
   smtp_result_unknown: 'SMTP 提交结果未知，需要先核对邮箱记录。',
   interrupted_during_submission: '发送过程被中断，结果未知。',

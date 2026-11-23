@@ -25,6 +25,22 @@ struct DraftId {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct InboxBodyInput {
+    message_id: String,
+    #[serde(default)]
+    offset: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DraftAssets {
+    draft_id: String,
+    revision: i64,
+    asset_ids: Vec<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct OutreachCheck {
     recipient: String,
 }
@@ -228,6 +244,61 @@ struct Ftw {
 
 #[tool_router(router = tool_router)]
 impl Ftw {
+    #[tool(
+        description = "Fetch a bounded full email on request using its current mailbox UID. Poll the thread for body_complete before reading."
+    )]
+    async fn fetch_inbox_message(
+        &self,
+        Parameters(input): Parameters<InboxBodyInput>,
+    ) -> Result<String, String> {
+        self.call_operation(Operation::AgentInbox(Box::new(
+            InboxCommand::DownloadFull {
+                id: input.message_id,
+            },
+        )))
+        .await
+    }
+
+    #[tool(
+        description = "Read the plain text of a locally available received email in bounded pages."
+    )]
+    async fn read_inbox_body(
+        &self,
+        Parameters(input): Parameters<InboxBodyInput>,
+    ) -> Result<String, String> {
+        self.call_operation(Operation::AgentInbox(Box::new(InboxCommand::ReadBody {
+            id: input.message_id,
+            offset: input.offset,
+        })))
+        .await
+    }
+
+    #[tool(
+        description = "List local files explicitly authorized by the FTW user as email attachments."
+    )]
+    async fn list_email_assets(&self) -> Result<String, String> {
+        self.call(AgentCommand::ListAssets {
+            token: self.mail_agent_token()?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set attachments on an Agent-created draft using IDs from list_email_assets and the current draft revision."
+    )]
+    async fn attach_email_assets(
+        &self,
+        Parameters(input): Parameters<DraftAssets>,
+    ) -> Result<String, String> {
+        self.call(AgentCommand::AttachDraftAssets {
+            token: self.mail_agent_token()?,
+            id: input.draft_id,
+            revision: input.revision,
+            asset_ids: input.asset_ids,
+        })
+        .await
+    }
+
     #[tool(
         description = "List saved FTW customer views available to this Agent. Layout settings reference stable field IDs."
     )]
@@ -583,9 +654,8 @@ impl Ftw {
         &self,
         Parameters(input): Parameters<AuthorizedDraft>,
     ) -> Result<String, String> {
-        let token = self.agent_token.as_ref().ok_or("mail_agent_unregistered: configure the registered FTW_AGENT_TOKEN in the MCP launch environment.")?;
         self.call(AgentCommand::SendAuthorized {
-            token: ftw_ipc::mail::Secret(token.clone()),
+            token: self.mail_agent_token()?,
             id: input.draft_id,
             revision: input.revision,
             purpose: input.purpose,
@@ -639,6 +709,16 @@ impl Ftw {
             access: Mutex::new(()),
             agent_token: env::var("FTW_AGENT_TOKEN").ok(),
         })
+    }
+
+    fn mail_agent_token(&self) -> Result<ftw_ipc::mail::Secret, String> {
+        self.agent_token
+            .clone()
+            .map(ftw_ipc::mail::Secret)
+            .ok_or_else(|| {
+                "mail_agent_unregistered: configure FTW_AGENT_TOKEN in the MCP launch environment."
+                    .into()
+            })
     }
 
     async fn call(&self, command: AgentCommand) -> Result<String, String> {

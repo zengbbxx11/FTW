@@ -62,6 +62,19 @@ pub struct PolicyReview {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     AgentMailSettings,
+    ImportAssets {
+        paths: Vec<String>,
+    },
+    ListAssets,
+    SetAssetAccess {
+        id: String,
+        allowed: bool,
+    },
+    SaveDraftWithAssets {
+        id: Option<String>,
+        input: DraftInput,
+        asset_ids: Vec<String>,
+    },
     SetAgentMailPolicy {
         policy: AgentMailPolicy,
     },
@@ -123,6 +136,15 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    ListAssets {
+        token: Secret,
+    },
+    AttachDraftAssets {
+        token: Secret,
+        id: String,
+        revision: i64,
+        asset_ids: Vec<String>,
+    },
     CheckOutreach {
         recipient: String,
     },
@@ -210,9 +232,21 @@ pub struct DraftRow {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AttachmentInfo {
+    #[serde(default)]
+    pub asset_id: Option<String>,
     pub filename: String,
     pub size: usize,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Asset {
+    pub id: String,
+    pub filename: String,
+    pub sha256: String,
+    pub size: i64,
+    pub content_type: String,
+    pub agent_allowed: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -240,6 +274,9 @@ pub struct Draft {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    Assets {
+        rows: Vec<Asset>,
+    },
     OutreachCheck {
         allowed_for_first_outreach: bool,
         outcome: Option<String>,

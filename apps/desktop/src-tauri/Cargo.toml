@@ -17,4 +17,4 @@ serde.workspace = true
 tauri = { version = "2", features = [] }
 tokio = { workspace = true, features = ["sync"] }
 
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }

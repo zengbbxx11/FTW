@@ -3,6 +3,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    DownloadFull {
+        id: String,
+    },
+    ReadBody {
+        id: String,
+        offset: u32,
+    },
+    SaveAttachment {
+        id: String,
+        index: u16,
+        destination: String,
+    },
     Accounts,
     Configure {
         account_id: String,
@@ -39,6 +51,13 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    DownloadFull {
+        id: String,
+    },
+    ReadBody {
+        id: String,
+        offset: u32,
+    },
     Sync {
         account_id: String,
     },
@@ -82,6 +101,8 @@ pub struct Row {
     pub match_state: String,
     #[serde(default)]
     pub body_complete: bool,
+    #[serde(default)]
+    pub download_outcome: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -95,6 +116,10 @@ pub struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    Body {
+        text: String,
+        next_offset: Option<u32>,
+    },
     Accounts {
         rows: Vec<Account>,
     },
