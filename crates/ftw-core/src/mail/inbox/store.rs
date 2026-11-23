@@ -19,6 +19,8 @@ struct Parsed {
     body: String,
     attachments: Vec<String>,
     kind: &'static str,
+    role: &'static str,
+    delivery: Option<Delivery>,
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -43,6 +45,8 @@ fn parse(raw: &[u8], oversized: bool) -> Parsed {
             body: String::new(),
             attachments: vec![],
             kind: "unparsed",
+            role: "unparsed",
+            delivery: None,
         };
     };
     let sender = mail
@@ -64,9 +68,38 @@ fn parse(raw: &[u8], oversized: bool) -> Parsed {
         );
     }
     let report = mail.content_type().is_some_and(|ct| {
-        ct.attribute("report-type")
-            .is_some_and(|v| v.eq_ignore_ascii_case("delivery-status"))
+        ct.ctype().eq_ignore_ascii_case("multipart")
+            && ct
+                .subtype()
+                .is_some_and(|value| value.eq_ignore_ascii_case("report"))
+            && ct
+                .attribute("report-type")
+                .is_some_and(|value| value.eq_ignore_ascii_case("delivery-status"))
     });
+    let automatic = mail
+        .headers()
+        .all("Auto-Submitted")
+        .filter_map(|header| header.value().as_text())
+        .any(|value| {
+            !value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("no")
+        });
+    let role = if report {
+        "delivery_report"
+    } else if automatic {
+        "automatic"
+    } else {
+        "correspondence"
+    };
+    let delivery = if report && !oversized {
+        delivery_report(&mail)
+    } else {
+        None
+    };
     let kind = if oversized {
         "large_message"
     } else if report {
@@ -93,7 +126,72 @@ fn parse(raw: &[u8], oversized: bool) -> Parsed {
             .map(|n| clip(n, 240))
             .collect(),
         kind,
+        role,
+        delivery,
     }
+}
+
+struct Delivery {
+    original_id: String,
+    recipient: String,
+    action: String,
+    status: String,
+}
+
+fn delivery_report(mail: &mail_parser::Message<'_>) -> Option<Delivery> {
+    let part = mail
+        .parts()
+        .find(|part| part.is_content_type("message", "delivery-status"))?;
+    let text = String::from_utf8(part.decoded().into_owned())
+        .ok()?
+        .replace("\r\n", "\n");
+    let (envelope, recipients) = text.split_once("\n\n")?;
+    let original = dsn_field(envelope, "Original-Message-ID")
+        .map(str::to_owned)
+        .or_else(|| {
+            mail.parts()
+                .find(|part| part.is_content_type("message", "rfc822") && part.is_message())
+                .and_then(|part| part.nested()?.message_id().map(str::to_owned))
+        })?;
+    let original = original
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>');
+    if original.is_empty() || original.len() > 512 {
+        return None;
+    }
+    let mut blocks = recipients
+        .split("\n\n")
+        .filter(|block| !block.trim().is_empty());
+    let recipient = blocks.next()?;
+    if blocks.next().is_some() {
+        return None;
+    }
+    let (address_type, address) = dsn_field(recipient, "Final-Recipient")?.split_once(';')?;
+    if !address_type.trim().eq_ignore_ascii_case("rfc822") {
+        return None;
+    }
+    let address = super::super::email_address(address.trim()).ok()?;
+    let action = dsn_field(recipient, "Action")?.to_ascii_lowercase();
+    let status = dsn_field(recipient, "Status")?;
+    if !((action == "failed" && status.starts_with("5."))
+        || (action == "delayed" && status.starts_with("4.")))
+    {
+        return None;
+    }
+    Some(Delivery {
+        original_id: format!("<{original}>"),
+        recipient: address.to_ascii_lowercase(),
+        action,
+        status: clip(status, 32),
+    })
+}
+
+fn dsn_field<'a>(block: &'a str, name: &str) -> Option<&'a str> {
+    block
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.trim()))
 }
 
 pub(super) async fn save(
@@ -118,14 +216,46 @@ pub(super) async fn save(
     } else {
         let mail = parse(raw, oversized);
         let id = new_id();
-        let (contact, thread) = associate(&mut tx, account, &id, &mail).await?;
+        let delivery = if let Some(report) = &mail.delivery {
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT outbox_id,contact_id,'sent:' || id FROM email_messages
+                WHERE account_id=? AND message_id_header=? AND lower(to_address)=?",
+            )
+            .bind(account)
+            .bind(&report.original_id)
+            .bind(&report.recipient)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
+        let (contact, thread, match_state) = if let Some((_, contact, thread)) = &delivery {
+            (Some(contact.clone()), thread.clone(), "delivery")
+        } else if mail.role == "delivery_report" {
+            (None, format!("inbox:{id}"), "pending")
+        } else {
+            let (contact, thread) = associate(&mut tx, account, &id, &mail).await?;
+            let state = if thread.starts_with("sent:") {
+                "thread"
+            } else if contact.is_some() {
+                "contact"
+            } else {
+                "pending"
+            };
+            (contact, thread, state)
+        };
         let at = received.filter(|at| (0..=253_402_300_799).contains(at));
-        sqlx::query("INSERT INTO inbox_messages(id,account_id,contact_id,thread_id,message_id_header,raw_sha256,sender,subject,body_text,attachment_names,received_at,raw,kind)
-            VALUES (?,?,?,?,?,?,?,?,?,?,COALESCE(?,unixepoch()),?,?)")
+        sqlx::query("INSERT INTO inbox_messages(id,account_id,contact_id,thread_id,message_id_header,raw_sha256,sender,subject,body_text,attachment_names,received_at,raw,kind,message_role,match_state,body_complete)
+            VALUES (?,?,?,?,?,?,?,?,?,?,COALESCE(?,unixepoch()),?,?,?,?,?)")
             .bind(&id).bind(account).bind(contact.as_deref()).bind(thread).bind(&mail.header_id).bind(hash).bind(&mail.sender)
             .bind(&mail.subject).bind(mail.body).bind(serde_json::json!(mail.attachments).to_string()).bind(at).bind(raw).bind(mail.kind)
+            .bind(mail.role).bind(match_state).bind(!oversized)
             .execute(&mut *tx).await?;
-        if let Some(contact) = contact {
+        if let (Some((outbox, _, _)), Some(report)) = (delivery, mail.delivery) {
+            sqlx::query("INSERT INTO mail_delivery_events(inbox_id,outbox_id,action,status) VALUES (?,?,?,?)")
+                .bind(&id).bind(outbox).bind(report.action).bind(report.status).execute(&mut *tx).await?;
+        }
+        if let Some(contact) = contact.filter(|_| mail.role == "correspondence") {
             activity(&mut tx, &id, &contact).await?;
         }
         id
@@ -203,18 +333,22 @@ pub(super) async fn link(pool: &SqlitePool, id: &str, contact: &str) -> Result<R
     }
     let updated = sqlx::query(
         "UPDATE inbox_messages SET thread_id=CASE WHEN contact_id IS ? THEN thread_id ELSE 'inbox:' || id END,
-         contact_id=? WHERE id=?",
+         contact_id=?,match_state='manual' WHERE id=?",
     ).bind(contact).bind(contact).bind(id).execute(&mut *tx).await?;
     if updated.rows_affected() != 1 {
         return Err(Failure::Code("mail_not_found"));
     }
-    activity(&mut tx, id, contact).await?;
+    let correspondence: bool = sqlx::query_scalar("SELECT message_role NOT IN ('automatic','delivery_report','unparsed') FROM inbox_messages WHERE id=?")
+        .bind(id).fetch_one(&mut *tx).await?;
+    if correspondence {
+        activity(&mut tx, id, contact).await?;
+    }
     audit(&mut tx, Source::Manual, "inbox_message", id, "link_contact").await?;
     tx.commit().await?;
     Ok(Reply::Saved { id: id.to_owned() })
 }
 
-const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names
+const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names,i.message_role,i.match_state,i.body_complete
     FROM inbox_messages i LEFT JOIN contacts c ON c.id=i.contact_id";
 
 pub(super) async fn list(
@@ -233,7 +367,7 @@ pub(super) async fn list(
         query.push(" AND i.contact_id=").push_bind(contact);
     }
     if unmatched {
-        query.push(" AND i.contact_id IS NULL");
+        query.push(" AND (i.contact_id IS NULL OR i.match_state='contact')");
     }
     query
         .push(" ORDER BY i.received_at DESC,i.id LIMIT 21 OFFSET ")
@@ -261,7 +395,7 @@ pub(super) async fn thread(pool: &SqlitePool, id: &str, offset: u32) -> Result<R
     let query = format!(
         "{RECEIVE} WHERE i.thread_id=?
          UNION ALL SELECT e.id,e.account_id,e.contact_id,c.display_name,'sent:' || e.id,
-            e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]'
+            e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]','outgoing','thread',1
          FROM email_messages e JOIN contacts c ON c.id=e.contact_id
            WHERE 'sent:' || e.id=?
          ORDER BY 8,1 LIMIT ? OFFSET ?",
@@ -304,5 +438,8 @@ fn row(r: SqliteRow) -> InboxRow {
         received_at: r.get("received_at"),
         kind: r.get("kind"),
         received: r.get("received"),
+        message_role: r.get("message_role"),
+        match_state: r.get("match_state"),
+        body_complete: r.get("body_complete"),
     }
 }

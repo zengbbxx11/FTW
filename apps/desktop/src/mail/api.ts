@@ -15,6 +15,7 @@ export const states = {
 export type DraftRow = {
   id: string; contact_id: string; account_id: string; recipient: string; subject: string
   state: keyof typeof states; revision: number; source: string; updated_at: number; approval_expired: boolean
+  purpose: string; job_id: string | null; task_id: string | null; agent_name: string | null
 }
 export type Draft = DraftRow & {
   sender: string; body: string; attachments: { filename: string; size: number; sha256: string }[]

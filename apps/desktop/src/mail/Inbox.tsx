@@ -11,7 +11,7 @@ type Account = {
 }
 type Row = {
   id: string; account_id: string; contact_id: string | null; contact_name: string | null
-  thread_id: string; sender: string; subject: string; received_at: number; kind: string; received: boolean
+  thread_id: string; sender: string; subject: string; received_at: number; kind: string; received: boolean; message_role: string; match_state: string; body_complete: boolean
 }
 type Message = Row & { body: string; attachments: string[] }
 type Reply =
@@ -198,7 +198,9 @@ export function MailThread({ id, threadId, close, openContact }: {
     {key && thread.isPending && <Empty>正在读取会话…</Empty>}
     {thread.data?.messages.map(message => <article className="inline-form" key={message.id}>
       <h3>{message.subject}</h3><small>{message.received ? '收件' : '发件'} · {message.sender} · {dateLabel(message.received_at)}</small>
-      {message.kind === 'delivery_report' && <p className="muted">邮件服务投递报告</p>}
+      {message.message_role === 'delivery_report' && <p className="muted">邮件服务投递报告</p>}
+      {message.message_role === 'automatic' && <p className="muted">自动来信</p>}
+      {message.match_state === 'contact' && <p className="muted">已找到同邮箱联系人，所属会话待确认。</p>}
       <p className="mail-body">{message.body || '此邮件没有可显示的纯文本内容。'}</p>
       {message.attachments.length > 0 && <small>附件 {message.attachments.join('、')}</small>}
     </article>)}

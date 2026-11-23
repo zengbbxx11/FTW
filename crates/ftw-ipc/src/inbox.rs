@@ -76,6 +76,12 @@ pub struct Row {
     pub received_at: i64,
     pub kind: String,
     pub received: bool,
+    #[serde(default)]
+    pub message_role: String,
+    #[serde(default)]
+    pub match_state: String,
+    #[serde(default)]
+    pub body_complete: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

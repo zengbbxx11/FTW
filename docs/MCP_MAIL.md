@@ -81,10 +81,10 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 
 ## Agent 发信权限
 
-从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式。保存策略以及登记或撤销 Agent 时，Core 会在 Windows 原生安全窗口核验当前账户。采用能够经 Windows 密码验证的本机账户，核验失败时保留原设置。R5 完成发送底座时，自动模式仍待 R6 联动和验证。
+从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式。保存策略以及登记或撤销 Agent 时，Core 会在 Windows 原生安全窗口核验当前账户。采用能够经 Windows 密码验证的本机账户，核验失败时保留原设置。完成 R6 后可以主动选择持续授权，默认模式为人工审批。安全账本不可用时，工作台保留人工审批和禁止两种模式。
 
 每个 MCP 客户端可以单独登记。用现有 stdio 配置运行 `ftw-mcp.exe`，将 FTW 一次性展示的令牌提供给该 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。Codex、WorkBuddy 或其他支持标准 MCP stdio 的客户端调用同一工具。令牌属于本机工作台，不要粘贴到 Agent 对话、项目配置、提交或日志中。Core 保存令牌摘要，撤销立即阻止其新的自动发送。
 
-`send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`，禁止模式下 Agent 仍可创建草稿和读邮件。
+`send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`，禁止模式下 Agent 仍可创建草稿和读邮件。
 
 便携复制整个停用后的数据目录时保留 `agent-send-safety.sqlite`。业务备份恢复会撤销已登记 Agent、关闭自动授权并冻结旧的待发送任务。安全账本留在同一数据目录，防止业务数据回退后重复提交。

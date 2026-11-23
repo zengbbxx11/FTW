@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { columnResizingFeature, columnSizingFeature, functionalUpdate, rowSelectionFeature,
   tableFeatures, useTable, type ColumnDef } from '@tanstack/react-table'
-import { dateLabel, request, sourceLabel, stages, type ContactRow, type StateOption } from './api'
+import { dateLabel, outreachLabels, request, sourceLabel, stages, type ContactRow, type StateOption } from './api'
 import { ConfirmButton, Field, Problem } from './components'
 import { displayFieldValue, FieldInput } from './Fields'
 import type { FieldValue } from './fieldTypes'
@@ -37,6 +37,11 @@ function systemValue(row: ContactRow, field: string) {
     case 'product': return row.primary_interest
     case 'last_contact': return dateLabel(row.last_contact_at)
     case 'email': return row.email ?? ''
+    case 'mail_status': return outreachLabels[row.mail_outreach.status]
+    case 'mail_last_sent': return dateLabel(row.mail_outreach.last_sent_at)
+    case 'mail_last_reply': return dateLabel(row.mail_outreach.last_reply_at)
+    case 'mail_count': return String(row.mail_outreach.outreach_count)
+    case 'mail_subject': return row.mail_outreach.recent_subject ?? ''
     case 'source': return sourceLabel(row.source)
     default: return ''
   }
@@ -188,9 +193,9 @@ export default function CustomerTable({ data, available, columns, density, catal
           const column = columnMeta.get(cell.column.id)!
           const value = valueText(entry.original,column,catalog)
           const editable = (canEdit.has(column.id) || Boolean(column.custom)) && entry.original.archived_at === null
-          const status = column.id === 'stage' || column.id === 'level' || column.id === 'sample'
+          const status = column.id === 'stage' || column.id === 'level' || column.id === 'sample' || column.id === 'mail_status'
           const display = status && value !== '—'
-            ? <span className="customer-status" data-status={column.id} data-stage={column.id === 'stage' ? entry.original.stage : undefined}>{value}</span>
+            ? <span className="customer-status" data-status={column.id === 'mail_status' ? entry.original.mail_outreach.status : column.id} data-stage={column.id === 'stage' ? entry.original.stage : undefined}>{value}</span>
             : value
           if (editing === cell.id) return <td key={cell.id}><InlineCell row={entry.original} column={column} catalog={catalog} finish={next => finish(cell.id,next)} /></td>
           return <td key={cell.id}>

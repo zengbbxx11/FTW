@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { QueryBuilder, type Field as QueryField, type RuleGroupType } from 'react-querybuilder'
 import 'react-querybuilder/dist/query-builder.css'
-import { stages, type StateOption } from './api'
+import { outreachLabels, stages, type StateOption } from './api'
 import type { AvailableColumn, FieldOperator, Filter } from './viewTypes'
 
 const operators = {
@@ -12,7 +12,7 @@ const options = (keys: FieldOperator[]) => keys.map(name => ({ name, label: oper
 
 function queryField(column: AvailableColumn, catalog: StateOption[]): QueryField {
   const basic = { name: column.id, label: column.title }
-  if (column.id === 'last_contact') return { ...basic, inputType: 'number', operators: options(['within_days', 'older_than_days', 'empty']) }
+  if (['last_contact','mail_last_sent','mail_last_reply'].includes(column.id)) return { ...basic, inputType: 'number', operators: options(['within_days', 'older_than_days', 'empty']) }
   if (column.kind === 'checkbox') return {
     ...basic, valueEditorType: 'select', values: [{ name: 'true', label: '是' }, { name: 'false', label: '否' }],
     operators: options(['eq', 'not_eq', 'empty']),
@@ -21,6 +21,7 @@ function queryField(column: AvailableColumn, catalog: StateOption[]): QueryField
     const field = column.id === 'level' ? 'customer_level' : 'sample_status'
     const values = column.custom ? column.custom.options.filter(option => !option.archived).map(option => ({ name: option.id, label: option.label }))
       : column.id === 'stage' ? Object.entries(stages).map(([name, label]) => ({ name, label }))
+      : column.id === 'mail_status' ? Object.entries(outreachLabels).map(([name,label]) => ({ name,label }))
       : catalog.filter(option => option.field === field).map(option => ({ name: option.code, label: option.label }))
     return { ...basic, valueEditorType: 'select', values,
       operators: options(column.kind === 'multi_select' ? ['contains', 'empty'] : ['eq', 'not_eq', 'empty']) }

@@ -296,8 +296,22 @@ pub struct StateOption {
     pub aliases: Vec<String>,
 }
 
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct MailOutreach {
+    pub status: String,
+    pub last_sent_at: Option<i64>,
+    pub last_reply_at: Option<i64>,
+    pub outreach_count: i64,
+    pub recent_subject: Option<String>,
+    pub thread_id: Option<String>,
+    pub sync_outcome: Option<String>,
+    pub sync_at: Option<i64>,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ContactRow {
+    #[serde(default)]
+    pub mail_outreach: MailOutreach,
     #[serde(default)]
     pub custom_values: Vec<crate::fields::Entry>,
     #[serde(default)]
@@ -321,6 +335,8 @@ pub struct ContactRow {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct Contact {
+    #[serde(default)]
+    pub mail_outreach: MailOutreach,
     pub id: String,
     #[serde(default)]
     pub record_revision: i64,

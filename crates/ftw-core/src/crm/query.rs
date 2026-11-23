@@ -45,6 +45,11 @@ fn builtin(field: &str) -> Option<Builtin> {
         "product" => ("(SELECT group_concat(product_text,' · ') FROM customer_interests i WHERE i.contact_id=c.id)",Kind::Text),
         "last_contact" => ("dates.effective_last",Kind::Number),
         "updated" => ("c.updated_at",Kind::Number),
+        "mail_status" => ("outreach.mail_status",Kind::SingleSelect),
+        "mail_last_sent" => ("outreach.last_sent_at",Kind::Number),
+        "mail_last_reply" => ("outreach.last_reply_at",Kind::Number),
+        "mail_count" => ("outreach.outreach_count",Kind::Number),
+        "mail_subject" => ("outreach.recent_subject",Kind::Text),
         _ => return None,
     };
     Some(Builtin(sql, kind))
@@ -245,7 +250,10 @@ fn rule(
             builder.push("),lower(").push_bind(term).push("))>0");
         }
         Operator::WithinDays | Operator::OlderThanDays
-            if matches!(field, "last_contact" | "updated") =>
+            if matches!(
+                field,
+                "last_contact" | "updated" | "mail_last_sent" | "mail_last_reply"
+            ) =>
         {
             let days = value
                 .and_then(Value::as_u64)

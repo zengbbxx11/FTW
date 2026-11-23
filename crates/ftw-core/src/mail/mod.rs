@@ -178,6 +178,7 @@ impl MailService {
                 )
                 .await
             }
+            AgentCommand::CheckOutreach { recipient } => self.outreach_check(&recipient).await,
             AgentCommand::ListAccounts => self.accounts(false).await,
             AgentCommand::ListDrafts { contact_id, offset } => {
                 self.drafts(contact_id, offset).await
@@ -451,7 +452,7 @@ impl MailService {
             "SELECT d.*,a.email_address,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
              (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome,
              (SELECT 'sent:' || e.id FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id) thread_id,
-             EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.kind IN ('message','large_message')) has_reply
+             EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.message_role='correspondence' AND i.match_state IN ('thread','manual')) has_reply
              FROM mail_drafts_review d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
         ).bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_not_found"))?;
         let attachments = attachments(&row)?
@@ -637,6 +638,10 @@ fn protect_password(password: &str) -> Result<Vec<u8>> {
 fn draft_row(row: SqliteRow) -> mail::DraftRow {
     mail::DraftRow {
         approval_expired: row.get("approval_expired"),
+        purpose: row.get("purpose"),
+        job_id: row.get("job_id"),
+        task_id: row.get("task_id"),
+        agent_name: row.get("agent_name"),
         id: row.get("id"),
         contact_id: row.get("contact_id"),
         account_id: row.get("account_id"),

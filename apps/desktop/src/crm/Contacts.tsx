@@ -1,7 +1,7 @@
 import { lazy, Suspense, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { dateInput, dateLabel, fromDateInput, methodKinds, request, sourceLabel, stages,
-  type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage, type StateOption, type ContactRow } from './api'
+import { dateInput, dateLabel, fromDateInput, methodKinds, outreachLabels, request, sourceLabel, stages,
+  type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Outreach, type Stage, type StateOption, type ContactRow } from './api'
 import { ConfirmButton, Duplicates, Empty, Field, Pagination, Problem } from './components'
 import { Timeline } from './Timeline'
 import { mailCall, mailError, states as mailStates } from '../mail/api'
@@ -447,11 +447,11 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
         : <p className="muted">尚无产品兴趣</p>}</section>
     </>}
     <div hidden={section!=='activity'}>{section==='activity' && <Timeline contact={record} />}</div>
-    {section==='mail' && <CustomerMail contactId={id} open={() => history(id)} />}
+    {section==='mail' && <CustomerMail contactId={id} outreach={record.mail_outreach} open={() => history(id)} />}
   </>
 }
 
-function CustomerMail({ contactId, open }: { contactId: string; open: () => void }) {
+function CustomerMail({ contactId, outreach, open }: { contactId: string; outreach: Outreach; open: () => void }) {
   const { data, isPending, error } = useQuery({
     queryKey: ['mail-drafts', contactId, 0],
     queryFn: () => mailCall({ action: 'list_drafts', contact_id: contactId, offset: 0 }, 'drafts'),
@@ -459,11 +459,18 @@ function CustomerMail({ contactId, open }: { contactId: string; open: () => void
   return <section className="panel"><div className="section-heading">
     <h2>发件记录</h2><button className="button" onClick={open}>查看来信与会话</button>
   </div>
+    <dl className="profile-grid">
+      <div><dt>开发状态</dt><dd><span className="customer-status" data-status={outreach.status}>{outreachLabels[outreach.status]}</span></dd></div>
+      <div><dt>最近发信</dt><dd>{dateLabel(outreach.last_sent_at)}</dd></div>
+      <div><dt>最近回复</dt><dd>{dateLabel(outreach.last_reply_at)}</dd></div>
+      <div><dt>开发提交数</dt><dd>{outreach.outreach_count}</dd></div>
+      {outreach.sync_at !== null && <div><dt>{outreach.sync_outcome==='ok' ? '上次同步完成' : '上次同步尝试'}</dt><dd>{dateLabel(outreach.sync_at)}</dd></div>}
+    </dl>
     {isPending && <p className="muted">正在读取邮件…</p>}
     {error && <p className="alert error" role="alert">{mailError(error)}</p>}
     {data && (data.rows.length ? <ul className="record-list customer-mail-list">
       {data.rows.map(row => <li key={row.id}><strong>{row.subject}</strong>
-        <small>{row.recipient} · {dateLabel(row.updated_at)}</small>
+        <small>{row.recipient} · {dateLabel(row.updated_at)}{row.agent_name ? ' · ' + row.agent_name : ''}</small>
         <span className="customer-status" data-status={row.state}>{row.approval_expired ? '批准已过期' : mailStates[row.state]}</span>
       </li>)}</ul> : <p className="muted">尚无发件记录</p>)}
   </section>

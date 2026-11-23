@@ -4,7 +4,7 @@ const keysByDomain: Record<string, string[]> = {
   contacts: ['contacts', 'contact', 'lead'],
   activity: ['contacts', 'contact', 'activities', 'dashboard'],
   leads: ['leads', 'lead'],
-  mail: ['mail-drafts', 'mail-draft', 'mail-accounts', 'inbox', 'inbox-record', 'inbox-thread', 'imap-accounts', 'dashboard'],
+  mail: ['contacts', 'contact', 'mail-drafts', 'mail-draft', 'mail-accounts', 'inbox', 'inbox-record', 'inbox-thread', 'imap-accounts', 'dashboard'],
   mail_expiration: ['mail-drafts', 'mail-draft', 'dashboard'],
   configuration: ['crm-states', 'contacts', 'contact'],
   audit: ['audit'],

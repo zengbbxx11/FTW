@@ -24,12 +24,17 @@ export const systemColumns: AvailableColumn[] = [
   { id: 'sample', title: '样品进度', kind: 'single_select', width: 126 },
   { id: 'level', title: '客户等级', kind: 'single_select', width: 98 },
   { id: 'product', title: '产品兴趣', kind: 'text', width: 144 },
+  { id: 'mail_status', title: '邮件开发', kind: 'single_select', width: 162 },
+  { id: 'mail_last_sent', title: '最近发信', kind: 'date', width: 122 },
+  { id: 'mail_last_reply', title: '最近回复', kind: 'date', width: 122 },
+  { id: 'mail_count', title: '开发提交数', kind: 'number', width: 112 },
+  { id: 'mail_subject', title: '最近开发主题', kind: 'text', width: 150 },
   { id: 'last_contact', title: '最近联系', kind: 'date', width: 138 },
   { id: 'email', title: '主要邮箱', kind: 'text', width: 186 },
   { id: 'source', title: '记录来源', kind: 'text', width: 104 },
 ]
 
-const defaultHidden = new Set(['email', 'source'])
+const defaultHidden = new Set(['email', 'source', 'mail_last_sent', 'mail_last_reply', 'mail_count', 'mail_subject'])
 export const initialColumns: ColumnSetting[] = systemColumns.map(column => ({
   field: column.id, label: null, width: column.width, hidden: defaultHidden.has(column.id),
 }))

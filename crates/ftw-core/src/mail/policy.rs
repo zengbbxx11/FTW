@@ -14,9 +14,6 @@ pub const PURPOSES: &[&str] = &[
     "other_business",
 ];
 
-// The user-facing switch is opened after the CRM history and reply gate in R6.
-pub const AUTOMATIC_AVAILABLE: bool = false;
-
 pub(super) enum Change {
     Policy(AgentMailPolicy),
     Register { name: String, digest: Vec<u8> },
@@ -50,7 +47,7 @@ impl MailService {
             policy,
             agents,
             review,
-            automatic_available: AUTOMATIC_AVAILABLE && self.ledger.is_some(),
+            automatic_available: self.ledger.is_some(),
         })
     }
 
@@ -206,9 +203,6 @@ async fn validate(db: &mut SqliteConnection, policy: &AgentMailPolicy) -> Result
         .await?;
     if policy.revision != revision {
         return Err(Failure::Code("agent_policy_changed"));
-    }
-    if policy.mode == "automatic" && !AUTOMATIC_AVAILABLE {
-        return Err(Failure::Code("agent_automatic_unavailable"));
     }
     if !matches!(policy.mode.as_str(), "automatic" | "manual" | "disabled")
         || !(1..=30).contains(&policy.daily_limit)

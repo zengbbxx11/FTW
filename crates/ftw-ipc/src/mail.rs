@@ -123,6 +123,9 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    CheckOutreach {
+        recipient: String,
+    },
     SendAuthorized {
         token: Secret,
         id: String,
@@ -186,6 +189,14 @@ pub struct Account {
 pub struct DraftRow {
     #[serde(default)]
     pub approval_expired: bool,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
     pub id: String,
     pub contact_id: String,
     pub account_id: String,
@@ -229,6 +240,12 @@ pub struct Draft {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    OutreachCheck {
+        allowed_for_first_outreach: bool,
+        outcome: Option<String>,
+        contact_ids: Vec<String>,
+        same_domain_contact_ids: Vec<String>,
+    },
     AgentMailSettings {
         policy: AgentMailPolicy,
         agents: Vec<RegisteredAgent>,

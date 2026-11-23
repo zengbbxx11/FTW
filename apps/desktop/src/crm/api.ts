@@ -61,12 +61,25 @@ export type ContactInput = {
   interests: Interest[]
 }
 
+export const outreachLabels = {
+  not_started: '未开发', pending: '待发送', sent_no_reply_seen: '已发 · 暂未同步到回复',
+  sent_reply_pending_sync: 'SMTP 已接受 · 回复待同步', replied: '已回复', failed: '发送失败',
+  delivery_unknown: '提交结果未知', bounced: '已退信', do_not_contact: '拒发名单',
+} as const
+
+export type Outreach = {
+  status: keyof typeof outreachLabels; last_sent_at: number | null; last_reply_at: number | null
+  outreach_count: number; recent_subject: string | null; thread_id: string | null
+  sync_outcome: string | null; sync_at: number | null
+}
+
 export type ContactRow = Pick<ContactInput, 'display_name' | 'company_name' | 'country_region' | 'stage' | 'customer_level' | 'last_contact_at'> & {
   id: string
   sample_status: string
   record_revision: number
   data_epoch: string
   primary_interest: string
+  mail_outreach: Outreach
   custom_values: FieldEntry[]
   email: string | null
   archived_at: number | null
@@ -74,6 +87,7 @@ export type ContactRow = Pick<ContactInput, 'display_name' | 'company_name' | 'c
 }
 
 export type Contact = {
+  mail_outreach: Outreach
   id: string
   record_revision: number
   data_epoch: string

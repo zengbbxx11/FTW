@@ -386,3 +386,7 @@
   .contact-drawer .profile-grid { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
   .customer-grid { max-height: max(16rem, calc(100dvh - 20rem)); }
 }
+
+.customer-status[data-status="replied"] { background: #e2f5e6; color: #1e5d33; }
+.customer-status[data-status="bounced"], .customer-status[data-status="do_not_contact"] { background: #fae4e7; color: #82243b; }
+.customer-status[data-status="pending"], .customer-status[data-status="delivery_unknown"] { background: #fff1d7; color: #80510c; }

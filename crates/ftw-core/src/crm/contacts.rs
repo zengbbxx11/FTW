@@ -1,7 +1,7 @@
 use super::{audit, fields, id_or_new, new_id, query, validation, Actor, Error, Result};
 use ftw_ipc::crm::{
-    ArchiveFilter, Contact, ContactInput, ContactQuery, ContactRow, ContactSort, Interest, Method,
-    Result as Reply,
+    ArchiveFilter, Contact, ContactInput, ContactQuery, ContactRow, ContactSort, Interest,
+    MailOutreach, Method, Result as Reply,
 };
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, SqliteConnection, SqlitePool};
 use std::collections::HashMap;
@@ -14,8 +14,10 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
          (SELECT epoch FROM app_change_epoch) data_epoch,
          COALESCE((SELECT product_text FROM customer_interests i WHERE i.contact_id=c.id ORDER BY position LIMIT 1),'') primary_interest,
          (SELECT value FROM contact_methods WHERE contact_id = c.id AND kind = 'email'
-            ORDER BY is_primary DESC, position LIMIT 1) AS email
-         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id WHERE 1 = 1",
+            ORDER BY is_primary DESC, position LIMIT 1) AS email,
+         outreach.*
+         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id
+         JOIN mail_contact_outreach outreach ON outreach.contact_id=c.id WHERE 1 = 1",
     );
     match filters.archive {
         ArchiveFilter::Active => {
@@ -116,6 +118,7 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
     let mut rows = query
         .build()
         .map(|row: SqliteRow| ContactRow {
+            mail_outreach: outreach(&row),
             id: row.get("id"),
             record_revision: row.get("record_revision"),
             data_epoch: row.get("data_epoch"),
@@ -146,14 +149,26 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
     Ok(Reply::Contacts { rows, has_more })
 }
 
+fn outreach(row: &SqliteRow) -> MailOutreach {
+    MailOutreach {
+        status: row.get("mail_status"),
+        last_sent_at: row.get("last_sent_at"),
+        last_reply_at: row.get("last_reply_at"),
+        outreach_count: row.get("outreach_count"),
+        recent_subject: row.get("recent_subject"),
+        thread_id: row.get("thread_id"),
+        sync_outcome: row.get("sync_outcome"),
+        sync_at: row.get("sync_at"),
+    }
+}
+
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
     let mut tx = pool.begin().await?;
     let row = sqlx::query(
         "SELECT c.*,dates.observed_first,dates.observed_last,dates.effective_first,dates.effective_last,
-                (SELECT epoch FROM app_change_epoch WHERE singleton=1) data_epoch,
-                (SELECT MAX(i.received_at) FROM inbox_messages i WHERE i.contact_id=c.id
-                    AND i.kind IN ('message','large_message') AND i.thread_id LIKE 'sent:%') latest_thread_reply_at
-         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id WHERE c.id=?",
+                (SELECT epoch FROM app_change_epoch WHERE singleton=1) data_epoch, outreach.*
+         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id
+         JOIN mail_contact_outreach outreach ON outreach.contact_id=c.id WHERE c.id=?",
     ).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
 
     let methods = sqlx::query("SELECT * FROM contact_methods WHERE contact_id=? ORDER BY position")
@@ -191,7 +206,8 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
             effective_first_contact_at: row.get("effective_first"),
             effective_last_contact_at: row.get("effective_last"),
             updated_at: row.get("updated_at"),
-            latest_thread_reply_at: row.get("latest_thread_reply_at"),
+            latest_thread_reply_at: row.get("last_reply_at"),
+            mail_outreach: outreach(&row),
             observed_first_contact_at: row.get("observed_first"),
             observed_last_contact_at: row.get("observed_last"),
             input: ContactInput {

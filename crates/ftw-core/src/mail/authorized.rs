@@ -14,10 +14,51 @@ pub(super) struct Submission {
 }
 
 impl MailService {
+    pub(super) async fn outreach_check(&self, recipient: &str) -> Result<Reply> {
+        let recipient = super::email_address(recipient)?.to_ascii_lowercase();
+        let domain = recipient
+            .rsplit_once('@')
+            .ok_or(Failure::Code("invalid_mail_address"))?
+            .1;
+        let mut db = self.pool.acquire().await?;
+        let contact_ids = sqlx::query_scalar(
+            "SELECT DISTINCT contact_id FROM contact_methods
+            WHERE kind='email' AND normalized=? ORDER BY contact_id LIMIT 20",
+        )
+        .bind(&recipient)
+        .fetch_all(&mut *db)
+        .await?;
+        let same_domain_contact_ids = sqlx::query_scalar(
+            "SELECT DISTINCT contact_id FROM contact_methods
+            WHERE kind='email' AND normalized<>? AND substr(normalized,instr(normalized,'@')+1)=?
+            ORDER BY contact_id LIMIT 20",
+        )
+        .bind(&recipient)
+        .bind(domain)
+        .fetch_all(&mut *db)
+        .await?;
+        let (sent, active) = outreach_history(&mut db, &recipient, None).await?;
+        let outcome = match check_suppression(&mut db, &recipient).await {
+            Err(Failure::Code(code)) => Some(code.to_owned()),
+            Err(error) => return Err(error),
+            Ok(()) if sent || active => Some("outreach_already_recorded".to_owned()),
+            Ok(()) => match &self.ledger {
+                Some(ledger) if ledger.has_active(&recipient, true).await? => {
+                    Some("outreach_already_recorded".to_owned())
+                }
+                None => Some("agent_send_history_unavailable".to_owned()),
+                _ => None,
+            },
+        };
+        Ok(Reply::OutreachCheck {
+            allowed_for_first_outreach: outcome.is_none(),
+            outcome,
+            contact_ids,
+            same_domain_contact_ids,
+        })
+    }
+
     pub(super) async fn enqueue_authorized(&self, submission: Submission) -> Result<Reply> {
-        if !policy::AUTOMATIC_AVAILABLE {
-            return Err(Failure::Code("agent_automatic_unavailable"));
-        }
         check_text(&submission.task, 96)?;
         check_text(&submission.request, 96)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -118,8 +159,7 @@ pub(super) async fn check_scope(
     draft: &Snapshot,
     purpose: &str,
 ) -> Result<()> {
-    if !policy::AUTOMATIC_AVAILABLE
-        || config.mode != "automatic"
+    if config.mode != "automatic"
         || config.revision != revision
         || !config.accounts.contains(&draft.account_id)
         || !config.purposes.iter().any(|item| item == purpose)
@@ -145,21 +185,30 @@ pub(super) async fn check_outreach(
     purpose: &str,
     except_job: Option<&str>,
 ) -> Result<()> {
-    let (sent, active): (bool,bool) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM email_messages WHERE lower(to_address)=?),
-                EXISTS(SELECT 1 FROM email_outbox_jobs j JOIN email_drafts d ON d.id=j.draft_id
-                    WHERE lower(d.recipient)=? AND j.state IN ('queued','sending','delivery_unknown') AND (? IS NULL OR j.id<>?))",
-    ).bind(recipient).bind(recipient).bind(except_job).bind(except_job).fetch_one(&mut *db).await?;
+    let (sent, active) = outreach_history(db, recipient, except_job).await?;
     if active || (purpose == "first_outreach" && sent) {
         return Err(Failure::Code("outreach_already_recorded"));
     }
     if !sent && purpose != "first_outreach" {
         let inbound: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM inbox_messages WHERE lower(sender)=? AND contact_id=? AND account_id=? AND kind IN ('message','large_message'))",
+            "SELECT EXISTS(SELECT 1 FROM inbox_messages WHERE lower(sender)=? AND contact_id=? AND account_id=? AND message_role='correspondence' AND match_state IN ('thread','manual'))",
         ).bind(recipient).bind(&draft.contact_id).bind(&draft.account_id).fetch_one(db).await?;
         if !inbound || purpose == "outreach_followup" {
             return Err(Failure::Code("outreach_requires_history"));
         }
     }
     Ok(())
+}
+
+async fn outreach_history(
+    db: &mut SqliteConnection,
+    recipient: &str,
+    except_job: Option<&str>,
+) -> Result<(bool, bool)> {
+    let (sent, active): (bool,bool) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM email_messages WHERE lower(to_address)=?),
+                EXISTS(SELECT 1 FROM email_outbox_jobs j JOIN email_drafts d ON d.id=j.draft_id
+                    WHERE lower(d.recipient)=? AND j.state IN ('queued','sending','delivery_unknown') AND (? IS NULL OR j.id<>?))",
+    ).bind(recipient).bind(recipient).bind(except_job).bind(except_job).fetch_one(&mut *db).await?;
+    Ok((sent, active))
 }

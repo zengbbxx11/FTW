@@ -25,6 +25,12 @@ struct DraftId {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct OutreachCheck {
+    recipient: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct AuthorizedDraft {
     draft_id: String,
     revision: i64,
@@ -553,6 +559,19 @@ impl Ftw {
             recipient: input.recipient,
             subject: input.subject,
             body: input.body,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Check a recipient before first outreach. Returns exact-email customers, other contacts using the same domain, and suppression or submission history. Core checks again at send time."
+    )]
+    async fn check_customer_outreach(
+        &self,
+        Parameters(input): Parameters<OutreachCheck>,
+    ) -> Result<String, String> {
+        self.call(AgentCommand::CheckOutreach {
+            recipient: input.recipient,
         })
         .await
     }
