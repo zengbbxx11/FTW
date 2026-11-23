@@ -74,3 +74,7 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 审批列表和草稿详情以 Core 时间给出 `approval_expired`，详情同时返回最近一次原生审核结果。Agent 获得这些状态用于交接和查询，发送权限仍由 Core 按原审批流程验证。
 
 工具输入 JSON Schema 由 rmcp 从 Rust 参数类型生成，可通过 `tools/list` 读取。返回内容是 JSON 文本，发件返回 `job_id` 与队列状态。业务失败使用工具错误，包含稳定的 Core 错误码。
+
+## 保存的客户视图
+
+`list_customer_views` 返回 Agent 可见的已保存视图以及 Core 查询条件。把一个视图的 `config.query` 传入 `query_customers` 即可应用同一套业务条件。可按客户字段和启用了 Agent 读取的自定义字段筛选或排序。引用受限制字段的视图仅桌面可见。已有 `list_customers` 调用格式保持兼容。

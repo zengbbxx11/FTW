@@ -8,7 +8,8 @@ const keysByDomain: Record<string, string[]> = {
   mail_expiration: ['mail-drafts', 'mail-draft', 'dashboard'],
   configuration: ['crm-states', 'contacts', 'contact'],
   audit: ['audit'],
-  custom_fields: ['crm-fields', 'contact-fields', 'contacts'],
+  custom_fields: ['crm-fields', 'contact-fields', 'contacts', 'crm-views'],
+  crm_views: ['crm-views'],
 }
 
 

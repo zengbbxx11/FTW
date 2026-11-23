@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { CustomField, FieldDefinition, FieldEntry, FieldPatch, FieldValues } from './fieldTypes'
+import type { CellTarget, Filter, SavedView, ViewInput } from './viewTypes'
 
 export const PAGE_SIZE = 20
 
@@ -63,6 +64,10 @@ export type ContactInput = {
 export type ContactRow = Pick<ContactInput, 'display_name' | 'company_name' | 'country_region' | 'stage' | 'customer_level' | 'last_contact_at'> & {
   id: string
   sample_status: string
+  record_revision: number
+  data_epoch: string
+  primary_interest: string
+  custom_values: FieldEntry[]
   email: string | null
   archived_at: number | null
   source: string
@@ -84,6 +89,11 @@ export type Contact = {
 }
 
 export type ContactQuery = {
+  filter?: Filter | null
+  order?: Array<{ field: string; descending: boolean }>
+  custom_columns?: string[]
+  page_size?: 20 | 50 | 100
+  group?: [string, string | null] | null
   keyword: string
   quick_view: '' | 'priority' | 'sample'
   country: string
@@ -138,6 +148,8 @@ export type Duplicate = { id: string; entity: 'contact' | 'lead'; display_name: 
 export type StateOption = { field: string; code: string; label: string; aliases: string[] }
 
 type Result =
+  | { kind: 'views'; views: SavedView[] }
+  | { kind: 'cells_updated'; count: number }
   | { kind: 'fields'; fields: CustomField[] }
   | { kind: 'field_values'; record: FieldValues }
   | { kind: 'state_catalog'; options: StateOption[] }
@@ -150,6 +162,11 @@ type Result =
   | { kind: 'duplicates'; matches: Duplicate[] }
 
 type Command =
+  | { action: 'list_views'; include_archived?: boolean }
+  | { action: 'save_view'; view: ViewInput }
+  | { action: 'move_view'; id: string; expected_revision: number; direction: -1 | 1 }
+  | { action: 'archive_view'; id: string; expected_revision: number; archived: boolean }
+  | { action: 'update_cells'; targets: CellTarget[]; field: string; value: string }
   | { action: 'list_fields'; include_archived?: boolean }
   | { action: 'save_field'; definition: FieldDefinition }
   | { action: 'archive_field'; id: string; expected_revision: number; archived: boolean }
@@ -182,6 +199,10 @@ export async function request<Kind extends Result['kind']>(
 }
 
 const fieldLabels: Record<string, string> = {
+  view_name: '视图名称', view_duplicate: '已有同名视图', view_default_hidden: '默认视图须保持可见',
+  view_choose_default: '请先将另一个视图设为默认', view_columns: '列数、列宽或引用字段超出范围',
+  query_field: '视图引用了已归档或不可访问的字段，请编辑视图以修复', query_columns: '每次最多载入 12 个自定义列',
+  query_value: '检查筛选条件的值', query_depth: '请减少筛选条件或嵌套分组', query_empty_group: '筛选分组至少需要一个条件',
   field_name: '字段名称', field_name_duplicate: '已有同名的启用字段', field_color: '选择有效的标签颜色',
   field_value: '检查字段类型、数值、日期或选项是否有效', field_url: '网址须为有效的 HTTP 或 HTTPS 地址',
   field_options: '选项数量或字段类型', field_option_label: '选项名称必填且不能重复',

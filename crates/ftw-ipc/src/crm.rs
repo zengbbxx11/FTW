@@ -64,7 +64,7 @@ pub struct Interest {
     pub requirement: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct LeadInput {
     pub display_name: String,
@@ -97,9 +97,14 @@ pub struct ActivityInput {
     pub customer_feedback: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContactQuery {
+    pub filter: Option<crate::views::Filter>,
+    pub order: Vec<crate::views::Order>,
+    pub custom_columns: Vec<String>,
+    pub page_size: Option<u32>,
+    pub group: Option<(String, Option<String>)>,
     pub keyword: String,
     pub quick_view: String,
     pub country: String,
@@ -113,7 +118,7 @@ pub struct ContactQuery {
     pub offset: u32,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArchiveFilter {
     #[default]
@@ -122,7 +127,7 @@ pub enum ArchiveFilter {
     All,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ContactSort {
     #[default]
@@ -134,6 +139,28 @@ pub enum ContactSort {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    UpdateCells {
+        targets: Vec<crate::views::CellTarget>,
+        field: String,
+        value: String,
+    },
+    ListViews {
+        #[serde(default)]
+        include_archived: bool,
+    },
+    SaveView {
+        view: crate::views::ViewInput,
+    },
+    ArchiveView {
+        id: String,
+        expected_revision: i64,
+        archived: bool,
+    },
+    MoveView {
+        id: String,
+        expected_revision: i64,
+        direction: i8,
+    },
     ListContacts {
         query: ContactQuery,
     },
@@ -219,6 +246,12 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    CellsUpdated {
+        count: usize,
+    },
+    Views {
+        views: Vec<crate::views::SavedView>,
+    },
     Fields {
         fields: Vec<crate::fields::Field>,
     },
@@ -265,6 +298,14 @@ pub struct StateOption {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ContactRow {
+    #[serde(default)]
+    pub custom_values: Vec<crate::fields::Entry>,
+    #[serde(default)]
+    pub record_revision: i64,
+    #[serde(default)]
+    pub data_epoch: String,
+    #[serde(default)]
+    pub primary_interest: String,
     pub id: String,
     pub display_name: String,
     pub company_name: String,

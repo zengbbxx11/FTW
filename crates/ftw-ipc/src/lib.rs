@@ -5,6 +5,7 @@ pub mod fields;
 pub mod inbox;
 pub mod mail;
 mod profile;
+pub mod views;
 mod windows;
 
 pub use profile::{display_path, Profile, StorageMode};

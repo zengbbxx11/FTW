@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useDeferredValue, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateInput, dateLabel, fromDateInput, methodKinds, request, sourceLabel, stages,
-  type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage, type StateOption } from './api'
+  type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage, type StateOption, type ContactRow } from './api'
 import { ConfirmButton, Duplicates, Empty, Field, Pagination, Problem } from './components'
 import { Timeline } from './Timeline'
-import { CustomerFieldPanel, FieldManager, NewCustomerFields } from './Fields'
+import { CustomerFieldPanel, FieldManager, NewCustomerFields, useCustomerFields } from './Fields'
 import { fieldEntries, type FieldValue } from './fieldTypes'
+import CustomerTable, { targetFor } from './CustomerTable'
+import { ColumnSettings, SavedViewBar, useSavedViews } from './SavedViews'
+import { availableColumns, columnsWithDefaults, type AvailableColumn, type ViewConfig } from './viewTypes'
+
+const AdvancedFilters = lazy(() => import('./AdvancedFilters'))
 
 const defaultQuery: ContactQuery = {
   keyword: '', quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
@@ -13,84 +18,113 @@ const defaultQuery: ContactQuery = {
 
 export function ContactList({ compose, history, create, importCsv }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void; importCsv: () => void }) {
   const catalog = useStateCatalog()
-  const [manageFields, setManageFields] = useState(false)
-  const [query, setQuery] = useState(defaultQuery)
-  const [search, setSearch] = useState('')
-  const [view, setView] = useState('all')
+  const fields = useCustomerFields()
+  const views = useSavedViews()
+  const records = views.data?.views ?? []
+  const [activeId,setActiveId] = useState('')
+  const active = records.find(view => view.id === activeId && !view.archived) ?? records.find(view => view.is_default)
+  const [local,setLocal] = useState<{ id: string; revision: number | null; config: ViewConfig } | null>(null)
+  const [offset,setOffset] = useState(0)
+  const [showAdvanced,setShowAdvanced] = useState(false)
+  const [manageFields,setManageFields] = useState(false)
+  const config = local?.id === (active?.id ?? '') ? local.config : active?.config ?? {}
+  const board = config.layout === 'board'
+  const available = availableColumns(fields.data?.fields ?? [])
+  const columns = columnsWithDefaults(config.columns,available)
+  const projection = columns.filter(column => !column.hidden && available.some(field => field.id === column.field && field.custom)).map(column => column.field)
+  const query: ContactQuery = { ...defaultQuery, ...config.query, offset, custom_columns: projection }
+  const keyword = useDeferredValue(query.keyword)
+  const requestQuery = { ...query, keyword }
   const [selected, setSelected] = useState<string | null>(null)
   const drawer = useRef<HTMLDialogElement>(null)
   const open = (id: string) => { setSelected(id); drawer.current?.showModal() }
   const close = () => drawer.current?.close()
-  useEffect(() => {
-    const timer = window.setTimeout(() => setQuery(current => current.keyword === search
-      ? current : { ...current, keyword: search, offset: 0 }), 240)
-    return () => window.clearTimeout(timer)
-  }, [search])
-  const update = <K extends keyof ContactQuery>(key: K, value: ContactQuery[K]) =>
-    setQuery(old => ({ ...old, [key]: value, offset: key === 'offset' ? Number(value) : 0 }))
+  function configure(change: Partial<ViewConfig>, reset = true) {
+    setLocal({ id: active?.id ?? '', revision: local?.id === active?.id ? local?.revision ?? null : active?.revision ?? null,
+      config: { ...config, ...change } })
+    if (reset) setOffset(0)
+  }
+  function update(change: Partial<ContactQuery>) {
+    const next = { ...config.query, ...change }
+    configure({ query:next })
+  }
+  function select(id: string) {
+    setActiveId(id)
+    setLocal(null)
+    setOffset(0)
+    setShowAdvanced(false)
+  }
   const result = useQuery({
-    queryKey: ['contacts', query],
-    enabled: view !== 'board',
-    queryFn: () => request({ action: 'list_contacts', query }, 'contacts'),
+    queryKey: ['contacts', requestQuery], enabled: !board && fields.isFetched,
+    queryFn: () => request({ action: 'list_contacts', query: requestQuery }, 'contacts'),
   })
   if (manageFields) return <FieldManager back={() => setManageFields(false)} />
   return <>
-    <div className="page-heading"><h1>客户管理</h1><div className="row-actions"><button className="button" onClick={() => setManageFields(true)}>字段管理</button><button className="button primary" onClick={create}>新增客户</button></div></div>
-    <div className="customer-views" aria-label="客户视图">
-      {([['all','全部客户'], ['priority','重点客户'], ['sample','样品客户'], ['board','阶段看板']] as const).map(([key,label]) =>
-        <button key={key} className="button" aria-pressed={view === key} onClick={() => {
-          setView(key)
-          if (key !== 'board') update('quick_view', key === 'priority' || key === 'sample' ? key : '')
-        }}>{label}</button>)}
-    </div>
-    <div className="filters">
-      <Field label="搜索客户"><input placeholder="姓名、公司、邮箱或产品" value={search} onChange={e => setSearch(e.target.value)} /></Field>
-      <Field label="客户阶段"><select value={query.stage} onChange={e => update('stage', e.target.value)}>
-        <option value="">全部阶段</option>{Object.entries(stages).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+    <div className="page-heading"><h1>客户管理</h1><div className="row-actions">
+      <button className="button primary" onClick={create}>新增客户</button>
+    </div></div>
+    {views.isError && <Problem error={views.error} />}
+    {fields.isError && <Problem error={fields.error} />}
+    <SavedViewBar views={records} active={active} config={config} baseRevision={local?.id === active?.id ? local?.revision ?? null : null} select={select} saved={select} />
+    <div className="filters customer-toolbar">
+      <Field label="搜索客户"><input placeholder="姓名、公司、邮箱或产品" value={query.keyword} onChange={event => update({keyword:event.target.value})} /></Field>
+      <Field label="客户阶段"><select value={query.stage} onChange={event => update({stage:event.target.value})}>
+        <option value="">全部阶段</option>{Object.entries(stages).map(([key,label]) => <option key={key} value={key}>{label}</option>)}
       </select></Field>
-      <Field label="记录状态"><select value={query.archive} onChange={e => update('archive', e.target.value as ContactQuery['archive'])}>
-        <option value="active">未归档</option><option value="archived">已归档</option><option value="all">全部状态</option>
-      </select></Field>
-      <Field label="排序"><select value={query.sort} onChange={e => update('sort', e.target.value as ContactQuery['sort'])}>
+      <Field label="排序"><select value={query.order?.length ? 'column' : query.sort} onChange={event => update({sort:event.target.value as ContactQuery['sort'],order:[]})}>
+        {query.order?.length ? <option value="column">按表格列排序</option> : null}
         <option value="updated">最近更新</option><option value="name">客户名称</option><option value="last_contact">最近联系</option>
       </select></Field>
+      <Field label="显示方式"><select value={board?'board':'table'} onChange={event => configure({layout:event.target.value as 'table'|'board'})}>
+        <option value="table">表格</option><option value="board">看板</option>
+      </select></Field>
+      {board && <Field label="分组字段"><select value={config.group_field ?? 'stage'} onChange={event => configure({group_field:event.target.value})}>
+        <option value="stage">客户阶段</option>
+        {(fields.data?.fields ?? []).filter(field => field.kind === 'single_select').map(field => <option key={field.id} value={field.id}>{field.name}</option>)}
+      </select></Field>}
+      <button className="button" onClick={() => setShowAdvanced(value=>!value)} aria-expanded={showAdvanced}>
+        组合筛选{query.filter ? ' · 已应用' : ''}
+      </button>
+      <button className="button" onClick={() => setManageFields(true)}>字段管理</button>
+      {!board && <ColumnSettings available={available} saved={columns} change={items=>configure({columns:items},false)} />}
       <details className="more-filters"><summary>更多筛选</summary>
         <div className="form-grid">
-          <Field label="国家或地区"><input value={query.country} onChange={e => update('country', e.target.value)} /></Field>
-          <Field label="客户等级"><StateFilter field="customer_level" catalog={catalog} value={query.level} change={value => update('level', value)} /></Field>
-          <Field label="样品进度"><StateFilter field="sample_status" catalog={catalog} value={query.sample_status ?? ''} change={value => update('sample_status', value)} /></Field>
-          <Field label="客户类型"><input value={query.customer_type} onChange={e => update('customer_type', e.target.value)} /></Field>
-          <Field label="客户来源"><input value={query.source} onChange={e => update('source', e.target.value)} /></Field>
+          <Field label="国家或地区"><input value={query.country} onChange={event=>update({country:event.target.value})} /></Field>
+          <Field label="客户等级"><StateFilter field="customer_level" catalog={catalog} value={query.level} change={level=>update({level})} /></Field>
+          <Field label="样品进度"><StateFilter field="sample_status" catalog={catalog} value={query.sample_status ?? ''} change={sample_status=>update({sample_status})} /></Field>
+          <Field label="客户类型"><input value={query.customer_type} onChange={event=>update({customer_type:event.target.value})} /></Field>
+          <Field label="客户来源"><input value={query.source} onChange={event=>update({source:event.target.value})} /></Field>
+          <Field label="归档状态"><select value={query.archive} onChange={event=>update({archive:event.target.value as ContactQuery['archive']})}>
+            <option value="active">未归档</option><option value="archived">已归档</option><option value="all">全部</option></select></Field>
+          <Field label="每页数量"><select value={query.page_size??20} onChange={event=>update({page_size:Number(event.target.value) as 20|50|100})}>
+            <option value="20">20</option><option value="50">50</option><option value="100">100</option></select></Field>
+          <Field label="行间距"><select value={config.density??'standard'} onChange={event=>configure({density:event.target.value as 'compact'|'standard'},false)}>
+            <option value="standard">标准</option><option value="compact">紧凑</option></select></Field>
         </div>
       </details>
     </div>
-    {view === 'board' ? <ContactBoard query={query} open={open} /> : <>
-    {result.isPending && <Empty>正在读取客户…</Empty>}
-    {result.isError && <Problem error={result.error} />}
-    {result.data && <>
-      {result.data.rows.length === 0 ? <Empty>{isFiltered(query) ? <>
-        <p>没有符合筛选条件的客户。</p><button className="button" onClick={() => { setSearch(''); setView('all'); setQuery(defaultQuery) }}>清除筛选</button>
-      </> : <><p>当前没有客户记录。</p><div className="row-actions">
-        <button className="button primary" onClick={create}>新增客户</button><button className="button" onClick={importCsv}>导入客户 CSV</button>
-      </div></>}</Empty>
-        : <div className="table-wrap"><table><thead><tr>
-          <th>客户</th><th>国家或地区</th><th>阶段</th><th>样品进度</th><th>等级</th><th>最近联系</th><th>记录来源</th>
-        </tr></thead><tbody>{result.data.rows.map(row => (
-          <tr key={row.id}>
-            <td><button className="text-button" onClick={() => open(row.id)}>{row.display_name}</button>
-              {(row.company_name || row.email) && <small>{[row.company_name, row.email].filter(Boolean).join(' · ')}</small>}</td>
-            <td>{row.country_region || '—'}</td><td><span className="stage-tag">{stages[row.stage]}</span></td><td>{stateLabel(catalog, 'sample_status', row.sample_status)}</td><td>{stateLabel(catalog, 'customer_level', row.customer_level)}</td>
-            <td>{dateLabel(row.last_contact_at)}</td><td>{sourceLabel(row.source)}{row.archived_at !== null && ' · 已归档'}</td>
-          </tr>
-        ))}</tbody></table></div>}
-      <Pagination offset={query.offset} more={result.data.has_more} change={offset => update('offset', offset)} />
-    </>}
+    {showAdvanced && <Suspense fallback={<Empty>正在加载组合筛选…</Empty>}><AdvancedFilters key={active?.id}
+      columns={available} catalog={catalog} filter={query.filter} close={()=>setShowAdvanced(false)}
+      apply={filter=>{update({filter});setShowAdvanced(false)}} /></Suspense>}
+    {board ? <ContactBoard query={requestQuery} group={config.group_field ?? 'stage'} available={available} open={open} /> : <>
+      {result.isPending && <Empty>正在读取客户…</Empty>}
+      {result.isError && <Problem error={result.error} />}
+      {result.data && <>
+        {result.data.rows.length === 0 ? <Empty>{isFiltered(query) || query.filter ? <>
+          <p>没有符合筛选条件的客户。</p><button className="button" onClick={()=>configure({query:{...defaultQuery}})}>清除筛选</button>
+        </> : <><p>当前没有客户记录。</p><div className="row-actions">
+          <button className="button primary" onClick={create}>新增客户</button>
+          <button className="button" onClick={importCsv}>导入客户 CSV</button>
+        </div></>}</Empty> : <CustomerTable key={(active?.id ?? '') + JSON.stringify(requestQuery)} data={result.data.rows} available={available}
+          columns={columns} catalog={catalog} density={config.density ?? 'standard'} open={open}
+          resize={widths=>configure({columns:columns.map(column=>({...column,width:widths[column.field]??column.width}))},false)}
+          sort={field=>update({order:[{field,descending:query.order?.[0]?.field===field && !query.order[0].descending}]})} />}
+        <Pagination offset={offset} pageSize={query.page_size ?? 20} more={result.data.has_more} change={setOffset} />
+      </>}
     </>}
     <dialog className="contact-drawer" ref={drawer} onClose={() => setSelected(null)} aria-label="客户详情">
-      <header className="contact-drawer-header">
-        <span className="font-semibold">客户详情</span>
-        <button className="button" type="button" onClick={close}>关闭详情</button>
-      </header>
+      <header className="contact-drawer-header"><span className="font-semibold">客户详情</span>
+        <button className="button" type="button" onClick={close}>关闭详情</button></header>
       <div className="contact-drawer-body" role="region" aria-label="客户资料和跟进" tabIndex={0}>
         {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} history={history} drawer />}
       </div>
@@ -98,30 +132,66 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
   </>
 }
 
-function ContactBoard({ query, open }: { query: ContactQuery; open: (id: string) => void }) {
-  return <div className="stage-board" aria-label="客户阶段看板">
-    {(Object.entries(stages) as [Stage, string][]).filter(([stage]) => !query.stage || stage === query.stage)
-      .map(([stage, label]) => <BoardColumn key={JSON.stringify({ ...query, stage, offset: 0 })} query={query} stage={stage} label={label} open={open} />)}
-  </div>
+function ContactBoard({ query, group, available, open }: {
+  query: ContactQuery; group:string; available:AvailableColumn[]; open:(id:string)=>void
+}) {
+  const [drag,setDrag] = useState<ContactRow|null>(null)
+  const cache = useQueryClient()
+  const custom = available.find(column=>column.id===group)?.custom
+  const groups: Array<{id:string|null; label:string}> = group==='stage'
+    ? Object.entries(stages).filter(([stage])=>!query.stage||stage===query.stage).map(([id,label])=>({id,label}))
+    : [...(custom?.options.map(option=>({id:option.id,label:option.label+(option.archived?'（已归档）':'')})) ?? []),{id:null,label:'未设置'}]
+  const move = useMutation({
+    mutationFn: async ({row,value}:{row:ContactRow;value:string|null}) => {
+      if (group==='stage') return request({action:'update_cells',targets:[targetFor(row)],field:'stage',value:value??''},'cells_updated')
+      return request({action:'patch_field_values',patch:{contact_id:row.id,expected_revision:row.record_revision,expected_epoch:row.data_epoch,
+        entries:[{field_id:group,value:value?{type:'single_select',value}:null}]}},'saved')
+    },
+    onSuccess:()=>Promise.all([cache.invalidateQueries({queryKey:['contacts']}),cache.invalidateQueries({queryKey:['contact']}),
+      cache.invalidateQueries({queryKey:['contact-fields']})]),
+  })
+  if (group!=='stage'&&!custom) return <Empty>此看板的分组字段已归档，请选择另一个字段。</Empty>
+  return <>
+    {move.isError && <Problem error={move.error} />}
+    <div className="stage-board" aria-label="客户看板">
+      {groups.map(item=><BoardColumn key={JSON.stringify({...query,offset:0,group,item:item.id})}
+        query={query} group={group} value={item.id} label={item.label} open={open}
+        groups={groups.filter(option=>!custom?.options.find(x=>x.id===option.id&&x.archived))}
+        move={(row,value)=>move.mutate({row,value})} drag={drag} setDrag={setDrag} />)}
+    </div>
+  </>
 }
 
-function BoardColumn({ query, stage, label, open }: {
-  query: ContactQuery; stage: Stage; label: string; open: (id: string) => void
+function BoardColumn({ query, group, value, label, open, groups, move, drag, setDrag }: {
+  query:ContactQuery;group:string;value:string|null;label:string;open:(id:string)=>void
+  groups:Array<{id:string|null;label:string}>;move:(row:ContactRow,value:string|null)=>void
+  drag:ContactRow|null;setDrag:(row:ContactRow|null)=>void
 }) {
-  const [offset, setOffset] = useState(0)
-  const filters = { ...query, stage, offset }
-  const result = useQuery({ queryKey: ['contacts', filters],
-    queryFn: () => request({ action: 'list_contacts', query: filters }, 'contacts') })
-  return <section className="stage-column">
+  const [offset,setOffset]=useState(0)
+  const filters: ContactQuery={...query,group:[group,value],offset,page_size:20,custom_columns:[]}
+  const result=useQuery({queryKey:['contacts',filters],queryFn:()=>request({action:'list_contacts',query:filters},'contacts')})
+  return <section className="stage-column" onDragOver={event=>{if(drag)event.preventDefault()}} onDrop={event=>{
+    if(!drag)return
+    event.preventDefault()
+    setDrag(null)
+    if(event.dataTransfer.getData('application/x-ftw-contact')===drag.id&&groups.some(x=>x.id===value))move(drag,value)
+  }}>
     <h2>{label}</h2>
-    {result.isError && <Problem error={result.error} />}
-    {result.isPending && <small>正在读取…</small>}
-    {result.data?.rows.length === 0 && <small>暂无客户</small>}
-    {result.data?.rows.map(row => <button className="stage-card" key={row.id} onClick={() => open(row.id)}>
-      <strong>{row.display_name}</strong>
-      <small>{[row.company_name, row.country_region, row.sample_status].filter(Boolean).join(' · ')}</small>
-    </button>)}
-    {result.data && <Pagination offset={offset} more={result.data.has_more} change={setOffset} />}
+    {result.isError&&<Problem error={result.error}/>}
+    {result.isPending&&<small>正在读取…</small>}
+    {result.data?.rows.length===0&&<small>暂无客户</small>}
+    {result.data?.rows.map(row=><div className="stage-card" key={row.id} draggable={row.archived_at===null}
+      onDragStart={event=>{setDrag(row);event.dataTransfer.setData('application/x-ftw-contact',row.id)}}
+      onDragEnd={()=>setDrag(null)}>
+      <button className="text-button" onClick={()=>open(row.id)}>{row.display_name}</button>
+      <small>{[row.company_name,row.country_region,row.primary_interest].filter(Boolean).join(' · ')}</small>
+      {row.archived_at===null&&<select aria-label={'移动客户 ' + row.display_name} value={value??''}
+        onChange={event=>move(row,event.target.value||null)}>
+        {!groups.some(item=>item.id===value)&&<option value={value??''} disabled>{label}</option>}
+        {groups.map(item=><option key={item.id??'unset'} value={item.id??''}>{item.label}</option>)}
+      </select>}
+    </div>)}
+    {result.data&&<Pagination offset={offset} more={result.data.has_more} change={setOffset}/>}
   </section>
 }
 

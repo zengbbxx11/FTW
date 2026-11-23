@@ -1,4 +1,4 @@
-use super::{audit, id_or_new, new_id, page, validation, Actor, Error, Result, PAGE_SIZE};
+use super::{audit, fields, id_or_new, new_id, query, validation, Actor, Error, Result};
 use ftw_ipc::crm::{
     ArchiveFilter, Contact, ContactInput, ContactQuery, ContactRow, ContactSort, Interest, Method,
     Result as Reply,
@@ -6,11 +6,13 @@ use ftw_ipc::crm::{
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, SqliteConnection, SqlitePool};
 use std::collections::HashMap;
 
-pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply> {
+pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>) -> Result<Reply> {
     validation::text(&mut filters.keyword, "keyword", 300, false)?;
     let mut query = QueryBuilder::new(
         "SELECT c.id, c.display_name, c.company_name, c.country_region, c.stage, c.customer_level, c.sample_status,
-         c.archived_at, c.source, dates.effective_last,
+         c.archived_at, c.source, dates.effective_last, c.record_revision,
+         (SELECT epoch FROM app_change_epoch) data_epoch,
+         COALESCE((SELECT product_text FROM customer_interests i WHERE i.contact_id=c.id ORDER BY position LIMIT 1),'') primary_interest,
          (SELECT value FROM contact_methods WHERE contact_id = c.id AND kind = 'email'
             ORDER BY is_primary DESC, position LIMIT 1) AS email
          FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id WHERE 1 = 1",
@@ -38,9 +40,22 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
         }
         _ => return Err(Error::Invalid("quick_view")),
     }
+    let page_size = query::page_size(&filters)?;
+    let extended = filters.filter.is_some()
+        || !filters.order.is_empty()
+        || !filters.custom_columns.is_empty()
+        || filters.group.is_some();
+    let catalog = if extended {
+        Some(query::catalog(pool, actor).await?)
+    } else {
+        None
+    };
+    if let Some(catalog) = &catalog {
+        query::conditions(&mut query, &filters, catalog)?;
+    }
     for (column, value) in [
-        ("country_region", filters.country),
-        ("stage", filters.stage),
+        ("country_region", filters.country.as_str()),
+        ("stage", filters.stage.as_str()),
     ] {
         if !value.trim().is_empty() {
             query
@@ -52,13 +67,13 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
         }
     }
     for (field, value) in [
-        ("customer_level", filters.level),
-        ("customer_type", filters.customer_type),
-        ("customer_source", filters.source),
-        ("sample_status", filters.sample_status),
+        ("customer_level", filters.level.as_str()),
+        ("customer_type", filters.customer_type.as_str()),
+        ("customer_source", filters.source.as_str()),
+        ("sample_status", filters.sample_status.as_str()),
     ] {
         if !value.trim().is_empty() {
-            let value = canonical_state(pool, field, &value).await?;
+            let value = canonical_state(pool, field, value).await?;
             query
                 .push(" AND ")
                 .push(state_sql(field))
@@ -78,7 +93,7 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
                 .push(")");
         } else {
             query.push(" AND c.rowid IN (SELECT rowid FROM contact_search WHERE instr(lower(searchable), lower(")
-                .push_bind(filters.keyword).push(")) > 0)");
+                .push_bind(filters.keyword.as_str()).push(")) > 0)");
         }
     }
     let order = match filters.sort {
@@ -86,17 +101,26 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
         ContactSort::Name => "c.display_name COLLATE NOCASE, c.id",
         ContactSort::LastContact => "effective_last DESC, c.updated_at DESC, c.id",
     };
+    query.push(" ORDER BY ");
+    if let Some(catalog) = catalog.as_ref().filter(|_| !filters.order.is_empty()) {
+        query::sorting(&mut query, &filters, catalog)?;
+        query.push(",c.id");
+    } else {
+        query.push(order);
+    }
     query
-        .push(" ORDER BY ")
-        .push(order)
         .push(" LIMIT ")
-        .push_bind((PAGE_SIZE + 1) as i64)
+        .push_bind(page_size + 1)
         .push(" OFFSET ")
         .push_bind(i64::from(filters.offset));
-    let rows = query
+    let mut rows = query
         .build()
         .map(|row: SqliteRow| ContactRow {
             id: row.get("id"),
+            record_revision: row.get("record_revision"),
+            data_epoch: row.get("data_epoch"),
+            primary_interest: row.get("primary_interest"),
+            custom_values: Vec::new(),
             display_name: row.get("display_name"),
             company_name: row.get("company_name"),
             country_region: row.get("country_region"),
@@ -110,7 +134,15 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
         })
         .fetch_all(pool)
         .await?;
-    let (rows, has_more) = page(rows);
+    let has_more = rows.len() > page_size as usize;
+    rows.truncate(page_size as usize);
+    if !filters.custom_columns.is_empty() {
+        let ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
+        let mut values = fields::project(pool, actor, &ids, &filters.custom_columns).await?;
+        for row in &mut rows {
+            row.custom_values = values.remove(&row.id).unwrap_or_default();
+        }
+    }
     Ok(Reply::Contacts { rows, has_more })
 }
 
@@ -392,7 +424,7 @@ pub async fn archive(
 }
 
 // Callers provide only field names defined in this module. User values are bound separately.
-fn state_sql(field: &str) -> String {
+pub(super) fn state_sql(field: &str) -> String {
     let legacy = if field == "customer_level" {
         "CASE WHEN upper(substr(trim(c.customer_level),1,3))='A |' THEN 'A' ELSE c.customer_level END".to_owned()
     } else {

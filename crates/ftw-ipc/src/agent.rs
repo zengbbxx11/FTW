@@ -14,6 +14,10 @@ pub struct ContactPatch {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    Views,
+    QueryCustomers {
+        query: crate::crm::ContactQuery,
+    },
     StateCatalog,
     Fields,
     FieldValues {

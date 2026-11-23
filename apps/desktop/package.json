@@ -15,9 +15,11 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.108.3",
+    "@tanstack/react-table": "9.3.1",
     "@tauri-apps/api": "^2",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "react-querybuilder": "8.28.0"
   },
   "devDependencies": {
     "@eslint/js": "^9",

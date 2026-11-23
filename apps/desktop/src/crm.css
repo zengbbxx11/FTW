@@ -279,3 +279,28 @@
 }
 
 .custom-options { margin-top: 1rem; }
+
+/* CRM table and view controls share the workbench's existing theme. */
+.customer-toolbar { align-items: end; gap: 0.55rem; }
+.customer-toolbar .column-settings { position: relative; }
+.column-settings summary { cursor: pointer; padding: 0.4rem 0.65rem; }
+.column-settings > .panel { position: absolute; right: 0; z-index: 3; min-width: min(34rem, 90vw); max-height: 27rem; overflow: auto; }
+.customer-grid { max-height: 69vh; }
+.customer-grid table { width: auto; min-width: 100%; table-layout: fixed; }
+.customer-grid th { position: sticky; top: 0; background: #f8fafc; }
+.customer-grid th, .customer-grid td { padding-block: 0.45rem; }
+.customer-grid.is-compact th, .customer-grid.is-compact td { padding-block: 0.23rem; }
+.customer-grid td { vertical-align: top; }
+.customer-grid tr[data-selected="true"] td { background: #e5f5f2; }
+.grid-row-select { width: 2.5rem; }
+.column-resize { position: absolute; inset-block: 0; inset-inline-end: 0; width: 0.5rem; cursor: col-resize; touch-action: none; }
+.column-resize:hover, .column-resize:focus-visible { background: #a7d5ce; }
+.grid-cell-button { width: 100%; text-align: left; border-radius: 4px; }
+.grid-cell-button:hover, .grid-cell-button:focus-visible { background: #e2e8f0; }
+.customer-name { font-weight: 680; }
+.grid-edit-name { margin-left: 0.35rem; font-size: 0.75rem; opacity: 0; }
+.customer-grid tr:hover .grid-edit-name, .grid-edit-name:focus-visible { opacity: 1; }
+.cell-editor { min-width: 8rem; }
+.r3-advanced .ruleGroup, .r3-advanced .rule { flex-wrap: wrap; }
+
+.column-drag { cursor: grab; color: var(--muted); padding: .3rem; user-select: none; }

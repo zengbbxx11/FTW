@@ -49,8 +49,8 @@ async function exercise(protocol) {
     assert.deepEqual(tools.map(tool => tool.name).sort(), [
       'add_customer_activity', 'create_customer', 'create_email_draft', 'create_lead_candidate',
       'get_customer', 'get_customer_field_values', 'get_customer_state_catalog', 'get_customer_timeline', 'get_email_draft', 'get_email_thread',
-      'get_pending_approvals', 'list_customer_fields', 'list_customers', 'list_email_accounts', 'list_email_drafts',
-      'list_inbox', 'list_lead_candidates', 'request_email_approval', 'send_approved_email', 'set_customer_field_values',
+      'get_pending_approvals', 'list_customer_fields', 'list_customer_views', 'list_customers', 'list_email_accounts', 'list_email_drafts',
+      'list_inbox', 'list_lead_candidates', 'query_customers', 'request_email_approval', 'send_approved_email', 'set_customer_field_values',
       'sync_mailbox', 'update_customer',
     ])
     assert.ok(tools.every(tool => tool.inputSchema.type === 'object'))
@@ -88,6 +88,12 @@ async function exercise(protocol) {
     assert.equal((await call('get_customer', { contact_id: saved.id })).record.input.stage, 'won')
     const priority = await call('list_customers', { quick_view: 'priority', level: 'A', sample_status: 'in_transit' })
     assert.ok(priority.rows.some(row => row.id === saved.id))
+    const views = await call('list_customer_views')
+    const priorityView = views.views.find(view => view.id === 'priority')
+    assert.equal(priorityView.config.query.quick_view, 'priority')
+    const sameView = await call('query_customers', { ...priorityView.config.query,
+      filter: { type: 'rule', field: 'stage', operator: 'eq', value: 'won' } })
+    assert.ok(sameView.rows.some(row => row.id === saved.id))
     const stale = await send('tools/call', { name: 'update_customer', arguments: {
       request_id: 'stale-' + protocol, contact_id: saved.id, stage: 'contacted', expected_revision: contact.record.record_revision,
     } })
@@ -126,7 +132,7 @@ try {
     const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 3000 })
     const health = JSON.parse(stdout)
     process.kill(health.processId)
-    assert.equal(health.schemaVersion, 7)
+    assert.equal(health.schemaVersion, 8)
   } catch (error) {
     if (error.code !== 1 && error.code !== 'ESRCH') throw error
   }

@@ -18,7 +18,7 @@ export function useCustomerFields(includeArchived = false) {
   })
 }
 
-function FieldInput({ label, kind, options, value, change }: FieldInputProps) {
+export function FieldInput({ label, kind, options, value, change }: FieldInputProps) {
   if (kind === 'multi_select') {
     const selected = value?.type === 'multi_select' ? value.value : []
     const available = options.filter(option => !option.archived || selected.includes(option.id))

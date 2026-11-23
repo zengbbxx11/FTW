@@ -8,6 +8,19 @@ use sqlx::SqlitePool;
 
 pub async fn crm_call(pool: &SqlitePool, command: Command) -> Response {
     match command {
+        Command::Views => {
+            run(
+                pool,
+                crm::Command::ListViews {
+                    include_archived: false,
+                },
+                None,
+            )
+            .await
+        }
+        Command::QueryCustomers { query } => {
+            run(pool, crm::Command::ListContacts { query }, None).await
+        }
         Command::StateCatalog => run(pool, crm::Command::StateCatalog, None).await,
         Command::Fields => {
             run(

@@ -519,7 +519,7 @@ fn normalize(kind: Kind, value: &mut Value, options: &HashSet<&str>) -> Result<(
     }
 }
 
-fn valid_date(date: &str) -> bool {
+pub(super) fn valid_date(date: &str) -> bool {
     let bytes = date.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'
@@ -548,3 +548,61 @@ fn valid_date(date: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+pub async fn project(
+    pool: &SqlitePool,
+    actor: Actor<'_>,
+    contacts: &[String],
+    field_ids: &[String],
+) -> Result<HashMap<String, Vec<Entry>>> {
+    if contacts.is_empty() || field_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+        "SELECT v.contact_id,v.field_id,v.kind,substr(v.text_value,1,120) text_value,v.number_value,
+        v.bool_value,v.option_id,(SELECT json_group_array(m.option_id) FROM crm_field_multi_values m
+        WHERE m.contact_id=v.contact_id AND m.field_id=v.field_id) multi
+        FROM crm_field_values v JOIN crm_fields f ON f.id=v.field_id WHERE NOT f.archived",
+    );
+    if matches!(actor.source, Source::Agent) {
+        query.push(" AND f.agent_access<>'hidden'");
+    }
+    query.push(" AND v.contact_id IN (");
+    let mut ids = query.separated(",");
+    for id in contacts {
+        ids.push_bind(id);
+    }
+    ids.push_unseparated(")");
+    query.push(" AND v.field_id IN (");
+    let mut fields = query.separated(",");
+    for field in field_ids {
+        fields.push_bind(field);
+    }
+    fields.push_unseparated(")");
+    let rows = query.build().fetch_all(pool).await?;
+    let mut values: HashMap<String, Vec<Entry>> = HashMap::new();
+    use sqlx::Row;
+    for row in rows {
+        let value = match row.get::<&str, _>("kind") {
+            "text" => Value::Text(row.get("text_value")),
+            "date" => Value::Date(row.get("text_value")),
+            "url" => Value::Url(row.get("text_value")),
+            "number" => Value::Number(row.get("number_value")),
+            "checkbox" => Value::Checkbox(row.get("bool_value")),
+            "single_select" => Value::SingleSelect(row.get("option_id")),
+            "multi_select" => Value::MultiSelect(
+                serde_json::from_str(row.get("multi"))
+                    .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+            ),
+            _ => return Err(Error::Invalid("field_kind")),
+        };
+        values
+            .entry(row.get("contact_id"))
+            .or_default()
+            .push(Entry {
+                field_id: row.get("field_id"),
+                value: Some(value),
+            });
+    }
+    Ok(values)
+}

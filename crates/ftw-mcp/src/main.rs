@@ -209,6 +209,27 @@ struct Ftw {
 #[tool_router(router = tool_router)]
 impl Ftw {
     #[tool(
+        description = "List saved FTW customer views available to this Agent. Layout settings reference stable field IDs."
+    )]
+    async fn list_customer_views(&self) -> Result<String, String> {
+        self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::Views)))
+            .await
+    }
+
+    #[tool(
+        description = "Query customers with Core-validated structured filters and ordering. Use a saved view's query for identical results."
+    )]
+    async fn query_customers(
+        &self,
+        Parameters(query): Parameters<ftw_ipc::crm::ContactQuery>,
+    ) -> Result<String, String> {
+        self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::QueryCustomers {
+            query,
+        })))
+        .await
+    }
+
+    #[tool(
         description = "List authorized custom customer fields, their types, defaults and stable option IDs."
     )]
     async fn list_customer_fields(&self) -> Result<String, String> {

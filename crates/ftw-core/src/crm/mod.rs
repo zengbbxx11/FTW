@@ -1,9 +1,12 @@
+mod cells;
 pub(crate) mod contacts;
 mod duplicates;
 mod fields;
 mod leads;
+mod query;
 mod timeline;
 mod validation;
+mod views;
 
 use ftw_ipc::{
     crm::{Command, Result as Reply, Source},
@@ -68,7 +71,24 @@ pub async fn dispatch(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> 
 
 async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Result<Reply> {
     match command {
-        Command::ListContacts { query } => contacts::list(pool, query).await,
+        Command::UpdateCells {
+            targets,
+            field,
+            value,
+        } => cells::update(pool, actor, targets, &field, &value).await,
+        Command::ListContacts { query } => contacts::list(pool, query, actor).await,
+        Command::ListViews { include_archived } => views::list(pool, actor, include_archived).await,
+        Command::SaveView { view } => views::save(pool, actor, view).await,
+        Command::ArchiveView {
+            id,
+            expected_revision,
+            archived,
+        } => views::archive(pool, actor, &id, expected_revision, archived).await,
+        Command::MoveView {
+            id,
+            expected_revision,
+            direction,
+        } => views::move_view(pool, actor, &id, expected_revision, direction).await,
         Command::GetContact { id } => contacts::get(pool, &id).await,
         Command::StateCatalog => contacts::state_catalog(pool).await,
         Command::ListFields { include_archived } => {
