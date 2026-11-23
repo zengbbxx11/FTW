@@ -25,6 +25,19 @@ struct DraftId {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct AuthorizedDraft {
+    draft_id: String,
+    revision: i64,
+    #[schemars(
+        description = "first_outreach, outreach_followup, quote_communication, sample_communication, or other_business"
+    )]
+    purpose: String,
+    task_id: String,
+    request_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct CustomerId {
     #[schemars(description = "FTW contact UUID")]
     contact_id: String,
@@ -204,6 +217,7 @@ struct Ftw {
     executable: PathBuf,
     dev_root: Option<PathBuf>,
     access: Mutex<()>,
+    agent_token: Option<String>,
 }
 
 #[tool_router(router = tool_router)]
@@ -544,6 +558,25 @@ impl Ftw {
     }
 
     #[tool(
+        description = "Queue a fixed draft revision under standing authorization. Requires a registered MCP launch and explicit settings saved by the FTW user. Returns a queue status, not a delivery receipt."
+    )]
+    async fn send_authorized_email(
+        &self,
+        Parameters(input): Parameters<AuthorizedDraft>,
+    ) -> Result<String, String> {
+        let token = self.agent_token.as_ref().ok_or("mail_agent_unregistered: configure the registered FTW_AGENT_TOKEN in the MCP launch environment.")?;
+        self.call(AgentCommand::SendAuthorized {
+            token: ftw_ipc::mail::Secret(token.clone()),
+            id: input.draft_id,
+            revision: input.revision,
+            purpose: input.purpose,
+            task_id: input.task_id,
+            request_id: input.request_id,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Put a draft in FTW's human approval queue. Ask the user to review it in FTW Mail Center."
     )]
     async fn request_email_approval(
@@ -585,6 +618,7 @@ impl Ftw {
             executable: executable.with_file_name("ftw-core.exe"),
             dev_root,
             access: Mutex::new(()),
+            agent_token: env::var("FTW_AGENT_TOKEN").ok(),
         })
     }
 
@@ -643,7 +677,9 @@ impl Ftw {
     fn start_core(&self) -> Result<(), String> {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut child = Command::new(&self.executable);
-        child.args(["serve", "--idle-exit"]);
+        child
+            .args(["serve", "--idle-exit"])
+            .env_remove("FTW_AGENT_TOKEN");
         if let Some(root) = &self.dev_root {
             child.arg("--dev-root").arg(root);
         }

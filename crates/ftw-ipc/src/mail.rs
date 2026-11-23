@@ -33,8 +33,45 @@ pub struct DraftInput {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMailPolicy {
+    pub revision: i64,
+    pub mode: String,
+    pub accounts: Vec<String>,
+    pub purposes: Vec<String>,
+    pub daily_limit: u16,
+    pub task_limit: u16,
+    pub interval_seconds: u16,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RegisteredAgent {
+    pub id: String,
+    pub name: String,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PolicyReview {
+    pub id: String,
+    pub state: String,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    AgentMailSettings,
+    SetAgentMailPolicy {
+        policy: AgentMailPolicy,
+    },
+    RegisterMailAgent {
+        name: String,
+        token: Secret,
+    },
+    RevokeMailAgent {
+        id: String,
+    },
     ListAccounts,
     SaveAccount {
         name: String,
@@ -86,6 +123,14 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    SendAuthorized {
+        token: Secret,
+        id: String,
+        revision: i64,
+        purpose: String,
+        task_id: String,
+        request_id: String,
+    },
     ListCustomers {
         query: Box<crate::crm::ContactQuery>,
     },
@@ -184,6 +229,12 @@ pub struct Draft {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    AgentMailSettings {
+        policy: AgentMailPolicy,
+        agents: Vec<RegisteredAgent>,
+        review: Option<PolicyReview>,
+        automatic_available: bool,
+    },
     Accounts {
         rows: Vec<Account>,
     },

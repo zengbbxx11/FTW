@@ -6,7 +6,7 @@ use std::{
     io,
     os::windows::{
         fs::OpenOptionsExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::Path,
     ptr::{null_mut, NonNull},
@@ -142,12 +142,15 @@ fn directory_identity(path: &Path) -> io::Result<String> {
     ))
 }
 
-fn current_user_sid() -> io::Result<String> {
+pub fn current_user_sid() -> io::Result<String> {
     let mut token = null_mut();
     // Open the process token with read-only access before wrapping the returned handle.
     require_success(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) })?;
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    token_user_sid(token.as_handle())
+}
 
+pub fn token_user_sid(token: std::os::windows::io::BorrowedHandle<'_>) -> io::Result<String> {
     let mut bytes = 0;
     // A zero-length query returns the required byte count for TOKEN_USER and its SID.
     unsafe { GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut bytes) };

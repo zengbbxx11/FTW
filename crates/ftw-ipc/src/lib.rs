@@ -9,7 +9,7 @@ pub mod views;
 mod windows;
 
 pub use profile::{display_path, Profile, StorageMode};
-pub use windows::{PipeEndpoint, PipeOpenError};
+pub use windows::{current_user_sid, token_user_sid, PipeEndpoint, PipeOpenError};
 
 use serde::{Deserialize, Serialize};
 use std::io;

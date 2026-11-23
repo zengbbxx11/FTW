@@ -63,7 +63,10 @@ async fn run(profile: &Profile, log: &mut File, idle_exit: bool) -> Result<(), C
     log_event(log, &format!("ready schema_version={schema}"))
         .map_err(|error| CoreError::Io("log_unavailable", error))?;
 
-    let mail = MailService::new(database.clone()).await?;
+    let mail = MailService::new(database.clone())
+        .await?
+        .with_send_ledger(&profile.data)
+        .await;
     let worker = mail.start_worker();
     let result = run_requests(&mut pipe, &database, &mail, profile, idle_exit).await;
     worker.abort();

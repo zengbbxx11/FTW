@@ -1,7 +1,11 @@
 mod approval;
+mod authorized;
 mod credentials;
 mod inbox;
+mod ledger;
+mod policy;
 mod smtp;
+mod user_verification;
 mod worker;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -77,6 +81,7 @@ impl Snapshot {
 #[derive(Clone)]
 pub struct MailService {
     pool: SqlitePool,
+    ledger: Option<ledger::Ledger>,
     prompt: Arc<Mutex<()>>,
     imap: Arc<Mutex<()>>,
     delivery: Arc<Mutex<()>>,
@@ -85,6 +90,8 @@ pub struct MailService {
 impl MailService {
     pub async fn new(pool: SqlitePool) -> std::result::Result<Self, sqlx::Error> {
         let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE mail_agent_reviews SET state='failed',outcome='approval_interrupted' WHERE state='waiting'")
+            .execute(&mut *tx).await?;
         sqlx::query("UPDATE email_approval_attempts SET state='interrupted',outcome='approval_interrupted',finished_at=unixepoch() WHERE state='waiting'").execute(&mut *tx).await?;
         sqlx::query("UPDATE email_drafts SET state='delivery_unknown', updated_at=unixepoch() WHERE state='sending'")
             .execute(&mut *tx).await?;
@@ -96,10 +103,24 @@ impl MailService {
         tx.commit().await?;
         Ok(Self {
             pool,
+            ledger: None,
             prompt: Arc::new(Mutex::new(())),
             imap: Arc::new(Mutex::new(())),
             delivery: Arc::new(Mutex::new(())),
         })
+    }
+
+    pub async fn with_send_ledger(mut self, data: &std::path::Path) -> Self {
+        let path = data.join("agent-send-safety.sqlite");
+        let required = sqlx::query_scalar::<_, bool>(
+            "SELECT ledger_required FROM mail_agent_policy WHERE id=1",
+        )
+        .fetch_one(&self.pool)
+        .await;
+        if matches!(required, Ok(false)) || path.is_file() {
+            self.ledger = ledger::Ledger::open(&path).await.ok();
+        }
+        self
     }
 
     pub async fn restore(
@@ -198,14 +219,72 @@ impl MailService {
                 }
                 self.save(None, input, Source::Agent).await
             }
-            AgentCommand::RequestApproval { id } => self.request_approval(&id, Source::Agent).await,
-            AgentCommand::SendApproved { id } => self.enqueue(&id, Source::Agent).await,
+            AgentCommand::SendAuthorized {
+                token,
+                id,
+                revision,
+                purpose,
+                task_id,
+                request_id,
+            } => match policy::digest(&token.0) {
+                Ok(digest) => {
+                    self.enqueue_authorized(authorized::Submission {
+                        digest,
+                        id,
+                        revision,
+                        purpose,
+                        task: task_id,
+                        request: request_id,
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            },
+            AgentCommand::RequestApproval { id } => {
+                if let Err(error) = self.agent_manual_allowed().await {
+                    return response(Err(error));
+                }
+                self.request_approval(&id, Source::Agent).await
+            }
+            AgentCommand::SendApproved { id } => {
+                if let Err(error) = self.agent_manual_allowed().await {
+                    return response(Err(error));
+                }
+                self.enqueue(&id, Source::Agent).await
+            }
         };
         response(result)
     }
 
+    async fn agent_manual_allowed(&self) -> Result<()> {
+        let mode: String = sqlx::query_scalar("SELECT mode FROM mail_agent_policy WHERE id=1")
+            .fetch_one(&self.pool)
+            .await?;
+        if mode == "disabled" {
+            Err(Failure::Code("agent_send_disabled"))
+        } else {
+            Ok(())
+        }
+    }
+
     async fn desktop_call(&self, command: Command) -> Result<Reply> {
         match command {
+            Command::AgentMailSettings => self.policy_settings().await,
+            Command::SetAgentMailPolicy { policy } => {
+                self.start_policy_change(policy::Change::Policy(policy))
+                    .await
+            }
+            Command::RegisterMailAgent { name, token } => {
+                self.start_policy_change(policy::Change::Register {
+                    name,
+                    digest: policy::digest(&token.0)?,
+                })
+                .await
+            }
+            Command::RevokeMailAgent { id } => {
+                self.start_policy_change(policy::Change::Revoke { id })
+                    .await
+            }
             Command::ListAccounts => self.accounts(true).await,
             Command::SaveAccount {
                 name,
@@ -314,26 +393,17 @@ impl MailService {
                 } else {
                     hostname(&target)?
                 };
-                let mut tx = self.pool.begin().await?;
-                if blocked {
-                    sqlx::query("INSERT OR IGNORE INTO suppression_list(normalized) VALUES (?)")
-                        .bind(&normalized)
-                        .execute(&mut *tx)
-                        .await?;
-                } else {
-                    sqlx::query("DELETE FROM suppression_list WHERE normalized=?")
-                        .bind(&normalized)
-                        .execute(&mut *tx)
-                        .await?;
+                if !blocked {
+                    return self
+                        .start_policy_change(policy::Change::Unblock { target: normalized })
+                        .await;
                 }
-                audit(
-                    &mut tx,
-                    Source::Manual,
-                    "suppression",
-                    &normalized,
-                    if blocked { "block" } else { "unblock" },
-                )
-                .await?;
+                let mut tx = self.pool.begin().await?;
+                sqlx::query("INSERT OR IGNORE INTO suppression_list(normalized) VALUES (?)")
+                    .bind(&normalized)
+                    .execute(&mut *tx)
+                    .await?;
+                audit(&mut tx, Source::Manual, "suppression", &normalized, "block").await?;
                 tx.commit().await?;
                 Ok(Reply::Saved { id: normalized })
             }

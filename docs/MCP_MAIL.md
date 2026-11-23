@@ -78,3 +78,13 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 ## 保存的客户视图
 
 `list_customer_views` 返回 Agent 可见的已保存视图以及 Core 查询条件。把一个视图的 `config.query` 传入 `query_customers` 即可应用同一套业务条件。可按客户字段和启用了 Agent 读取的自定义字段筛选或排序。引用受限制字段的视图仅桌面可见。已有 `list_customers` 调用格式保持兼容。
+
+## Agent 发信权限
+
+从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式。保存策略以及登记或撤销 Agent 时，Core 会在 Windows 原生安全窗口核验当前账户。采用能够经 Windows 密码验证的本机账户，核验失败时保留原设置。R5 完成发送底座时，自动模式仍待 R6 联动和验证。
+
+每个 MCP 客户端可以单独登记。用现有 stdio 配置运行 `ftw-mcp.exe`，将 FTW 一次性展示的令牌提供给该 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。Codex、WorkBuddy 或其他支持标准 MCP stdio 的客户端调用同一工具。令牌属于本机工作台，不要粘贴到 Agent 对话、项目配置、提交或日志中。Core 保存令牌摘要，撤销立即阻止其新的自动发送。
+
+`send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`，禁止模式下 Agent 仍可创建草稿和读邮件。
+
+便携复制整个停用后的数据目录时保留 `agent-send-safety.sqlite`。业务备份恢复会撤销已登记 Agent、关闭自动授权并冻结旧的待发送任务。安全账本留在同一数据目录，防止业务数据回退后重复提交。

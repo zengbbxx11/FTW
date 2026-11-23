@@ -131,8 +131,8 @@ impl MailService {
         check_suppression(&mut tx, &draft.recipient).await?;
         let job_id = new_id();
         let message_id = format!("<{job_id}@ftw.local>");
-        sqlx::query("INSERT INTO email_outbox_jobs(id,draft_id,approval_id,revision,message_id_header,state) VALUES (?,?,?,?,?,'queued')")
-            .bind(&job_id).bind(id).bind(approval).bind(revision).bind(message_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO email_outbox_jobs(id,draft_id,approval_id,revision,message_id_header,state,queued_source) VALUES (?,?,?,?,?,'queued',?)")
+            .bind(&job_id).bind(id).bind(approval).bind(revision).bind(message_id).bind(source.as_str()).execute(&mut *tx).await?;
         sqlx::query("UPDATE email_drafts SET state='queued', updated_at=unixepoch() WHERE id=?")
             .bind(id)
             .execute(&mut *tx)

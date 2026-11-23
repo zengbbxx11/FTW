@@ -50,7 +50,7 @@ async function exercise(protocol) {
       'add_customer_activity', 'create_customer', 'create_email_draft', 'create_lead_candidate',
       'get_customer', 'get_customer_field_values', 'get_customer_state_catalog', 'get_customer_timeline', 'get_email_draft', 'get_email_thread',
       'get_pending_approvals', 'list_customer_fields', 'list_customer_views', 'list_customers', 'list_email_accounts', 'list_email_drafts',
-      'list_inbox', 'list_lead_candidates', 'query_customers', 'request_email_approval', 'send_approved_email', 'set_customer_field_values',
+      'list_inbox', 'list_lead_candidates', 'query_customers', 'request_email_approval', 'send_approved_email', 'send_authorized_email', 'set_customer_field_values',
       'sync_mailbox', 'update_customer',
     ])
     assert.ok(tools.every(tool => tool.inputSchema.type === 'object'))
@@ -132,7 +132,7 @@ try {
     const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 3000 })
     const health = JSON.parse(stdout)
     process.kill(health.processId)
-    assert.equal(health.schemaVersion, 8)
+    assert.equal(health.schemaVersion, 9)
   } catch (error) {
     if (error.code !== 1 && error.code !== 'ESRCH') throw error
   }

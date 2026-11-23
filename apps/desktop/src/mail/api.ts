@@ -24,7 +24,21 @@ export type Draft = DraftRow & {
 
 type AccountInput = { name: string; email: string; host: string; port: number; security: 'tls' | 'starttls'; username: string; password: string }
 
+export type AgentMailPolicy = {
+  revision: number; mode: 'manual' | 'disabled' | 'automatic'; accounts: string[]; purposes: string[]
+  daily_limit: number; task_limit: number; interval_seconds: number
+}
+export type AgentMailSettings = {
+  kind: 'agent_mail_settings'; policy: AgentMailPolicy; automatic_available: boolean
+  agents: { id: string; name: string; revoked: boolean }[]
+  review: { id: string; state: 'waiting' | 'saved' | 'cancelled' | 'failed'; outcome: string | null } | null
+}
+
 export type MailCommand =
+  | { action: 'agent_mail_settings' }
+  | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy }
+  | { action: 'register_mail_agent'; name: string; token: string }
+  | { action: 'revoke_mail_agent'; id: string }
   | { action: 'list_accounts' }
   | ({ action: 'save_account' } & AccountInput)
   | { action: 'set_account_preferences'; id: string; daily_limit: number; signature: string }
@@ -35,6 +49,7 @@ export type MailCommand =
   | { action: 'set_suppression'; target: string; blocked: boolean }
 
 type MailResult =
+  | AgentMailSettings
   | { kind: 'accounts'; rows: Account[] }
   | { kind: 'drafts'; rows: DraftRow[]; has_more: boolean }
   | { kind: 'draft'; record: Draft }
@@ -52,6 +67,19 @@ export async function mailCall<Kind extends MailResult['kind']>(
 }
 
 const mailErrorLabels: Record<string, string> = {
+  agent_policy_cancelled: '用户取消了 Windows 核验。',
+  agent_policy_verification_failed: 'Windows 无法核验当前用户。请在系统窗口输入当前账户密码。',
+  agent_policy_review_expired: '权限确认已过期，请重新发起。',
+  agent_policy_changed: '权限设置已更新，请重新打开后再保存。',
+  agent_policy_invalid: '请检查发送限额、发件邮箱和授权用途。',
+  agent_send_history_unavailable: '发信安全账本不可用，自动发送保持关闭。',
+  agent_automatic_unavailable: '当前版本尚未开放自动发送。',
+  agent_send_disabled: '工作台已禁止 Agent 发送邮件。',
+  agent_policy_not_authorized: '当前 Agent 或邮件用途不在有效授权范围内。',
+  agent_task_limit: '已达到该任务的发送数量上限。',
+  agent_daily_limit: '已达到 Agent 的发件账户近 24 小时发送上限。',
+  outreach_already_recorded: '该邮箱已有开发记录、待发送任务或结果未知的邮件。',
+  outreach_requires_history: '该用途需要有可核对的历史邮件。',
   imap_busy: '收件同步正在进行，请稍后再试。',
   imap_recent_sync: '刚刚完成了一次同步，请稍候。',
   imap_not_configured: '请先配置该账户的 IMAP 设置。',

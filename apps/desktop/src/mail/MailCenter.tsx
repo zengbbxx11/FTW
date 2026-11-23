@@ -2,10 +2,11 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateLabel, request, sourceLabel, type Contact } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
+import { AgentMail } from './AgentMail'
 import { ImapSettings, InboxView, MailThread } from './Inbox'
 import { mailCall, mailError, states, type Attachment, type Draft, type DraftInput, type MailCommand } from './api'
 
-type View = { kind: 'drafts' | 'accounts' | 'inbox' | 'imap' } | { kind: 'draft' | 'edit'; id: string }
+type View = { kind: 'drafts' | 'accounts' | 'inbox' | 'imap' | 'agent' } | { kind: 'draft' | 'edit'; id: string }
 
 function ErrorNotice({ error }: { error: unknown }) {
   return <p className="alert error" role="alert">{mailError(error)}</p>
@@ -30,12 +31,14 @@ export function MailCenter({ initialContact, inboxContact, initialInbox, pickCon
         <button className="button" onClick={() => { setCompose(false); setView({ kind: 'inbox' }) }}>收件箱</button>
         <button className="button" onClick={() => { setCompose(false); setView({ kind: 'accounts' }) }}>发件账户</button>
         <button className="button" onClick={() => { setCompose(false); setView({ kind: 'imap' }) }}>收件设置</button>
+        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'agent' }) }}>Agent 发信权限</button>
         <button className="button primary" onClick={initialContact ? () => setCompose(true) : pickContact}>从客户写邮件</button>
       </div>
     </div>
     {compose && initialContact ? <DraftForm contact={initialContact} saved={openDraft} close={showList} />
       : view.kind === 'accounts' ? <Accounts />
       : view.kind === 'imap' ? <ImapSettings />
+      : view.kind === 'agent' ? <AgentMail />
       : view.kind === 'inbox' ? <InboxView contactId={inboxContact} openContact={openContact} />
       : view.kind === 'draft' || view.kind === 'edit' ?
         <DraftView key={view.id} id={view.id} editing={view.kind === 'edit'} openContact={openContact}
@@ -68,7 +71,7 @@ function Accounts() {
       if (command.action === 'replace_password') setEditing('')
       if (command.action === 'set_account_preferences') setPreferences('')
       setNotice(result.kind === 'connection_verified' ? 'SMTP 连接和认证通过。' :
-        command.action === 'set_suppression' ? '拒发规则已保存。' : '邮箱账户设置已保存。')
+        command.action === 'set_suppression' ? command.blocked ? '已加入拒发名单。' : '移出拒发名单需完成 Windows 核验。可在 Agent 发信权限中查看结果。' : '邮箱账户设置已保存。')
       await cache.invalidateQueries({ queryKey: ['mail-accounts'] })
     },
   })
