@@ -312,10 +312,20 @@ const editorGroups = {
 } as const
 type EditorGroup = keyof typeof editorGroups
 
+function revealEditorSection(id: string) {
+  const section = document.getElementById(id)
+  if (!section) return
+  if (section instanceof HTMLDetailsElement) section.open = true
+  section.scrollIntoView({ block: 'start' })
+  section.focus({ preventScroll: true })
+}
+
 export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }: { record?: Contact; saved: (id: string) => void; cancel: () => void; initialGroup?: EditorGroup }) {
   const [input, setInput] = useState(record?.input ?? blank)
   const [original, setOriginal] = useState(input)
   const [group, setGroup] = useState<EditorGroup>(initialGroup)
+  const [managingFields, setManagingFields] = useState(false)
+  const header = useRef<HTMLDivElement>(null)
   const discard = useRef<HTMLDialogElement>(null)
   const sectionPrefix = useId()
   const [custom, setCustom] = useState<Record<string, FieldValue | null>>({})
@@ -358,22 +368,25 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
   }
   function goTo(item: EditorGroup) {
     setGroup(item)
-    const section = document.getElementById(sectionPrefix + item)
-    if (section instanceof HTMLDetailsElement) section.open = true
-    section?.scrollIntoView({ block: 'start' })
-    section?.focus({ preventScroll: true })
+    revealEditorSection(sectionPrefix + item)
   }
   function addMethod(kind: MethodKind) {
     update('methods', [...input.methods, { kind, value: '', label: '',
       is_primary: !input.methods.some(method => method.kind === kind), is_verified: false }])
   }
   useEffect(() => {
+    const bar = header.current
+    const editor = bar?.parentElement
+    if (!bar || !editor) return
+    const measure = () => editor.style.setProperty('--editor-header-height', bar.offsetHeight + 'px')
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(bar)
+    return () => observer.disconnect()
+  }, [])
+  useEffect(() => {
     if (initialGroup === 'basic') return
-    const frame = requestAnimationFrame(() => {
-      const section = document.getElementById(sectionPrefix + initialGroup)
-      section?.scrollIntoView({ block: 'start' })
-      section?.focus({ preventScroll: true })
-    })
+    const frame = requestAnimationFrame(() => revealEditorSection(sectionPrefix + initialGroup))
     return () => cancelAnimationFrame(frame)
   }, [initialGroup, sectionPrefix])
   function fieldsFor(keys: Array<typeof textFields[number][0]>) {
@@ -387,7 +400,8 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
     })
   }
 
-  return <form className="contact-editor" onSubmit={event => { event.preventDefault(); mutation.mutate(false) }}
+  return <>
+  <form className="contact-editor" onSubmit={event => { event.preventDefault(); mutation.mutate(false) }}
     onKeyDown={event => {
       if (event.key === 'Escape' && !(event.target as HTMLElement).closest('.confirmation')) {
         event.stopPropagation()
@@ -399,7 +413,7 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
       const details = (event.target as HTMLElement).closest('details')
       if (details) details.open = true
     }}>
-    <div className="contact-editor-status"><header className="page-heading contact-editor-heading">
+    <div ref={header} className="contact-editor-status"><header className="page-heading contact-editor-heading">
       <div><h1>{record ? '编辑客户' : '新增客户'}</h1>
         <p>{record ? record.input.display_name : '先填写基本信息，联系方式和其他资料可随时补充。'}</p></div>
       <div className="row-actions">
@@ -422,11 +436,16 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
     <div className="editor-workspace">
     <nav className="editor-nav" aria-label="客户表单分区">{(Object.entries(editorGroups) as Array<[EditorGroup, string]>)
       .filter(([key]) => key !== 'custom' || !record).map(([key,label]) =>
-        <button type="button" key={key} aria-current={group === key ? 'location' : undefined} onClick={() => goTo(key)}>
+        <button type="button" key={key} aria-controls={sectionPrefix + key}
+          aria-current={group === key ? 'location' : undefined} onClick={() => goTo(key)}>
           <CustomerIcon name={key === 'basic' ? 'contact' : key === 'channels' ? 'mail' : key === 'interests' ? 'box' : key === 'notes' ? 'note' : 'settings'} />{label}
         </button>)}</nav>
-    <fieldset className="editor-fields" disabled={mutation.isPending}>
-      <section className="panel" id={sectionPrefix+'basic'} tabIndex={-1}>
+    <fieldset className="editor-fields" disabled={mutation.isPending}
+      onFocusCapture={event => {
+        const section = (event.target as HTMLElement).closest<HTMLElement>('[data-editor-group]')
+        if (section) setGroup(section.dataset.editorGroup as EditorGroup)
+      }}>
+      <section className="panel" id={sectionPrefix+'basic'} data-editor-group="basic" data-active={group === 'basic'} tabIndex={-1}>
         <h2><CustomerIcon name="contact" />基本信息</h2>
         <div className="form-grid">
           <Field label="客户名称 *"><input required autoFocus={initialGroup === 'basic'} value={input.display_name} onChange={e => update('display_name', e.target.value)} /></Field>
@@ -437,7 +456,7 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
           {fieldsFor(['customer_level','customer_source'])}
         </div>
       </section>
-      <section className="panel" id={sectionPrefix+'channels'} tabIndex={-1}>
+      <section className="panel" id={sectionPrefix+'channels'} data-editor-group="channels" data-active={group === 'channels'} tabIndex={-1}>
         <div className="section-heading"><h2><CustomerIcon name="mail" />联系方式</h2></div>
         <div className="form-grid">{fieldsFor(['website_url','primary_language'])}</div>
         <div className="row-actions editor-channel-tools">
@@ -458,7 +477,7 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
           </div>
         ))}
       </section>
-      <details className="panel editor-section" id={sectionPrefix+'business'} tabIndex={-1} open={initialGroup === 'business' || undefined}>
+      <details className="panel editor-section" id={sectionPrefix+'business'} data-editor-group="business" data-active={group === 'business'} tabIndex={-1}>
         <summary><CustomerIcon name="settings" />业务状态<span>客户类型 · 样品 · 批量订单</span></summary>
         <div className="form-grid">
           {fieldsFor(['customer_type','first_contact_channel','sample_status','bulk_order_status','alibaba_buyer_id'])}
@@ -468,7 +487,7 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
             onChange={e => update('last_contact_at', fromDateInput(e.target.value))} /></Field>
         </div>
       </details>
-      <details className="panel editor-section" id={sectionPrefix+'interests'} tabIndex={-1} open={initialGroup === 'interests' || undefined}><summary><CustomerIcon name="box" />产品兴趣{input.interests.length > 0 && ' · ' + input.interests.length}</summary>
+      <details className="panel editor-section" id={sectionPrefix+'interests'} data-editor-group="interests" data-active={group === 'interests'} tabIndex={-1}><summary><CustomerIcon name="box" />产品兴趣{input.interests.length > 0 && ' · ' + input.interests.length}</summary>
         <div className="section-heading"><button className="button" type="button" disabled={input.interests.length >= 20}
           onClick={() => update('interests', [...input.interests, { product_text: '', intent_quantity: null, quantity_is_estimate: false, requirement: '' }])}>添加产品</button></div>
         {input.interests.map((interest, index) => (
@@ -483,9 +502,13 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
           </div>
         ))}
       </details>
-      {!record && <div id={sectionPrefix+'custom'} tabIndex={-1}><NewCustomerFields values={custom}
-        change={(id, value) => setCustom(old => ({ ...old, [id]: value }))} /></div>}
-      <details className="panel editor-section" id={sectionPrefix+'notes'} tabIndex={-1} open={initialGroup === 'notes' || undefined}>
+      {!record && <details className="panel editor-section" id={sectionPrefix+'custom'} data-editor-group="custom"
+        data-active={group === 'custom'} tabIndex={-1}>
+        <summary><CustomerIcon name="settings" />自定义属性</summary>
+        <NewCustomerFields values={custom} manage={() => setManagingFields(true)}
+          change={(id, value) => setCustom(old => ({ ...old, [id]: value }))} />
+      </details>}
+      <details className="panel editor-section" id={sectionPrefix+'notes'} data-editor-group="notes" data-active={group === 'notes'} tabIndex={-1}>
         <summary><CustomerIcon name="note" />备注与需求</summary><div className="form-grid">
           <Field label="主要需求"><textarea rows={3} value={input.main_need} onChange={e => update('main_need', e.target.value)} /></Field>
           <Field label="备注"><textarea rows={3} value={input.notes} onChange={e => update('notes', e.target.value)} /></Field>
@@ -506,6 +529,16 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic' }:
       </div>
     </dialog>
   </form>
+  {managingFields && <NewCustomerFieldManager close={() => { setManagingFields(false); goTo('custom') }} />}
+  </>
+}
+
+function NewCustomerFieldManager({ close }: { close: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => { dialog.current?.showModal() }, [])
+  return <dialog ref={dialog} className="customer-editor-dialog" aria-label="客户字段" onClose={close}>
+    <FieldManager back={() => dialog.current?.close()} backLabel="返回新增客户" />
+  </dialog>
 }
 
 function CustomerEditorDialog({ record, group, close }: { record: Contact; group: EditorGroup; close: () => void }) {

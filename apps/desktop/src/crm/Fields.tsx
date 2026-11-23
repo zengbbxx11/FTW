@@ -76,15 +76,20 @@ export function displayFieldValue(field: CustomField, value: FieldValue | null |
   return String(value.value)
 }
 
-export function NewCustomerFields({ values, change }: {
-  values: DraftValues; change: (id: string, value: FieldValue | null) => void
+export function NewCustomerFields({ values, change, manage }: {
+  values: DraftValues; change: (id: string, value: FieldValue | null) => void; manage: () => void
 }) {
   const fields = useCustomerFields()
-  if (fields.isError) return <Problem error={fields.error} />
-  if (!fields.data?.fields.length) return null
-  return <details className="panel editor-section"><summary>自定义属性</summary>
-    <CustomValueInputs fields={fields.data.fields} values={values} change={change} defaults />
-  </details>
+  if (fields.isError) return <div>
+    <Problem error={fields.error} />
+    <button type="button" className="button" onClick={() => void fields.refetch()}>重新读取字段</button>
+  </div>
+  if (fields.isPending) return <p className="muted" role="status">正在读取自定义属性…</p>
+  if (!fields.data.fields.length) return <div className="row-actions editor-empty-fields">
+    <p className="muted">尚未配置自定义字段。</p>
+    <button type="button" className="button" onClick={manage}>管理自定义字段</button>
+  </div>
+  return <CustomValueInputs fields={fields.data.fields} values={values} change={change} defaults />
 }
 
 export function CustomerFieldPanel({ contactId, archived }: { contactId: string; archived: boolean }) {
@@ -154,7 +159,7 @@ export function CustomerFieldPanel({ contactId, archived }: { contactId: string;
 
 const accessLabels = { hidden: '仅工作台可见', read: 'Agent 可读', write: 'Agent 可读写' } as const
 
-export function FieldManager({ back }: { back: () => void }) {
+export function FieldManager({ back, backLabel = '返回客户' }: { back: () => void; backLabel?: string }) {
   const fields = useCustomerFields(true)
   const cache = useQueryClient()
   const [edit, setEdit] = useState<CustomField | 'new' | null>(null)
@@ -169,7 +174,7 @@ export function FieldManager({ back }: { back: () => void }) {
   const list = fields.data?.fields.filter(field => showArchived ? field.archived : !field.archived) ?? []
   return <>
     <div className="page-heading"><h1>客户字段</h1><div className="row-actions">
-      <button className="button" onClick={back}>返回客户</button>
+      <button className="button" onClick={back}>{backLabel}</button>
       {!edit && <button className="button primary" onClick={() => setEdit('new')}>新增字段</button>}
     </div></div>
     {edit && <DefinitionEditor key={edit === 'new' ? 'new' : edit.id}
