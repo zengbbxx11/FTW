@@ -1,0 +1,20 @@
+[package]
+name = "ftw-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "workbench"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ftw-ipc.workspace = true
+serde.workspace = true
+tauri = { version = "2", features = [] }
+tokio = { workspace = true, features = ["sync"] }
+
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }

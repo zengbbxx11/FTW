@@ -1,0 +1,15 @@
+[package]
+name = "ftw-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ftw-ipc.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, monospace;
+}
+
+@layer base {
+  body {
+    @apply m-0 bg-slate-100 font-sans text-slate-900 antialiased;
+  }
+
+  button:focus-visible {
+    @apply outline-2 outline-offset-4 outline-teal-600;
+  }
+}
+
+@layer components {
+  .app-header {
+    @apply flex items-center gap-3 border-b border-slate-200 bg-white px-6 py-4 sm:px-9;
+  }
+
+  .brand-mark {
+    @apply grid size-9 place-items-center rounded-lg bg-slate-900 text-lg font-semibold text-teal-200;
+  }
+
+  .brand-name {
+    @apply flex items-baseline gap-2 font-semibold;
+  }
+
+  .brand-name span {
+    @apply text-sm font-normal text-slate-600;
+  }
+
+  .workspace {
+    @apply mx-auto max-w-4xl px-6 py-10 sm:px-9 sm:py-14;
+  }
+
+  .page-heading {
+    @apply mb-6 flex flex-wrap items-center justify-between gap-3;
+  }
+
+  h1 {
+    @apply text-3xl font-semibold tracking-tight;
+  }
+
+  .refresh {
+    @apply rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold;
+    @apply hover:bg-slate-50 disabled:cursor-wait disabled:text-slate-500;
+  }
+
+  .status-card {
+    @apply overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm;
+  }
+
+  .status-header {
+    @apply flex items-center gap-4 p-6 sm:p-8;
+  }
+
+  .status-icon {
+    @apply grid size-11 shrink-0 place-items-center rounded-full text-xl font-semibold;
+  }
+
+  .status-icon.ready {
+    @apply bg-teal-100 text-teal-800;
+  }
+
+  .status-icon.loading {
+    @apply bg-slate-100 text-slate-700;
+  }
+
+  .status-icon.error {
+    @apply bg-rose-100 text-rose-800;
+  }
+
+  h2 {
+    @apply text-lg font-semibold;
+  }
+
+  .muted {
+    @apply mt-1 text-sm text-slate-600;
+  }
+
+  .details {
+    @apply grid grid-cols-2 gap-px border-t border-slate-200 bg-slate-200 sm:grid-cols-4;
+  }
+
+  .detail-cell {
+    @apply min-w-0 bg-white px-6 py-5 sm:px-8;
+  }
+
+  .detail-cell dt {
+    @apply text-xs font-medium text-slate-600;
+  }
+
+  .detail-cell dd {
+    @apply mt-2 text-sm font-semibold;
+  }
+
+  .data-path {
+    @apply col-span-full;
+  }
+
+  .data-path dd {
+    @apply font-mono font-normal [overflow-wrap:anywhere];
+  }
+
+  .error-detail {
+    @apply border-t border-slate-200 px-6 py-5 font-mono text-sm whitespace-pre-wrap text-rose-900 sm:px-8;
+    overflow-wrap: anywhere;
+  }
+}

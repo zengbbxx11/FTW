@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Read Core health from the local Workbench window.",
+  "windows": ["main"],
+  "permissions": ["allow-core-health"]
+}
