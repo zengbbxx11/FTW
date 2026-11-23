@@ -38,6 +38,8 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\build-po
 
 脚本生成 Windows x64 ZIP 及 SHA-256，输出到 `.ftw-dev\packages`。整包解压到可写目录，运行 `workbench.exe`。保留三个 EXE 和 `portable.flag`，数据在同目录的 `data` 下。移除便携标志时，Core 使用 `%LOCALAPPDATA%\FTW`。迁移整目录前关闭工作台和 MCP 客户端，并等待按需 Core 退出或结束手动运行的 Core。
 
+ZIP 内的 `acceptance` 目录包含手工验收清单、四条虚构客户的 CSV 和 `Start-FTW-Acceptance.cmd`。双击验收入口会使用 `acceptance\workspace\data`，可从空工作区核查后再导入样本。
+
 ## 工作台入口
 
 - 「客户」提供表格、看板、重点及样品客户视图。「数据质量」可查看疑似重复、缺少邮箱或地区、发信异常，核对后可选择主客户合并重复记录。原有 AppFlowy 数据可先在 AppFlowy 导出 CSV，再通过「数据与审计 → 客户 CSV」预览并导入。导入支持姓名、公司、国家或地区、邮箱、电话、社交渠道、阶段等常用列。

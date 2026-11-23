@@ -31,12 +31,23 @@ foreach ($binary in @('workbench.exe', 'ftw-core.exe', 'ftw-mcp.exe')) {
 }
 New-Item -ItemType File -Path (Join-Path $destination 'portable.flag') | Out-Null
 
+$acceptance = Join-Path $destination 'acceptance'
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'acceptance') -Destination $acceptance -Recurse
+$cases = Get-Content -LiteralPath (Join-Path $root 'docs\ACCEPTANCE_TESTS.md') -Encoding UTF8 -Raw
+($cases -split '<!-- repository tests -->', 2)[0].TrimEnd() |
+    Set-Content -LiteralPath (Join-Path $acceptance 'ACCEPTANCE_TESTS.md') -Encoding UTF8
+
 @'
 FTW portable for Windows x64
 
 Extract the whole folder to a writable location and run workbench.exe.
 WebView2 Evergreen Runtime must be available on the machine.
 Keep the three executables and portable.flag together with the data directory.
+
+For acceptance checks, open acceptance\ACCEPTANCE_TESTS.md and run
+acceptance\Start-FTW-Acceptance.cmd. The launcher uses its own workspace.
+After the empty-state checks, import acceptance\sample-customers.csv
+from Data and Audit > Customer CSV in that workspace.
 
 Configure an email account inside FTW. SMTP and IMAP credentials use
 Windows user protection. Re-enter the account credentials after a move
