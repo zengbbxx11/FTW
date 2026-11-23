@@ -188,6 +188,10 @@ export default function CustomerTable({ data, available, columns, density, catal
           const column = columnMeta.get(cell.column.id)!
           const value = valueText(entry.original,column,catalog)
           const editable = (canEdit.has(column.id) || Boolean(column.custom)) && entry.original.archived_at === null
+          const status = column.id === 'stage' || column.id === 'level' || column.id === 'sample'
+          const display = status && value !== '—'
+            ? <span className="customer-status" data-status={column.id} data-stage={column.id === 'stage' ? entry.original.stage : undefined}>{value}</span>
+            : value
           if (editing === cell.id) return <td key={cell.id}><InlineCell row={entry.original} column={column} catalog={catalog} finish={next => finish(cell.id,next)} /></td>
           return <td key={cell.id}>
             {column.id === 'name' ? <button className="text-button customer-name" onClick={() => open(entry.id)}>{value}</button>
@@ -201,7 +205,7 @@ export default function CustomerTable({ data, available, columns, density, catal
                     setEditing(cell.id)
                   }
                 }}
-                title="双击或按 Enter 编辑">{value}</button> : <span>{value}</span>}
+                title="双击或按 Enter 编辑">{display}</button> : <span>{display}</span>}
             {column.id === 'name' && editable && <button type="button" data-edit-cell={cell.id} className="grid-edit-name text-button"
               aria-label={'编辑姓名 ' + value} onClick={() => setEditing(cell.id)}>编辑</button>}
           </td>

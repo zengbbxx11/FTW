@@ -128,8 +128,23 @@ type Page =
   | { kind: 'contact' | 'lead'; id: string }
   | { kind: 'mail'; contact?: Contact; inboxContact?: string; inboxOnly?: boolean }
 
+const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'mail' | 'system' | 'data'; label: string; sections: Page['kind'][]; icon: string }[] = [
+  { kind: 'dashboard', label: '工作台', sections: ['dashboard'], icon: 'M3 10l9-7 9 7M5 9v11h14V9m-10 11v-7h6v7' },
+  { kind: 'contacts', label: '客户', sections: ['contacts','contact','new-contact'], icon: 'M16 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2m14-6a4 4 0 0 1 4 4v2M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M17 4a3 3 0 0 1 0 6' },
+  { kind: 'leads', label: '候选客户', sections: ['leads','lead','new-lead'], icon: 'M4 20v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2H4m7-10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7' },
+  { kind: 'activities', label: '跟进记录', sections: ['activities'], icon: 'M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1m3 5h6m-6 4h6m-6 4h4' },
+  { kind: 'mail', label: '邮件中心', sections: ['mail'], icon: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm-1 2 9 6 9-6' },
+  { kind: 'system', label: '系统状态', sections: ['system'], icon: 'M4 4h16v12H4zM9 21h6m-3-5v5m-5-9 2-3 3 2 4-4' },
+  { kind: 'data', label: '数据与审计', sections: ['data'], icon: 'M20 6c0 2-3.6 3-8 3S4 8 4 6s3.6-3 8-3 8 1 8 3ZM4 6v12c0 2 3.6 3 8 3s8-1 8-3V6M4 12c0 2 3.6 3 8 3s8-1 8-3' },
+]
+
 function App() {
   const [page, setPage] = useState<Page>({ kind: 'contacts' })
+  const [theme, setTheme] = useState(() => localStorage.getItem('ftw-theme') === 'red' ? 'red' : 'teal')
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('ftw-theme', theme)
+  }, [theme])
   const openContact = (id: string) => setPage({ kind: 'contact', id })
   const compose = (contact: Contact) => setPage({ kind: 'mail', contact })
   const history = (id: string) => setPage({ kind: 'mail', inboxContact: id })
@@ -138,20 +153,23 @@ function App() {
   const leads = () => setPage({ kind: 'leads' })
 
   return <>
+    <a className="skip-link" href="#workbench">跳到工作区</a>
     <header className="app-header">
-      <div className="brand-mark" aria-hidden="true">F</div>
-      <div className="brand-name">FTW <span>外贸智能工作台</span></div>
+      <div className="brand"><div className="brand-mark" aria-hidden="true">F</div>
+        <div className="brand-name">FTW <span>外贸智能工作台</span></div></div>
       <nav className="app-nav" aria-label="工作台">
-        <button onClick={() => setPage({ kind: 'dashboard' })} aria-current={page.kind === 'dashboard' ? 'page' : undefined}>工作台</button>
-        <button onClick={contacts} aria-current={['contacts', 'contact', 'new-contact'].includes(page.kind) ? 'page' : undefined}>客户</button>
-        <button onClick={leads} aria-current={['leads', 'lead', 'new-lead'].includes(page.kind) ? 'page' : undefined}>候选客户</button>
-        <button onClick={() => setPage({ kind: 'activities' })} aria-current={page.kind === 'activities' ? 'page' : undefined}>跟进记录</button>
-        <button onClick={() => setPage({ kind: 'mail' })} aria-current={page.kind === 'mail' ? 'page' : undefined}>邮件中心</button>
-        <button onClick={() => setPage({ kind: 'system' })} aria-current={page.kind === 'system' ? 'page' : undefined}>系统状态</button>
-        <button onClick={() => setPage({ kind: 'data' })} aria-current={page.kind === 'data' ? 'page' : undefined}>数据与审计</button>
+        {navigation.map(({ kind, label, sections, icon }) => <button type="button" key={kind}
+          onClick={() => setPage({ kind })} aria-current={sections.includes(page.kind) ? 'page' : undefined}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+            <path d={icon} />
+          </svg><span>{label}</span>
+        </button>)}
       </nav>
+      <label className="theme-picker">主题<select value={theme} onChange={event => setTheme(event.target.value === 'red' ? 'red' : 'teal')}>
+        <option value="teal">深蓝青色</option><option value="red">红黑</option>
+      </select></label>
     </header>
-    <main className="workspace">
+    <main className="workspace" id="workbench" data-page={page.kind} tabIndex={-1}>
       {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true })} />}
       {page.kind === 'data' && <DataTools key={page.initialTab ?? 'backup'} initialTab={page.initialTab} />}
       {page.kind === 'contacts' && <ContactList compose={compose} history={history} importCsv={() => setPage({ kind: 'data', initialTab: 'csv' })} create={() => setPage({ kind: 'new-contact' })} />}

@@ -82,7 +82,7 @@ export function NewCustomerFields({ values, change }: {
   const fields = useCustomerFields()
   if (fields.isError) return <Problem error={fields.error} />
   if (!fields.data?.fields.length) return null
-  return <details className="panel" open><summary>自定义属性</summary>
+  return <details className="panel editor-section"><summary>自定义属性</summary>
     <CustomValueInputs fields={fields.data.fields} values={values} change={change} defaults />
   </details>
 }
@@ -96,6 +96,7 @@ export function CustomerFieldPanel({ contactId, archived }: { contactId: string;
   })
   const [hideEmpty, setHideEmpty] = useState(false)
   const [editBase, setEditBase] = useState<FieldPatch | null>(null)
+  const [activeField, setActiveField] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftValues>({})
   const cache = useQueryClient()
   const current = values.data?.record
@@ -119,6 +120,7 @@ export function CustomerFieldPanel({ contactId, archived }: { contactId: string;
       {!editBase && <div className="row-actions">
         <label><input type="checkbox" checked={hideEmpty} onChange={event => setHideEmpty(event.target.checked)} /> 隐藏空属性</label>
         {!archived && current && <button className="button" onClick={() => {
+          setActiveField(null)
           save.reset()
           setEditBase({ contact_id: contactId, expected_revision: current.revision, expected_epoch: current.epoch, entries: [] })
         }}>编辑属性</button>}
@@ -129,7 +131,7 @@ export function CustomerFieldPanel({ contactId, archived }: { contactId: string;
     {editBase ? <form onSubmit={event => { event.preventDefault(); save.mutate({ ...editBase, entries: fieldEntries(draft) }) }}>
       {stale && <p className="alert warning" role="status">客户已被其他操作更新，当前输入已保留。取消编辑后可读取最新资料。</p>}
       <fieldset disabled={save.isPending}>
-        <CustomValueInputs fields={visible} values={{ ...persisted, ...draft }} change={(id, value) => setDraft(old => ({ ...old, [id]: value }))} />
+        <CustomValueInputs fields={activeField ? visible.filter(field => field.id === activeField) : visible} values={{ ...persisted, ...draft }} change={(id, value) => setDraft(old => ({ ...old, [id]: value }))} />
         {save.isError && <Problem error={save.error} />}
         <div className="form-footer">
           <button className="button" type="button" onClick={() => { setEditBase(null); setDraft({}) }}>取消</button>
@@ -137,7 +139,15 @@ export function CustomerFieldPanel({ contactId, archived }: { contactId: string;
         </div>
       </fieldset>
     </form> : current && (view.length ? <dl className="profile-grid">
-      {view.map(field => <div key={field.id}><dt>{field.name}</dt><dd><span className="custom-field-value" data-field-color={field.color}>{displayFieldValue(field, persisted[field.id])}</span></dd></div>)}
+      {view.map(field => {
+        const value = <span className="custom-field-value" data-field-color={field.color}>{displayFieldValue(field, persisted[field.id])}</span>
+        return <div key={field.id}><dt>{field.name}</dt><dd>{archived ? value : <button type="button" className="text-button"
+          aria-label={'编辑 ' + field.name} onClick={() => {
+            setActiveField(field.id)
+            save.reset()
+            setEditBase({ contact_id: contactId, expected_revision: current.revision, expected_epoch: current.epoch, entries: [] })
+          }}>{value}</button>}</dd></div>
+      })}
     </dl> : <Empty>没有要显示的属性。</Empty>)}
   </section>
 }

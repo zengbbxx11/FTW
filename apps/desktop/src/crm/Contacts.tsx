@@ -1,15 +1,17 @@
-import { lazy, Suspense, useDeferredValue, useRef, useState } from 'react'
+import { lazy, Suspense, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateInput, dateLabel, fromDateInput, methodKinds, request, sourceLabel, stages,
   type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage, type StateOption, type ContactRow } from './api'
 import { ConfirmButton, Duplicates, Empty, Field, Pagination, Problem } from './components'
 import { Timeline } from './Timeline'
+import { mailCall, mailError, states as mailStates } from '../mail/api'
 import { CustomerFieldPanel, FieldManager, NewCustomerFields, useCustomerFields } from './Fields'
 import { fieldEntries, type FieldValue } from './fieldTypes'
 import CustomerTable, { targetFor } from './CustomerTable'
 import { ColumnSettings, SavedViewBar, useSavedViews } from './SavedViews'
 import { availableColumns, columnsWithDefaults, type AvailableColumn, type ViewConfig } from './viewTypes'
 
+const wideDrawer = '(min-width: 1280px)'
 const AdvancedFilters = lazy(() => import('./AdvancedFilters'))
 
 const defaultQuery: ContactQuery = {
@@ -37,8 +39,38 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
   const requestQuery = { ...query, keyword }
   const [selected, setSelected] = useState<string | null>(null)
   const drawer = useRef<HTMLDialogElement>(null)
-  const open = (id: string) => { setSelected(id); drawer.current?.showModal() }
+  const drawerTrigger = useRef<HTMLElement | null>(null)
+  const search = useRef<HTMLInputElement>(null)
+  function open(id: string) {
+    const dialog = drawer.current
+    if (!dialog) return
+    if (!dialog.open) {
+      drawerTrigger.current = document.activeElement as HTMLElement
+      if (window.matchMedia(wideDrawer).matches) dialog.show()
+      else dialog.showModal()
+    }
+    setSelected(id)
+  }
   const close = () => drawer.current?.close()
+  useEffect(() => {
+    const media = window.matchMedia(wideDrawer)
+    function resize() {
+      const dialog = drawer.current
+      if (!dialog?.open) return
+      dialog.close()
+      if (media.matches) dialog.show()
+      else dialog.showModal()
+    }
+    function keyboard(event: KeyboardEvent) {
+      if (event.key.toLowerCase() === 'k' && (event.ctrlKey || event.metaKey) && !document.querySelector('dialog:modal')) {
+        event.preventDefault()
+        search.current?.focus()
+      }
+    }
+    media.addEventListener('change', resize)
+    window.addEventListener('keydown', keyboard)
+    return () => { media.removeEventListener('change', resize); window.removeEventListener('keydown', keyboard) }
+  }, [])
   function configure(change: Partial<ViewConfig>, reset = true) {
     setLocal({ id: active?.id ?? '', revision: local?.id === active?.id ? local?.revision ?? null : active?.revision ?? null,
       config: { ...config, ...change } })
@@ -59,15 +91,18 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
     queryFn: () => request({ action: 'list_contacts', query: requestQuery }, 'contacts'),
   })
   if (manageFields) return <FieldManager back={() => setManageFields(false)} />
-  return <>
+  return <section className="contact-workbench" aria-label="客户管理">
+    <div className="contact-work">
     <div className="page-heading"><h1>客户管理</h1><div className="row-actions">
-      <button className="button primary" onClick={create}>新增客户</button>
+      <button className="button" onClick={importCsv}>导入 CSV</button>
+      <button className="button primary" onClick={create}>＋ 新增客户</button>
     </div></div>
     {views.isError && <Problem error={views.error} />}
     {fields.isError && <Problem error={fields.error} />}
     <SavedViewBar views={records} active={active} config={config} baseRevision={local?.id === active?.id ? local?.revision ?? null : null} select={select} saved={select} />
     <div className="filters customer-toolbar">
-      <Field label="搜索客户"><input placeholder="姓名、公司、邮箱或产品" value={query.keyword} onChange={event => update({keyword:event.target.value})} /></Field>
+      <div className="customer-search"><Field label="搜索客户"><input ref={search} placeholder="姓名、公司、邮箱或产品" value={query.keyword}
+        onChange={event => update({keyword:event.target.value})} /></Field><kbd aria-hidden="true">Ctrl K</kbd></div>
       <Field label="客户阶段"><select value={query.stage} onChange={event => update({stage:event.target.value})}>
         <option value="">全部阶段</option>{Object.entries(stages).map(([key,label]) => <option key={key} value={key}>{label}</option>)}
       </select></Field>
@@ -119,17 +154,27 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
           columns={columns} catalog={catalog} density={config.density ?? 'standard'} open={open}
           resize={widths=>configure({columns:columns.map(column=>({...column,width:widths[column.field]??column.width}))},false)}
           sort={field=>update({order:[{field,descending:query.order?.[0]?.field===field && !query.order[0].descending}]})} />}
-        <Pagination offset={offset} pageSize={query.page_size ?? 20} more={result.data.has_more} change={setOffset} />
+        <div className="customer-list-footer"><span>本页 {result.data.rows.length} 位客户</span>
+          <Pagination offset={offset} pageSize={query.page_size ?? 20} more={result.data.has_more} change={setOffset} /></div>
       </>}
     </>}
-    <dialog className="contact-drawer" ref={drawer} onClose={() => setSelected(null)} aria-label="客户详情">
+    </div>
+    <dialog className="contact-drawer" ref={drawer} aria-label="客户详情"
+      onKeyDown={event => {
+        if (event.key === 'Escape' && !event.defaultPrevented && (event.target as HTMLElement).closest('dialog') === event.currentTarget) close()
+      }}
+      onClose={event => {
+        if (event.currentTarget.open) return
+        setSelected(null)
+        drawerTrigger.current?.focus()
+      }}>
       <header className="contact-drawer-header"><span className="font-semibold">客户详情</span>
-        <button className="button" type="button" onClick={close}>关闭详情</button></header>
+        <button className="button" type="button" autoFocus aria-label="关闭详情" onClick={close}>×</button></header>
       <div className="contact-drawer-body" role="region" aria-label="客户资料和跟进" tabIndex={0}>
         {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} history={history} drawer />}
       </div>
     </dialog>
-  </>
+  </section>
 }
 
 function ContactBoard({ query, group, available, open }: {
@@ -241,7 +286,8 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
   const updateInterest = (index: number, changes: Partial<Interest>) =>
     update('interests', input.interests.map((interest, position) => position === index ? { ...interest, ...changes } : interest))
 
-  return <form onSubmit={event => { event.preventDefault(); mutation.mutate(false) }}>
+  return <form className="contact-editor" onSubmit={event => { event.preventDefault(); mutation.mutate(false) }}
+    onInvalidCapture={event => { const group = (event.target as HTMLElement).closest('details'); if (group) group.open = true }}>
     <div className="page-heading"><h1>{record ? '编辑客户' : '新增客户'}</h1><button className="button" type="button" onClick={cancel}>取消</button></div>
     {changed && <div className="alert warning" role="status">客户资料已更新，当前输入仍保留。
       <ConfirmButton label="放弃本次编辑并读取最新的客户资料？" onConfirm={() => {
@@ -253,13 +299,20 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
     </div>}
     <fieldset disabled={mutation.isPending}>
       <section className="panel">
-        <h2>客户资料</h2>
+        <h2>基本信息</h2>
         <div className="form-grid">
           <Field label="客户名称（必填）"><input required autoFocus value={input.display_name} onChange={e => update('display_name', e.target.value)} /></Field>
+          {textFields.slice(0,2).map(([key,label]) => <Field key={key} label={label}>
+            <input value={input[key]} onChange={event => update(key, event.target.value)} /></Field>)}
           <Field label="客户阶段"><select value={input.stage} onChange={e => update('stage', e.target.value as Stage)}>
             {Object.entries(stages).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select></Field>
-          {textFields.map(([key, label]) => <Field key={key} label={label}>
+        </div>
+      </section>
+      <details className="panel editor-section">
+        <summary>业务状态与来源</summary>
+        <div className="form-grid">
+          {textFields.slice(2).map(([key, label]) => <Field key={key} label={label}>
             {catalog.some(option => option.field === key)
               ? <StateSelect field={key} catalog={catalog} value={input[key]} change={value => update(key, value)} />
               : <input type={key === 'website_url' ? 'url' : 'text'} value={input[key]} onChange={e => update(key, e.target.value)} />}
@@ -268,10 +321,13 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
             onChange={e => update('first_contact_at', fromDateInput(e.target.value))} /></Field>
           <Field label="人工记录的最近联系时间"><input type="datetime-local" value={dateInput(input.last_contact_at)}
             onChange={e => update('last_contact_at', fromDateInput(e.target.value))} /></Field>
+        </div>
+      </details>
+      <details className="panel editor-section"><summary>需求与备注</summary><div className="form-grid">
           <Field label="主要需求"><textarea rows={3} value={input.main_need} onChange={e => update('main_need', e.target.value)} /></Field>
           <Field label="备注"><textarea rows={3} value={input.notes} onChange={e => update('notes', e.target.value)} /></Field>
         </div>
-      </section>
+      </details>
       <section className="panel">
         <div className="section-heading"><h2>联系渠道</h2><button className="button" type="button" disabled={input.methods.length >= 12}
           onClick={() => update('methods', [...input.methods, { kind: 'email', value: '', label: '', is_primary: false, is_verified: false }])}>添加渠道</button></div>
@@ -289,8 +345,8 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
           </div>
         ))}
       </section>
-      <section className="panel">
-        <div className="section-heading"><h2>产品兴趣</h2><button className="button" type="button" disabled={input.interests.length >= 20}
+      <details className="panel editor-section"><summary>产品兴趣{input.interests.length > 0 && ' · ' + input.interests.length}</summary>
+        <div className="section-heading"><button className="button" type="button" disabled={input.interests.length >= 20}
           onClick={() => update('interests', [...input.interests, { product_text: '', intent_quantity: null, quantity_is_estimate: false, requirement: '' }])}>添加产品</button></div>
         {input.interests.map((interest, index) => (
           <div className="form-grid collection-row" key={interest.id ?? 'new-interest-' + index}>
@@ -303,7 +359,7 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
               <button className="text-button" type="button" onClick={() => update('interests', input.interests.filter((_, i) => i !== index))}>移除</button></div>
           </div>
         ))}
-      </section>
+      </details>
       {!record && <NewCustomerFields values={custom} change={(id, value) => setCustom(old => ({ ...old, [id]: value }))} />}
       {mutation.isError && <Problem error={mutation.error} />}
       <Duplicates matches={duplicate}><button className="button" type="button" onClick={() => mutation.mutate(true)}>确认继续保存</button></Duplicates>
@@ -312,10 +368,14 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
   </form>
 }
 
+const detailSections = { overview: '基本资料', channels: '联系渠道', interests: '采购需求', activity: '沟通时间线', mail: '邮件往来' } as const
+
 export function ContactDetail({ id, back, compose, history, drawer }: {
   id: string; back: () => void; compose: (contact: Contact) => void; history: (id: string) => void; drawer?: boolean
 }) {
   const [editing, setEditing] = useState(false)
+  const [section, setSection] = useState<keyof typeof detailSections>('overview')
+  const [copy, setCopy] = useState('')
   const catalog = useStateCatalog()
   const cache = useQueryClient()
   const query = useQuery({ queryKey: ['contact', id], queryFn: () => request({ action: 'get_contact', id }, 'contact') })
@@ -333,17 +393,29 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
   if (editing) return <ContactEditor record={record} cancel={() => setEditing(false)} saved={() => setEditing(false)} />
   return <>
     {!drawer && <button className="text-button back-link" onClick={back}>返回客户列表</button>}
-    <div className="page-heading">
-      <div><h1>{input.display_name}</h1><p>{[input.company_name, input.country_region, stages[input.stage], sourceLabel(record.source), archived ? '已归档' : ''].filter(Boolean).join(' · ')}</p></div>
+    <div className="page-heading customer-profile-heading">
+      <div className="customer-identity">
+        <span className="customer-avatar" aria-hidden="true">{Array.from(input.display_name)[0]?.toUpperCase()}</span>
+        <div><h1>{input.display_name}</h1>
+          <p>{[input.company_name, input.country_region, archived ? '已归档' : ''].filter(Boolean).join(' · ')}</p>
+          <span className="stage-tag" data-stage={input.stage}>{stages[input.stage]}</span>
+          {input.customer_level && <span className="customer-status" data-status="level">{stateLabel(catalog,'customer_level',input.customer_level)}</span>}
+        </div>
+      </div>
       <div className="row-actions">
         {!archived && <button className="button" onClick={() => setEditing(true)}>编辑客户</button>}
         {!archived && input.methods.some(method => method.kind === 'email') && <button className="button primary" onClick={() => compose(record)}>写邮件</button>}
-        <button className="button" onClick={() => history(id)}>邮件往来</button>
+        <button className="button" onClick={() => setSection('activity')}>跟进记录</button>
         <ConfirmButton label={archived ? '恢复这个客户？' : '归档这个客户？已有跟进仍可查看。'}
           disabled={archive.isPending} onConfirm={() => archive.mutate(!archived)}>{archived ? '恢复客户' : '归档客户'}</ConfirmButton>
       </div>
     </div>
     {archive.isError && <Problem error={archive.error} />}
+    <nav className="detail-sections" aria-label="客户详情分区">{Object.entries(detailSections).map(([key,label]) =>
+      <button className="text-button" type="button" key={key} aria-pressed={section===key}
+        onClick={() => setSection(key as keyof typeof detailSections)}>{label}</button>)}
+    </nav>
+    <div hidden={section!=='overview'}>
     <section className="panel"><h2>客户资料</h2>
       <dl className="profile-grid">
         {textFields.map(([key, label]) => input[key] && <div key={key}><dt>{label}</dt><dd>{stateLabel(catalog, key, input[key])}</dd></div>)}
@@ -351,24 +423,50 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
         <div><dt>最近联系</dt><dd>{dateLabel(record.effective_last_contact_at)}</dd></div>
         <div><dt>最近会话来信</dt><dd>{dateLabel(record.latest_thread_reply_at)}</dd></div>
         <div><dt>资料更新</dt><dd>{dateLabel(record.updated_at)}</dd></div>
-        {input.main_need && <div><dt>主要需求</dt><dd>{input.main_need}</dd></div>}
+        <div><dt>记录来源</dt><dd>{sourceLabel(record.source)}</dd></div>
         {input.notes && <div><dt>备注</dt><dd>{input.notes}</dd></div>}
       </dl>
     </section>
-    <div className="panel-columns">
-      <section className="panel"><h2>联系渠道</h2>{input.methods.length ? <ul className="record-list">{input.methods.map(method =>
-        <li key={method.id}><strong>{methodKinds[method.kind]}</strong><span>{method.value}</span>
-          {(method.label || method.is_primary || method.is_verified) && <small>{[method.label, method.is_primary ? '主要' : '', method.is_verified ? '已核实' : ''].filter(Boolean).join(' · ')}</small>}</li>)}</ul>
-        : <p className="muted">尚无渠道</p>}</section>
-      <section className="panel"><h2>产品兴趣</h2>{input.interests.length ? <ul className="record-list">{input.interests.map(interest =>
-        <li key={interest.id}><strong>{interest.product_text}</strong>{interest.intent_quantity !== null &&
-          <span>{interest.quantity_is_estimate ? '约 ' : ''}{interest.intent_quantity.toLocaleString()}</span>}
-          {interest.requirement && <small>{interest.requirement}</small>}</li>)}</ul>
-        : <p className="muted">尚无产品兴趣</p>}</section>
+      <CustomerFieldPanel contactId={record.id} archived={archived} />
     </div>
-    <CustomerFieldPanel contactId={record.id} archived={archived} />
-    <Timeline contact={record} />
+    {section==='channels' && <section className="panel"><h2>联系渠道</h2>
+      {copy && <p className="muted" role="status">{copy}</p>}
+      {input.methods.length ? <ul className="record-list contact-channels">{input.methods.map(method =>
+        <li key={method.id}><div><strong>{methodKinds[method.kind]}</strong><p>{method.value}</p>
+          {(method.label || method.is_primary || method.is_verified) && <small>{[method.label, method.is_primary ? '主要' : '', method.is_verified ? '已核实' : ''].filter(Boolean).join(' · ')}</small>}</div>
+          <button className="button" onClick={() => {
+            void navigator.clipboard.writeText(method.value).then(() => setCopy('已复制联系方式'), () => setCopy('无法写入剪贴板'))
+          }}>复制</button></li>)}</ul> : <p className="muted">尚无联系渠道</p>}
+    </section>}
+    {section==='interests' && <>
+      {input.main_need && <section className="panel"><h2>采购需求</h2><p className="long-text">{input.main_need}</p></section>}
+      <section className="panel"><h2>产品兴趣</h2>{input.interests.length ? <ul className="record-list interest-list">{input.interests.map(interest =>
+        <li key={interest.id}><strong>{interest.product_text}</strong>{interest.intent_quantity !== null &&
+          <span>{interest.quantity_is_estimate ? '估计数量 ' : '意向数量 '}{interest.intent_quantity.toLocaleString()}</span>}
+          {interest.requirement && <p className="long-text">{interest.requirement}</p>}</li>)}</ul>
+        : <p className="muted">尚无产品兴趣</p>}</section>
+    </>}
+    <div hidden={section!=='activity'}>{section==='activity' && <Timeline contact={record} />}</div>
+    {section==='mail' && <CustomerMail contactId={id} open={() => history(id)} />}
   </>
+}
+
+function CustomerMail({ contactId, open }: { contactId: string; open: () => void }) {
+  const { data, isPending, error } = useQuery({
+    queryKey: ['mail-drafts', contactId, 0],
+    queryFn: () => mailCall({ action: 'list_drafts', contact_id: contactId, offset: 0 }, 'drafts'),
+  })
+  return <section className="panel"><div className="section-heading">
+    <h2>发件记录</h2><button className="button" onClick={open}>查看来信与会话</button>
+  </div>
+    {isPending && <p className="muted">正在读取邮件…</p>}
+    {error && <p className="alert error" role="alert">{mailError(error)}</p>}
+    {data && (data.rows.length ? <ul className="record-list customer-mail-list">
+      {data.rows.map(row => <li key={row.id}><strong>{row.subject}</strong>
+        <small>{row.recipient} · {dateLabel(row.updated_at)}</small>
+        <span className="customer-status" data-status={row.state}>{row.approval_expired ? '批准已过期' : mailStates[row.state]}</span>
+      </li>)}</ul> : <p className="muted">尚无发件记录</p>)}
+  </section>
 }
 
 function useStateCatalog() {
