@@ -51,6 +51,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\build-po
 - [Core 与存储设计](docs/ARCHITECTURE.md)
 - [邮件代发与 Codex、WorkBuddy 接入](docs/MCP_MAIL.md)
 - [CRM 接口与 JSON Schema](docs/CRM_API.md)
+- [Windows 验收用例与自动化测试入口](docs/ACCEPTANCE_TESTS.md)
 - [变更记录](docs/CHANGELOG.md)
 - [V1 产品与技术基线](FTW_产品与技术规格书_V1.md)
 
