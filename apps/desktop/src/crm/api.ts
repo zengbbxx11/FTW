@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { CustomField, FieldDefinition, FieldEntry, FieldPatch, FieldValues } from './fieldTypes'
 
 export const PAGE_SIZE = 20
 
@@ -137,6 +138,8 @@ export type Duplicate = { id: string; entity: 'contact' | 'lead'; display_name: 
 export type StateOption = { field: string; code: string; label: string; aliases: string[] }
 
 type Result =
+  | { kind: 'fields'; fields: CustomField[] }
+  | { kind: 'field_values'; record: FieldValues }
   | { kind: 'state_catalog'; options: StateOption[] }
   | { kind: 'contacts'; rows: ContactRow[]; has_more: boolean }
   | { kind: 'contact'; record: Contact }
@@ -147,6 +150,13 @@ type Result =
   | { kind: 'duplicates'; matches: Duplicate[] }
 
 type Command =
+  | { action: 'list_fields'; include_archived?: boolean }
+  | { action: 'save_field'; definition: FieldDefinition }
+  | { action: 'archive_field'; id: string; expected_revision: number; archived: boolean }
+  | { action: 'move_field'; id: string; expected_revision: number; direction: -1 | 1 }
+  | { action: 'get_field_values'; contact_id: string }
+  | { action: 'patch_field_values'; patch: FieldPatch }
+  | { action: 'create_contact_with_fields'; input: ContactInput; allow_duplicate: boolean; entries: FieldEntry[] }
   | { action: 'state_catalog' }
   | { action: 'save_contact_checked'; id: string; input: ContactInput; allow_duplicate: boolean; expected_revision: number; expected_epoch: string }
   | { action: 'list_contacts'; query: ContactQuery }
@@ -172,6 +182,10 @@ export async function request<Kind extends Result['kind']>(
 }
 
 const fieldLabels: Record<string, string> = {
+  field_name: '字段名称', field_name_duplicate: '已有同名的启用字段', field_color: '选择有效的标签颜色',
+  field_value: '检查字段类型、数值、日期或选项是否有效', field_url: '网址须为有效的 HTTP 或 HTTPS 地址',
+  field_options: '选项数量或字段类型', field_option_label: '选项名称必填且不能重复',
+  field_option_archive_required: '已有选项需要归档以保留历史值', field_limit: '自定义字段数量达到上限',
   display_name: '姓名或客户名称', company_name: '公司', country_region: '国家或地区',
   stage: '客户阶段', method_kind: '渠道类型', method_value: '联系账号', method_label: '渠道备注',
   duplicate_method: '存在重复的联系渠道', primary_method: '每种渠道只能选一个主要账号',

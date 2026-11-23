@@ -48,6 +48,9 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 | --- | --- |
 | `list_customers` | 可选 `keyword`、`country`、`stage`、`level`、`sample_status`、`quick_view`、`offset` |
 | `get_customer` | `contact_id` |
+| `list_customer_fields` | 空对象。列出 Agent 可读字段及稳定选项 ID |
+| `get_customer_field_values` | `contact_id`。带当前修订及数据库代际 |
+| `set_customer_field_values` | `request_id`、`patch`。字段需在工作台设为 Agent 可读写 |
 | `get_customer_state_catalog` | 空对象。返回稳定状态代码、标签与历史别名 |
 | `get_customer_timeline` | `contact_id`，可选 `event_type`、`offset` |
 | `list_lead_candidates` | 可选 `status`、`offset` |

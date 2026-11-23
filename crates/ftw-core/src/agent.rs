@@ -9,6 +9,31 @@ use sqlx::SqlitePool;
 pub async fn crm_call(pool: &SqlitePool, command: Command) -> Response {
     match command {
         Command::StateCatalog => run(pool, crm::Command::StateCatalog, None).await,
+        Command::Fields => {
+            run(
+                pool,
+                crm::Command::ListFields {
+                    include_archived: false,
+                },
+                None,
+            )
+            .await
+        }
+        Command::FieldValues { contact_id } => {
+            run(pool, crm::Command::GetFieldValues { contact_id }, None).await
+        }
+        Command::PatchFieldValues { request_id, patch } => {
+            if let Err(reply) = claim(pool, "patch_field_values", &request_id, &patch).await {
+                return reply;
+            }
+            let response = run(
+                pool,
+                crm::Command::PatchFieldValues { patch },
+                Some(&request_id),
+            )
+            .await;
+            finish(pool, "patch_field_values", &request_id, response).await
+        }
         Command::Timeline {
             id,
             offset,

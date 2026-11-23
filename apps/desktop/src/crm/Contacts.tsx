@@ -4,6 +4,8 @@ import { dateInput, dateLabel, fromDateInput, methodKinds, request, sourceLabel,
   type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage, type StateOption } from './api'
 import { ConfirmButton, Duplicates, Empty, Field, Pagination, Problem } from './components'
 import { Timeline } from './Timeline'
+import { CustomerFieldPanel, FieldManager, NewCustomerFields } from './Fields'
+import { fieldEntries, type FieldValue } from './fieldTypes'
 
 const defaultQuery: ContactQuery = {
   keyword: '', quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
@@ -11,6 +13,7 @@ const defaultQuery: ContactQuery = {
 
 export function ContactList({ compose, history, create, importCsv }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void; importCsv: () => void }) {
   const catalog = useStateCatalog()
+  const [manageFields, setManageFields] = useState(false)
   const [query, setQuery] = useState(defaultQuery)
   const [search, setSearch] = useState('')
   const [view, setView] = useState('all')
@@ -30,8 +33,9 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
     enabled: view !== 'board',
     queryFn: () => request({ action: 'list_contacts', query }, 'contacts'),
   })
+  if (manageFields) return <FieldManager back={() => setManageFields(false)} />
   return <>
-    <div className="page-heading"><h1>客户管理</h1><button className="button primary" onClick={create}>新增客户</button></div>
+    <div className="page-heading"><h1>客户管理</h1><div className="row-actions"><button className="button" onClick={() => setManageFields(true)}>字段管理</button><button className="button primary" onClick={create}>新增客户</button></div></div>
     <div className="customer-views" aria-label="客户视图">
       {([['all','全部客户'], ['priority','重点客户'], ['sample','样品客户'], ['board','阶段看板']] as const).map(([key,label]) =>
         <button key={key} className="button" aria-pressed={view === key} onClick={() => {
@@ -136,6 +140,7 @@ const textFields = [
 
 export function ContactEditor({ record, saved, cancel }: { record?: Contact; saved: (id: string) => void; cancel: () => void }) {
   const [input, setInput] = useState(record?.input ?? blank)
+  const [custom, setCustom] = useState<Record<string, FieldValue | null>>({})
   const [base, setBase] = useState(() => record && { revision: record.record_revision, epoch: record.data_epoch })
   const changed = record && base && (record.record_revision !== base.revision || record.data_epoch !== base.epoch)
   const catalog = useStateCatalog()
@@ -144,7 +149,7 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
   const mutation = useMutation({
     mutationFn: (allow: boolean) => request(record && base
       ? { action: 'save_contact_checked', id: record.id, input, allow_duplicate: allow, expected_revision: base.revision, expected_epoch: base.epoch }
-      : { action: 'save_contact', id: null, input, allow_duplicate: allow }, 'saved', 'duplicates'),
+      : { action: 'create_contact_with_fields', input, allow_duplicate: allow, entries: fieldEntries(custom) }, 'saved', 'duplicates'),
     onSuccess: async result => {
       if (result.kind === 'duplicates') { setDuplicate(result.matches); return }
       await Promise.all([
@@ -229,6 +234,7 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
           </div>
         ))}
       </section>
+      {!record && <NewCustomerFields values={custom} change={(id, value) => setCustom(old => ({ ...old, [id]: value }))} />}
       {mutation.isError && <Problem error={mutation.error} />}
       <Duplicates matches={duplicate}><button className="button" type="button" onClick={() => mutation.mutate(true)}>确认继续保存</button></Duplicates>
       <div className="form-footer contact-editor-footer"><button className="button primary" type="submit">{mutation.isPending ? '正在保存…' : '保存客户'}</button></div>
@@ -290,6 +296,7 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
           {interest.requirement && <small>{interest.requirement}</small>}</li>)}</ul>
         : <p className="muted">尚无产品兴趣</p>}</section>
     </div>
+    <CustomerFieldPanel contactId={record.id} archived={archived} />
     <Timeline contact={record} />
   </>
 }

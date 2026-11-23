@@ -255,3 +255,27 @@
   .contact-drawer::backdrop { @apply bg-slate-950/35; }
   .mail-body { @apply my-4 whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm; overflow-wrap: anywhere; }
 }
+
+/* Custom properties use semantic colors independent of account permissions. */
+.custom-field-value {
+  display: inline-block;
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.35rem;
+  color: #334155;
+  background: #e2e8f0;
+}
+
+.custom-field-value[data-field-color="teal"] { color: #115e59; background: #ccfbf1; }
+.custom-field-value[data-field-color="blue"] { color: #1e40af; background: #dbeafe; }
+.custom-field-value[data-field-color="green"] { color: #166534; background: #dcfce7; }
+.custom-field-value[data-field-color="amber"] { color: #92400e; background: #fef3c7; }
+.custom-field-value[data-field-color="purple"] { color: #6b21a8; background: #f3e8ff; }
+.custom-field-value[data-field-color="rose"] { color: #9f1239; background: #ffe4e6; }
+
+.custom-multi label {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.custom-options { margin-top: 1rem; }

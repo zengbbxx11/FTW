@@ -38,6 +38,12 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 
 `level`、`sample_status`、`customer_type` 和 `source` 的筛选接收稳定代码和可识别别名。历史文本保留在记录中。重点和活跃样品预设使用统一规则。表格和详情的联系日期由 Core 组合真实沟通与人工日期，纯便签默认不参与。人工及 Agent 可用 `counts_as_contact` 标记业务事件。
 
+## 自定义客户字段
+
+桌面「客户 → 字段管理」可新增字段并管理选项、默认值、颜色、显示和顺序。归档会保留定义和值，可恢复。字段与选项使用稳定 ID，改名后现有值仍有效。现有字段的类型固定。新建客户时 Core 应用当前默认值，旧客户数据继续保留。
+
+`list_fields` 与 `get_field_values` 分别读取定义和值。用 `patch_field_values` 提交 `contact_id`、最新 `expected_revision` 和 `expected_epoch`，及数组 `entries`。每项含 `field_id` 和带 `type`、`value` 的值，传 `null` 清除。新建可用 `create_contact_with_fields` 在同一事务提交客户和属性。
+
 ## JSON Schema
 
 从 Rust 合约生成命令和响应结构，在项目根目录执行：

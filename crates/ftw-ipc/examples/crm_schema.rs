@@ -1,11 +1,12 @@
 use ftw_ipc::crm::{Command, Result as Reply};
-use schemars::schema_for;
+use schemars::generate::SchemaSettings;
 use std::{env, process::ExitCode};
 
 fn main() -> ExitCode {
+    let generator = SchemaSettings::draft07().into_generator();
     let value = match env::args().nth(1).as_deref() {
-        Some("command") => schema_for!(Command),
-        Some("result") => schema_for!(Reply),
+        Some("command") => generator.into_root_schema_for::<Command>(),
+        Some("result") => generator.into_root_schema_for::<Reply>(),
         _ => {
             eprintln!("usage: crm_schema <command|result>");
             return ExitCode::from(2);

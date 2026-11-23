@@ -48,9 +48,9 @@ async function exercise(protocol) {
     const tools = listing.result.tools
     assert.deepEqual(tools.map(tool => tool.name).sort(), [
       'add_customer_activity', 'create_customer', 'create_email_draft', 'create_lead_candidate',
-      'get_customer', 'get_customer_state_catalog', 'get_customer_timeline', 'get_email_draft', 'get_email_thread',
-      'get_pending_approvals', 'list_customers', 'list_email_accounts', 'list_email_drafts',
-      'list_inbox', 'list_lead_candidates', 'request_email_approval', 'send_approved_email',
+      'get_customer', 'get_customer_field_values', 'get_customer_state_catalog', 'get_customer_timeline', 'get_email_draft', 'get_email_thread',
+      'get_pending_approvals', 'list_customer_fields', 'list_customers', 'list_email_accounts', 'list_email_drafts',
+      'list_inbox', 'list_lead_candidates', 'request_email_approval', 'send_approved_email', 'set_customer_field_values',
       'sync_mailbox', 'update_customer',
     ])
     assert.ok(tools.every(tool => tool.inputSchema.type === 'object'))
@@ -70,6 +70,8 @@ async function exercise(protocol) {
     const contact = await call('get_customer', { contact_id: saved.id })
     assert.equal(contact.record.source, 'agent')
     assert.equal(contact.record.record_revision, 1)
+    assert.deepEqual((await call('list_customer_fields')).fields, [])
+    assert.equal((await call('get_customer_field_values', { contact_id: saved.id })).record.revision, 1)
     const stateCatalog = await call('get_customer_state_catalog')
     assert.ok(stateCatalog.options.some(item => item.field === 'customer_level' && item.code === 'A' && item.aliases.includes('重点客户')))
     const lead = await call('create_lead_candidate', {
@@ -124,7 +126,7 @@ try {
     const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 3000 })
     const health = JSON.parse(stdout)
     process.kill(health.processId)
-    assert.equal(health.schemaVersion, 6)
+    assert.equal(health.schemaVersion, 7)
   } catch (error) {
     if (error.code !== 1 && error.code !== 'ESRCH') throw error
   }

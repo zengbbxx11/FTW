@@ -15,6 +15,14 @@ pub struct ContactPatch {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     StateCatalog,
+    Fields,
+    FieldValues {
+        contact_id: String,
+    },
+    PatchFieldValues {
+        request_id: String,
+        patch: crate::fields::ValuePatch,
+    },
     Timeline {
         id: String,
         offset: u32,

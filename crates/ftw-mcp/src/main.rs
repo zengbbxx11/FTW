@@ -191,6 +191,13 @@ struct SyncInput {
     account_id: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct FieldValueUpdate {
+    request_id: String,
+    patch: ftw_ipc::fields::ValuePatch,
+}
+
 struct Ftw {
     tool_router: ToolRouter<Self>,
     endpoint: PipeEndpoint,
@@ -201,6 +208,41 @@ struct Ftw {
 
 #[tool_router(router = tool_router)]
 impl Ftw {
+    #[tool(
+        description = "List authorized custom customer fields, their types, defaults and stable option IDs."
+    )]
+    async fn list_customer_fields(&self) -> Result<String, String> {
+        self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::Fields)))
+            .await
+    }
+
+    #[tool(
+        description = "Read custom field values visible to this Agent and the revision and epoch for guarded writes."
+    )]
+    async fn get_customer_field_values(
+        &self,
+        Parameters(input): Parameters<CustomerId>,
+    ) -> Result<String, String> {
+        self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::FieldValues {
+            contact_id: input.contact_id,
+        })))
+        .await
+    }
+
+    #[tool(
+        description = "Write only custom fields that the user has authorized for editing. Read revision and epoch first. A null entry clears its field. Reuse request_id only for identical retries."
+    )]
+    async fn set_customer_field_values(
+        &self,
+        Parameters(input): Parameters<FieldValueUpdate>,
+    ) -> Result<String, String> {
+        self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::PatchFieldValues {
+            request_id: input.request_id,
+            patch: input.patch,
+        })))
+        .await
+    }
+
     #[tool(
         description = "List the built-in customer status codes, labels and accepted legacy aliases."
     )]

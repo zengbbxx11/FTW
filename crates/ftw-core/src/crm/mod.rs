@@ -1,5 +1,6 @@
 pub(crate) mod contacts;
 mod duplicates;
+mod fields;
 mod leads;
 mod timeline;
 mod validation;
@@ -70,6 +71,35 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
         Command::ListContacts { query } => contacts::list(pool, query).await,
         Command::GetContact { id } => contacts::get(pool, &id).await,
         Command::StateCatalog => contacts::state_catalog(pool).await,
+        Command::ListFields { include_archived } => {
+            fields::list(pool, actor, include_archived).await
+        }
+        Command::SaveField { definition } => fields::save(pool, actor, definition).await,
+        Command::ArchiveField {
+            id,
+            expected_revision,
+            archived,
+        } => fields::archive(pool, actor, &id, expected_revision, archived).await,
+        Command::MoveField {
+            id,
+            expected_revision,
+            direction,
+        } => fields::move_field(pool, actor, &id, expected_revision, direction).await,
+        Command::GetFieldValues { contact_id } => fields::values(pool, actor, &contact_id).await,
+        Command::PatchFieldValues { patch } => fields::patch(pool, actor, patch).await,
+        Command::CreateContactWithFields {
+            input,
+            allow_duplicate,
+            entries,
+        } => {
+            let mut tx = pool.begin().await?;
+            let result = contacts::save(&mut tx, None, *input, allow_duplicate, actor).await?;
+            if let Reply::Saved { id } = &result {
+                fields::apply(&mut tx, actor, id, entries).await?;
+            }
+            tx.commit().await?;
+            Ok(result)
+        }
         Command::SaveContactChecked {
             id,
             input,

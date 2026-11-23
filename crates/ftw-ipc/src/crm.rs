@@ -141,6 +141,34 @@ pub enum Command {
         id: String,
     },
     StateCatalog,
+    ListFields {
+        #[serde(default)]
+        include_archived: bool,
+    },
+    SaveField {
+        definition: crate::fields::Definition,
+    },
+    ArchiveField {
+        id: String,
+        expected_revision: i64,
+        archived: bool,
+    },
+    MoveField {
+        id: String,
+        expected_revision: i64,
+        direction: i8,
+    },
+    GetFieldValues {
+        contact_id: String,
+    },
+    PatchFieldValues {
+        patch: crate::fields::ValuePatch,
+    },
+    CreateContactWithFields {
+        input: Box<ContactInput>,
+        allow_duplicate: bool,
+        entries: Vec<crate::fields::Entry>,
+    },
     SaveContactChecked {
         id: String,
         input: Box<ContactInput>,
@@ -191,6 +219,12 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    Fields {
+        fields: Vec<crate::fields::Field>,
+    },
+    FieldValues {
+        record: crate::fields::Values,
+    },
     StateCatalog {
         options: Vec<StateOption>,
     },

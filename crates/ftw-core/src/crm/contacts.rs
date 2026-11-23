@@ -258,6 +258,9 @@ pub async fn save(
     .fetch_one(&mut *connection).await?;
 
     save_children(connection, &id, &input, &normalized).await?;
+    if inserting {
+        super::fields::apply_defaults(connection, &id).await?;
+    }
     let searchable = [
         input.display_name,
         input.company_name,
