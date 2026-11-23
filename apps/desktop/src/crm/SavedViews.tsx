@@ -40,14 +40,19 @@ export function SavedViewBar({ views, active, config, baseRevision, select, save
     setEditor({ id: null, expected_revision: null, name, hidden: false, is_default: false, config })
   }
   return <>
-    <div className="customer-views" aria-label="保存的客户视图">
+    <div className="customer-views">
+      <nav className="customer-view-tabs" aria-label="保存的客户视图">
       {live.filter(view=>!view.hidden || view.id === active?.id).map(view =>
         <button key={view.id} className="button" aria-pressed={active?.id === view.id} onClick={() => select(view.id)}>
+          <span aria-hidden="true">{view.id === 'priority' ? '☆' : view.id === 'sample' ? '◇' : view.config.layout === 'board' ? '▥' : '▤'}</span>
           {view.name}{dirty && active?.id === view.id ? ' *' : ''}
         </button>)}
-      <button className="button" onClick={() => create()}>另存视图</button>
-      {dirty && active && <button className="button" disabled={save.isPending} onClick={() => save.mutate(edit(active,config))}>保存当前视图</button>}
-      <button className="button" aria-expanded={manager} onClick={() => setManager(value => !value)}>管理视图</button>
+      <button className="button add-view" onClick={() => create()}>＋ 新建视图</button>
+      </nav>
+      <div className="customer-view-actions">
+        {dirty && active && <button className="button" disabled={save.isPending} onClick={() => save.mutate(edit(active,config))}>保存当前视图</button>}
+        <button className="button" aria-expanded={manager} onClick={() => setManager(value => !value)}>管理视图</button>
+      </div>
     </div>
     {editor && <form className="panel" onSubmit={event => { event.preventDefault(); save.mutate(editor) }}>
       <div className="form-grid">
@@ -90,8 +95,8 @@ export function SavedViewBar({ views, active, config, baseRevision, select, save
   </>
 }
 
-export function ColumnSettings({ available, saved, change }: {
-  available: AvailableColumn[]; saved: ColumnSetting[] | undefined; change: (columns: ColumnSetting[]) => void
+export function ColumnSettings({ available, saved, change, manageFields }: {
+  available: AvailableColumn[]; saved: ColumnSetting[] | undefined; change: (columns: ColumnSetting[]) => void; manageFields: () => void
 }) {
   const columns = columnsWithDefaults(saved,available)
   const [dragged, setDragged] = useState<string | null>(null)
@@ -106,8 +111,10 @@ export function ColumnSettings({ available, saved, change }: {
     next.splice(neighbor,0,value)
     change(next)
   }
-  return <details className="column-settings"><summary>显示列</summary><div className="panel"><small>自定义列 {customVisible} / 12</small>
-    <ul className="record-list">{columns.map((column,index)=>{
+  return <details className="column-settings"><summary>列设置</summary><div className="panel column-config">
+    <div className="section-heading"><div><h2>显示字段</h2><small>自定义列 {customVisible} / 12</small></div>
+      <button className="button" onClick={manageFields}>字段与属性</button></div>
+    <ul className="record-list column-config-rows">{columns.map((column,index)=>{
       const definition = available.find(item=>item.id===column.field)
       if (!definition) return <li key={column.field}><strong>{column.label || '已归档字段'}</strong>
         <button className="button" onClick={()=>change(columns.filter(item=>item.field!==column.field))}>移除失效列</button></li>

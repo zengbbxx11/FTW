@@ -117,10 +117,10 @@ function InlineCell({ row, column, catalog, finish }: {
   </form>
 }
 
-export default function CustomerTable({ data, available, columns, density, catalog, open, resize, sort }: {
+export default function CustomerTable({ data, available, columns, density, catalog, open, resize, sort, activeRow }: {
   data: ContactRow[]; available: AvailableColumn[]; columns: ColumnSetting[]; density: string
   catalog: StateOption[]; open: (id: string) => void; resize: (widths: Record<string,number>) => void
-  sort: (field: string) => void
+  sort: (field: string) => void; activeRow: string | null
 }) {
   const [editing, setEditing] = useState<string | null>(null)
   const [clipboardError, setClipboardError] = useState(false)
@@ -169,10 +169,10 @@ export default function CustomerTable({ data, available, columns, density, catal
         disabled={bulk.isPending || !bulkValue || selected.length > 50} onConfirm={() => bulk.mutate()}>确认批量修改</ConfirmButton>
       {bulk.isError && <Problem error={bulk.error} />}
     </div>}
-    <div className={'table-wrap customer-grid is-' + density}><table>
+    <div className={'table-wrap customer-grid is-' + density}><table aria-label="客户表格">
       <thead>{table.getHeaderGroups().map(group => <tr key={group.id}>
         <th className="grid-row-select"><input type="checkbox" aria-label="选择本页客户" checked={table.getIsAllPageRowsSelected()} onChange={table.getToggleAllPageRowsSelectedHandler()} /></th>
-        {group.headers.map(header => <th key={header.id} style={{ width: header.getSize(), minWidth: header.getSize() }}>
+        {group.headers.map(header => <th key={header.id} data-field={header.column.id} style={{ width: header.getSize(), minWidth: header.getSize() }}>
           <button className="text-button" onClick={() => sort(header.column.id)} disabled={columnMeta.get(header.column.id)?.kind === 'multi_select'}>
             <table.FlexRender header={header} />
           </button>
@@ -185,8 +185,8 @@ export default function CustomerTable({ data, available, columns, density, catal
                 table.setColumnSizing(previous => ({ ...previous, [header.column.id]: width }))
               }
             }} />
-        </th>)}</tr>)}</thead>
-      <tbody>{table.getRowModel().rows.map(entry => <tr key={entry.id} data-selected={entry.getIsSelected()}>
+        </th>)}<th className="customer-row-actions">操作</th></tr>)}</thead>
+      <tbody>{table.getRowModel().rows.map(entry => <tr key={entry.id} data-selected={entry.getIsSelected()} data-active={entry.id === activeRow}>
         <td className="grid-row-select"><input type="checkbox" aria-label={'选择 ' + entry.original.display_name} checked={entry.getIsSelected()}
           onChange={entry.getToggleSelectedHandler()} disabled={!entry.getCanSelect()} /></td>
         {entry.getAllCells().map(cell => {
@@ -198,8 +198,11 @@ export default function CustomerTable({ data, available, columns, density, catal
             ? <span className="customer-status" data-status={column.id === 'mail_status' ? entry.original.mail_outreach.status : column.id} data-stage={column.id === 'stage' ? entry.original.stage : undefined}>{value}</span>
             : value
           if (editing === cell.id) return <td key={cell.id}><InlineCell row={entry.original} column={column} catalog={catalog} finish={next => finish(cell.id,next)} /></td>
-          return <td key={cell.id}>
-            {column.id === 'name' ? <button className="text-button customer-name" onClick={() => open(entry.id)}>{value}</button>
+          return <td key={cell.id} data-field={column.id}>
+            {column.id === 'name' ? <button className="text-button customer-name" aria-current={entry.id === activeRow ? 'true' : undefined} onClick={() => open(entry.id)}>
+                <span className="customer-row-avatar" aria-hidden="true">{Array.from(value)[0]?.toUpperCase()}</span>
+                <span className="customer-name-text" title={value}>{value}</span>
+              </button>
               : editable ? <button className="grid-cell-button" data-edit-cell={cell.id} onDoubleClick={() => setEditing(cell.id)}
                 onKeyDown={event => {
                   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
@@ -215,6 +218,8 @@ export default function CustomerTable({ data, available, columns, density, catal
               aria-label={'编辑姓名 ' + value} onClick={() => setEditing(cell.id)}>编辑</button>}
           </td>
         })}
+        <td className="customer-row-actions"><button type="button" className="button" aria-label={'打开 ' + entry.original.display_name}
+          onClick={() => open(entry.id)}>›</button></td>
       </tr>)}</tbody>
     </table></div>
   </>

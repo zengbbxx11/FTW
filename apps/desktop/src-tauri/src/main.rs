@@ -109,10 +109,19 @@ async fn choose_mail_assets(
 
 #[tauri::command]
 async fn mail_request(
+    window: tauri::WebviewWindow,
     access: State<'_, CoreAccess>,
     command: ftw_ipc::mail::Command,
 ) -> Result<Box<ftw_ipc::mail::Result>, Issue> {
-    match call_core(&access, &Operation::Mail(Box::new(command))).await? {
+    let owner = window
+        .hwnd()
+        .map_err(|error| Issue::new("mail_window_unavailable", error))?
+        .0 as isize;
+    let operation = Operation::DesktopMail {
+        owner,
+        command: Box::new(command),
+    };
+    match call_core(&access, &operation).await? {
         Response::Mail { data } => Ok(data),
         _ => Err(Issue::new("core_protocol", "Unexpected mail response")),
     }

@@ -167,6 +167,7 @@ type Result =
   | { kind: 'fields'; fields: CustomField[] }
   | { kind: 'field_values'; record: FieldValues }
   | { kind: 'state_catalog'; options: StateOption[] }
+  | { kind: 'customer_stats'; active: number; priority: number; sample: number; in_progress: number; won: number }
   | { kind: 'contacts'; rows: ContactRow[]; has_more: boolean }
   | { kind: 'contact'; record: Contact }
   | { kind: 'leads'; rows: LeadRow[]; has_more: boolean }
@@ -190,6 +191,7 @@ type Command =
   | { action: 'create_contact_with_fields'; input: ContactInput; allow_duplicate: boolean; entries: FieldEntry[] }
   | { action: 'state_catalog' }
   | { action: 'save_contact_checked'; id: string; input: ContactInput; allow_duplicate: boolean; expected_revision: number; expected_epoch: string }
+  | { action: 'customer_stats' }
   | { action: 'list_contacts'; query: ContactQuery }
   | { action: 'get_contact' | 'get_lead'; id: string }
   | { action: 'save_contact'; id: string | null; input: ContactInput; allow_duplicate: boolean }

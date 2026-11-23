@@ -4,6 +4,8 @@ fn main() {
         "core_changes",
         "crm_request",
         "mail_request",
+        "choose_mail_assets",
+        "save_inbox_attachment",
         "inbox_request",
         "data_request",
     ]);

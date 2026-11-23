@@ -161,6 +161,7 @@ pub enum Command {
         expected_revision: i64,
         direction: i8,
     },
+    CustomerStats,
     ListContacts {
         query: ContactQuery,
     },
@@ -260,6 +261,13 @@ pub enum Result {
     },
     StateCatalog {
         options: Vec<StateOption>,
+    },
+    CustomerStats {
+        active: i64,
+        priority: i64,
+        sample: i64,
+        in_progress: i64,
+        won: i64,
     },
     Contacts {
         rows: Vec<ContactRow>,

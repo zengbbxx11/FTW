@@ -1,4 +1,4 @@
-import { lazy, Suspense, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useDeferredValue, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateInput, dateLabel, fromDateInput, methodKinds, outreachLabels, request, sourceLabel, stages,
   type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Outreach, type Stage, type StateOption, type ContactRow } from './api'
@@ -9,7 +9,7 @@ import { CustomerFieldPanel, FieldManager, NewCustomerFields, useCustomerFields 
 import { fieldEntries, type FieldValue } from './fieldTypes'
 import CustomerTable, { targetFor } from './CustomerTable'
 import { ColumnSettings, SavedViewBar, useSavedViews } from './SavedViews'
-import { availableColumns, columnsWithDefaults, type AvailableColumn, type ViewConfig } from './viewTypes'
+import { availableColumns, columnsWithDefaults, initialColumnsForView, type AvailableColumn, type ViewConfig } from './viewTypes'
 
 const wideDrawer = '(min-width: 1280px)'
 const AdvancedFilters = lazy(() => import('./AdvancedFilters'))
@@ -32,12 +32,13 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
   const config = local?.id === (active?.id ?? '') ? local.config : active?.config ?? {}
   const board = config.layout === 'board'
   const available = availableColumns(fields.data?.fields ?? [])
-  const columns = columnsWithDefaults(config.columns,available)
+  const columns = columnsWithDefaults(config.columns?.length ? config.columns : initialColumnsForView(active?.id), available)
   const projection = columns.filter(column => !column.hidden && available.some(field => field.id === column.field && field.custom)).map(column => column.field)
   const query: ContactQuery = { ...defaultQuery, ...config.query, offset, custom_columns: projection }
   const keyword = useDeferredValue(query.keyword)
   const requestQuery = { ...query, keyword }
   const [selected, setSelected] = useState<string | null>(null)
+  const [drawerWidth, setDrawerWidth] = useState<number | undefined>(undefined)
   const drawer = useRef<HTMLDialogElement>(null)
   const drawerTrigger = useRef<HTMLElement | null>(null)
   const search = useRef<HTMLInputElement>(null)
@@ -90,29 +91,45 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
     queryKey: ['contacts', requestQuery], enabled: !board && fields.isFetched,
     queryFn: () => request({ action: 'list_contacts', query: requestQuery }, 'contacts'),
   })
+  const overview = useQuery({
+    queryKey: ['contacts', 'customer-stats'],
+    queryFn: () => request({ action: 'customer_stats' }, 'customer_stats'),
+  })
+  const pageRows = result.data?.rows ?? []
+  const selectedIndex = pageRows.findIndex(row => row.id === selected)
+  const sideStyle = drawerWidth === undefined ? undefined : { '--customer-drawer-width': drawerWidth + 'px' } as CSSProperties
+  const setWidth = (width: number) => setDrawerWidth(Math.max(340, Math.min(620, width)))
   if (manageFields) return <FieldManager back={() => setManageFields(false)} />
-  return <section className="contact-workbench" aria-label="客户管理">
+  return <section className="contact-workbench" aria-label="客户管理" style={sideStyle}>
     <div className="contact-work">
-    <div className="page-heading"><h1>客户管理</h1><div className="row-actions">
-      <button className="button" onClick={importCsv}>导入 CSV</button>
-      <button className="button primary" onClick={create}>＋ 新增客户</button>
-    </div></div>
+    <header className="page-heading customer-heading">
+      <div><h1>客户管理</h1><p>跟进客户沟通、样品进度与邮件开发</p></div>
+      <div className="row-actions">
+        <button className="button" onClick={importCsv}>导入 CSV</button>
+        <button className="button primary" onClick={create}>＋ 新增客户</button>
+      </div>
+    </header>
     {views.isError && <Problem error={views.error} />}
     {fields.isError && <Problem error={fields.error} />}
     <SavedViewBar views={records} active={active} config={config} baseRevision={local?.id === active?.id ? local?.revision ?? null : null} select={select} saved={select} />
-    <div className="filters customer-toolbar">
-      <div className="customer-search"><Field label="搜索客户"><input ref={search} placeholder="姓名、公司、邮箱或产品" value={query.keyword}
-        onChange={event => update({keyword:event.target.value})} /></Field><kbd aria-hidden="true">Ctrl K</kbd></div>
-      <Field label="客户阶段"><select value={query.stage} onChange={event => update({stage:event.target.value})}>
+    <div className="customer-toolbar">
+      <div className="customer-search">
+        <span className="search-symbol" aria-hidden="true">⌕</span>
+        <input aria-label="搜索客户" ref={search} placeholder="搜索姓名、公司、邮箱或产品" value={query.keyword}
+          onChange={event => update({keyword:event.target.value})} />
+        <kbd aria-hidden="true">Ctrl K</kbd>
+      </div>
+      <label className="customer-toolbar-control"><span className="sr-only">客户阶段</span><select value={query.stage} onChange={event => update({stage:event.target.value})}>
         <option value="">全部阶段</option>{Object.entries(stages).map(([key,label]) => <option key={key} value={key}>{label}</option>)}
-      </select></Field>
-      <Field label="排序"><select value={query.order?.length ? 'column' : query.sort} onChange={event => update({sort:event.target.value as ContactQuery['sort'],order:[]})}>
+      </select></label>
+      <label className="customer-toolbar-control"><span className="sr-only">排序</span><select value={query.order?.length ? 'column' : query.sort} onChange={event => update({sort:event.target.value as ContactQuery['sort'],order:[]})}>
         {query.order?.length ? <option value="column">按表格列排序</option> : null}
         <option value="updated">最近更新</option><option value="name">客户名称</option><option value="last_contact">最近联系</option>
-      </select></Field>
-      <Field label="显示方式"><select value={board?'board':'table'} onChange={event => configure({layout:event.target.value as 'table'|'board'})}>
-        <option value="table">表格</option><option value="board">看板</option>
-      </select></Field>
+      </select></label>
+      <div className="layout-switch" role="group" aria-label="客户视图布局">
+        <button type="button" aria-pressed={!board} onClick={() => configure({ layout: 'table' })}>表格</button>
+        <button type="button" aria-pressed={board} onClick={() => configure({ layout: 'board' })}>看板</button>
+      </div>
       {board && <Field label="分组字段"><select value={config.group_field ?? 'stage'} onChange={event => configure({group_field:event.target.value})}>
         <option value="stage">客户阶段</option>
         {(fields.data?.fields ?? []).filter(field => field.kind === 'single_select').map(field => <option key={field.id} value={field.id}>{field.name}</option>)}
@@ -120,8 +137,9 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
       <button className="button" onClick={() => setShowAdvanced(value=>!value)} aria-expanded={showAdvanced}>
         组合筛选{query.filter ? ' · 已应用' : ''}
       </button>
-      <button className="button" onClick={() => setManageFields(true)}>字段管理</button>
-      {!board && <ColumnSettings available={available} saved={columns} change={items=>configure({columns:items},false)} />}
+      {!board && <ColumnSettings available={available} saved={columns} change={items=>configure({columns:items},false)}
+        manageFields={() => setManageFields(true)} />}
+      {board && <button className="button" onClick={() => setManageFields(true)}>字段管理</button>}
       <details className="more-filters"><summary>更多筛选</summary>
         <div className="form-grid">
           <Field label="国家或地区"><input value={query.country} onChange={event=>update({country:event.target.value})} /></Field>
@@ -140,7 +158,17 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
     </div>
     {showAdvanced && <Suspense fallback={<Empty>正在加载组合筛选…</Empty>}><AdvancedFilters key={active?.id}
       columns={available} catalog={catalog} filter={query.filter} close={()=>setShowAdvanced(false)}
-      apply={filter=>{update({filter});setShowAdvanced(false)}} /></Suspense>}
+      query={requestQuery} apply={filter=>{update({filter});setShowAdvanced(false)}} /></Suspense>}
+    {overview.data && <div className="customer-overview" aria-label="全部有效客户统计">
+      {([
+        ['active', '全部客户', '◎'], ['priority', '重点客户', '☆'], ['sample', '样品客户', '◇'],
+        ['in_progress', '跟进中', '↗'], ['won', '已成交', '✓'],
+      ] as const).map(([key, label, symbol]) => <div className="customer-metric" key={key} data-metric={key}>
+        <span className="customer-metric-icon" aria-hidden="true">{symbol}</span>
+        <div><strong>{overview.data![key].toLocaleString('zh-CN')}</strong><span>{label}</span></div>
+      </div>)}
+    </div>}
+    <section className="customer-data" aria-label={board ? '客户看板' : '客户表格'}>
     {board ? <ContactBoard query={requestQuery} group={config.group_field ?? 'stage'} available={available} open={open} /> : <>
       {result.isPending && <Empty>正在读取客户…</Empty>}
       {result.isError && <Problem error={result.error} />}
@@ -151,13 +179,14 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
           <button className="button primary" onClick={create}>新增客户</button>
           <button className="button" onClick={importCsv}>导入客户 CSV</button>
         </div></>}</Empty> : <CustomerTable key={(active?.id ?? '') + JSON.stringify(requestQuery)} data={result.data.rows} available={available}
-          columns={columns} catalog={catalog} density={config.density ?? 'standard'} open={open}
+          columns={columns} catalog={catalog} density={config.density ?? 'standard'} open={open} activeRow={selected}
           resize={widths=>configure({columns:columns.map(column=>({...column,width:widths[column.field]??column.width}))},false)}
           sort={field=>update({order:[{field,descending:query.order?.[0]?.field===field && !query.order[0].descending}]})} />}
         <div className="customer-list-footer"><span>本页 {result.data.rows.length} 位客户</span>
           <Pagination offset={offset} pageSize={query.page_size ?? 20} more={result.data.has_more} change={setOffset} /></div>
       </>}
     </>}
+    </section>
     </div>
     <dialog className="contact-drawer" ref={drawer} aria-label="客户详情"
       onKeyDown={event => {
@@ -168,8 +197,27 @@ export function ContactList({ compose, history, create, importCsv }: { compose: 
         setSelected(null)
         drawerTrigger.current?.focus()
       }}>
+      <div className="customer-drawer-grip" role="separator" aria-label="调整客户详情宽度" aria-orientation="vertical"
+        aria-valuemin={340} aria-valuemax={620} aria-valuenow={drawerWidth ?? 420} tabIndex={0}
+        onPointerDown={event => event.currentTarget.setPointerCapture(event.pointerId)}
+        onPointerMove={event => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId) && drawer.current)
+            setWidth(drawer.current.getBoundingClientRect().right - event.clientX)
+        }}
+        onKeyDown={event => {
+          if (!drawer.current || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+          event.preventDefault()
+          setWidth(drawer.current.offsetWidth + (event.key === 'ArrowLeft' ? 16 : -16))
+        }} />
       <header className="contact-drawer-header"><span className="font-semibold">客户详情</span>
-        <button className="button" type="button" autoFocus aria-label="关闭详情" onClick={close}>×</button></header>
+        <div className="row-actions">
+          {!board && <><button className="button" type="button" aria-label="上一位客户" disabled={selectedIndex < 1}
+            onClick={() => setSelected(pageRows[selectedIndex - 1].id)}>‹</button>
+            <button className="button" type="button" aria-label="下一位客户" disabled={selectedIndex < 0 || selectedIndex >= pageRows.length - 1}
+              onClick={() => setSelected(pageRows[selectedIndex + 1].id)}>›</button></>}
+          <button className="button" type="button" autoFocus aria-label="关闭详情" onClick={close}>×</button>
+        </div>
+      </header>
       <div className="contact-drawer-body" role="region" aria-label="客户资料和跟进" tabIndex={0}>
         {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} history={history} drawer />}
       </div>
@@ -379,6 +427,11 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
   const catalog = useStateCatalog()
   const cache = useQueryClient()
   const query = useQuery({ queryKey: ['contact', id], queryFn: () => request({ action: 'get_contact', id }, 'contact') })
+  const recent = useQuery({
+    queryKey: ['activities', id, '', 0],
+    enabled: Boolean(drawer && section === 'overview' && !editing),
+    queryFn: () => request({ action: 'list_activities', contact_id: id, event_type: '', offset: 0 }, 'activities'),
+  })
   const archive = useMutation({
     mutationFn: (archived: boolean) => request({ action: 'set_archived', id, archived }, 'saved'),
     onSuccess: () => Promise.all([
@@ -427,6 +480,21 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
         {input.notes && <div><dt>备注</dt><dd>{input.notes}</dd></div>}
       </dl>
     </section>
+      {drawer && input.main_need && <section className="panel customer-detail-summary">
+        <h2>采购需求</h2><p className="long-text">{input.main_need}</p>
+      </section>}
+      {drawer && input.interests.length > 0 && <section className="panel customer-detail-summary">
+        <div className="section-heading"><h2>产品兴趣</h2><button className="text-button" onClick={() => setSection('interests')}>全部产品</button></div>
+        <ul className="record-list">{input.interests.slice(0, 3).map(interest => <li key={interest.id}><strong>{interest.product_text}</strong>
+          {interest.intent_quantity !== null && <span>{interest.quantity_is_estimate ? '估计 ' : ''}{interest.intent_quantity.toLocaleString('zh-CN')} 件</span>}
+        </li>)}</ul>
+      </section>}
+      {drawer && recent.data?.rows.length ? <section className="panel customer-detail-summary">
+        <div className="section-heading"><h2>最近沟通</h2><button className="text-button" onClick={() => setSection('activity')}>查看时间线</button></div>
+        <ul className="record-list">{recent.data.rows.slice(0, 3).map(activity => <li key={activity.id}>
+          <strong>{activity.summary}</strong><span>{dateLabel(activity.occurred_at)}</span>
+        </li>)}</ul>
+      </section> : null}
       <CustomerFieldPanel contactId={record.id} archived={archived} />
     </div>
     {section==='channels' && <section className="panel"><h2>联系渠道</h2>

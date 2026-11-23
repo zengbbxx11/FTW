@@ -142,34 +142,22 @@
 }
 
 :root {
-  --ftw-bg: #eef3f8;
+  --ftw-bg: #f3f6fa;
   --ftw-surface: #ffffff;
   --ftw-ink: #172740;
   --ftw-muted: #516179;
   --ftw-border: #d7e2ed;
-  --ftw-nav: #11253a;
+  --ftw-nav: #10263d;
   --ftw-nav-text: #dbe7f2;
-  --ftw-accent: #086d66;
-  --ftw-accent-hover: #055952;
+  --ftw-accent: #087b74;
+  --ftw-accent-hover: #05615c;
   --ftw-accent-soft: #e2f4f1;
   --ftw-focus: #08766c;
   --ftw-radius: .65rem;
   --ftw-gutter: clamp(.7rem, 1.6vw, 1.5rem);
-  --ftw-nav-width: 11rem;
+  --ftw-nav-width: 11.65rem;
   --ftw-drawer-width: clamp(24rem, 31vw, 34rem);
   --ftw-panel-shadow: 0 2px 5px #2131490b;
-}
-:root[data-theme="red"] {
-  --ftw-bg: #f2f0f0;
-  --ftw-ink: #221c1d;
-  --ftw-muted: #5e5053;
-  --ftw-border: #e3dadd;
-  --ftw-nav: #211a1d;
-  --ftw-nav-text: #f6e7eb;
-  --ftw-accent: #9b233d;
-  --ftw-accent-hover: #7e1a30;
-  --ftw-accent-soft: #fae9ee;
-  --ftw-focus: #a12646;
 }
 html { scrollbar-gutter: auto; }
 body { background: var(--ftw-bg); color: var(--ftw-ink); }
@@ -187,7 +175,7 @@ body { background: var(--ftw-bg); color: var(--ftw-ink); }
   gap: 1.2rem;
   padding: 1.2rem .75rem .85rem;
   border: 0;
-  background: var(--ftw-nav);
+  background: radial-gradient(ellipse at -35% 110%, #087d83 0%, transparent 40%), var(--ftw-nav);
   color: var(--ftw-nav-text);
   overflow: auto;
 }
@@ -209,14 +197,6 @@ body { background: var(--ftw-bg); color: var(--ftw-ink); }
 .app-nav button:hover { background: #ffffff1a; }
 .app-nav button[aria-current="page"] { color: white; background: var(--ftw-accent); }
 #root .app-header :focus-visible { outline-color: #fff; }
-.theme-picker {
-  display: grid;
-  align-content: end;
-  gap: .35rem;
-  margin-top: auto;
-  font-size: .75rem;
-}
-.theme-picker select { width: 100%; padding: .3rem .4rem; }
 .workspace {
   width: 100%;
   max-width: none;
@@ -248,8 +228,7 @@ body { background: var(--ftw-bg); color: var(--ftw-ink); }
   .app-nav { grid-row: 2; grid-column: 1 / -1; display: flex; overflow-x: auto; }
   .app-nav button { flex: none; padding: .42rem .55rem; }
   .app-nav button svg { width: 1rem; height: 1rem; }
-  .theme-picker { grid-row: 1; grid-column: 2; margin: 0; }
-}
+  }
 @media (forced-colors: none) {
   .workspace::-webkit-scrollbar, .customer-grid::-webkit-scrollbar, .stage-board::-webkit-scrollbar {
     width: 12px;

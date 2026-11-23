@@ -49,6 +49,8 @@ pub struct RegisteredAgent {
     pub id: String,
     pub name: String,
     pub revoked: bool,
+    #[serde(default)]
+    pub automatic: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -77,6 +79,11 @@ pub enum Command {
     },
     SetAgentMailPolicy {
         policy: AgentMailPolicy,
+        #[serde(default)]
+        agent_ids: Option<Vec<String>>,
+    },
+    CancelMailPolicyReview {
+        id: String,
     },
     RegisterMailAgent {
         name: String,

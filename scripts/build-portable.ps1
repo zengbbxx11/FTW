@@ -51,7 +51,8 @@ terminal opened in this directory, Codex can be configured with:
 WorkBuddy uses the same executable in its local MCP settings.
 FTW starts in manual approval mode. In Mail Center > Agent mail permissions,
 the user can enable standing authorization after Windows account verification.
-Register each Agent separately and supply its FTW_AGENT_TOKEN to its MCP process
+Register each Agent separately, select the Agents allowed to send, and supply
+each FTW_AGENT_TOKEN to the corresponding MCP process
 environment. Keep this token out of chat prompts, logs and project files.
 
 Use FTW Data and Audit for backups and restoration. Keep mail-objects with

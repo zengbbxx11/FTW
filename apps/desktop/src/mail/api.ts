@@ -32,9 +32,11 @@ export type AgentMailPolicy = {
   revision: number; mode: 'manual' | 'disabled' | 'automatic'; accounts: string[]; purposes: string[]
   daily_limit: number; task_limit: number; interval_seconds: number
 }
+export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean }
+
 export type AgentMailSettings = {
   kind: 'agent_mail_settings'; policy: AgentMailPolicy; automatic_available: boolean
-  agents: { id: string; name: string; revoked: boolean }[]
+  agents: RegisteredAgent[]
   review: { id: string; state: 'waiting' | 'saved' | 'cancelled' | 'failed'; outcome: string | null } | null
 }
 
@@ -42,7 +44,8 @@ export type MailCommand =
   | { action: 'agent_mail_settings' | 'list_assets' }
   | { action: 'set_asset_access'; id: string; allowed: boolean }
   | { action: 'save_draft_with_assets'; id: string | null; input: DraftInput; asset_ids: string[] }
-  | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy }
+  | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy; agent_ids: string[] }
+  | { action: 'cancel_mail_policy_review'; id: string }
   | { action: 'register_mail_agent'; name: string; token: string }
   | { action: 'revoke_mail_agent'; id: string }
   | { action: 'list_accounts' }
@@ -75,7 +78,9 @@ export async function mailCall<Kind extends MailResult['kind']>(
 
 const mailErrorLabels: Record<string, string> = {
   agent_policy_cancelled: '用户取消了 Windows 核验。',
-  agent_policy_verification_failed: 'Windows 无法核验当前用户。请在系统窗口输入当前账户密码。',
+  agent_policy_verification_failed: 'Windows 未能验证登录账户。请使用当前 Windows 登录密码，PIN 无法用于此窗口。',
+  mail_agent_not_authorized: '这个 Agent 已登记。请在发送模式中勾选它的自动发信权限。',
+  mail_agent_selection_required: '请至少选择一个允许自动发信的 Agent。',
   agent_policy_review_expired: '权限确认已过期，请重新发起。',
   agent_policy_changed: '权限设置已更新，请重新打开后再保存。',
   agent_policy_invalid: '请检查发送限额、发件邮箱和授权用途。',

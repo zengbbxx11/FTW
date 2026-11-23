@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useDeferredValue, useState } from 'react'
 import { QueryBuilder, type Field as QueryField, type RuleGroupType } from 'react-querybuilder'
 import 'react-querybuilder/dist/query-builder.css'
-import { outreachLabels, stages, type StateOption } from './api'
+import { useQuery } from '@tanstack/react-query'
+import { dateLabel, outreachLabels, request, stages, type ContactQuery, type StateOption } from './api'
 import type { AvailableColumn, FieldOperator, Filter } from './viewTypes'
 
 const operators = {
@@ -64,13 +65,23 @@ function toFilter(group: RuleGroupType, columns: AvailableColumn[]): Filter | nu
   return { type: 'group', logic: group.combinator === 'or' ? 'or' : 'and', children }
 }
 
-export default function AdvancedFilters({ columns, catalog, filter, apply, close }: {
+export default function AdvancedFilters({ columns, catalog, filter, query, apply, close }: {
   columns: AvailableColumn[]; catalog: StateOption[]; filter: Filter | null | undefined
-  apply: (filter: Filter | null) => void; close: () => void
+  query: ContactQuery; apply: (filter: Filter | null) => void; close: () => void
 }) {
   const [draft, setDraft] = useState(() => fromFilter(filter))
   const [error, setError] = useState('')
-  return <section className="panel r3-advanced">
+  const deferred = useDeferredValue(draft)
+  let criteria: ContactQuery | null = null
+  try {
+    criteria = { ...query, filter: toFilter(deferred, columns), offset: 0, page_size: 20, custom_columns: [] }
+  } catch { /* Some rules are unfinished while the user edits them. */ }
+  const preview = useQuery({
+    queryKey: ['contacts', 'filter-preview', criteria],
+    enabled: criteria !== null,
+    queryFn: () => request({ action: 'list_contacts', query: criteria! }, 'contacts'),
+  })
+  return <div className="filter-editor-layout"><section className="panel r3-advanced">
     <div className="section-heading"><h2>组合筛选</h2>
       <button type="button" className="button" onClick={close}>关闭</button></div>
     <QueryBuilder fields={columns.map(column => queryField(column,catalog))}
@@ -89,4 +100,16 @@ export default function AdvancedFilters({ columns, catalog, filter, apply, close
       }}>应用</button>
     </div>
   </section>
+  <section className="panel filter-preview" aria-label="筛选结果预览">
+    <h2>结果预览</h2>
+    {!criteria ? <p className="muted">填完筛选值后显示结果。</p>
+      : preview.isError ? <p className="muted">无法预览当前条件。</p>
+      : preview.isPending ? <p className="muted">正在查找匹配客户…</p>
+      : preview.data.rows.length ? <><small>最多显示前 5 位客户</small><table>
+        <thead><tr><th>客户</th><th>国家 / 地区</th><th>最近联系</th></tr></thead>
+        <tbody>{preview.data.rows.slice(0, 5).map(row => <tr key={row.id}>
+          <td>{row.display_name}</td><td>{row.country_region || '—'}</td><td>{dateLabel(row.last_contact_at)}</td>
+        </tr>)}</tbody>
+      </table></> : <p className="muted">没有符合条件的客户。</p>}
+  </section></div>
 }

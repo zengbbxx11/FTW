@@ -13,18 +13,28 @@ use windows_sys::Win32::{
     },
 };
 
-pub fn verify(message: &str) -> Result<(), &'static str> {
+pub fn verify(message: &str, owner: isize) -> Result<(), &'static str> {
     let caption = wide("FTW · 验证 Windows 用户");
     let message = wide(message);
-    let target = wide("FTW Agent mail permission");
+    let computer = std::env::var("COMPUTERNAME").unwrap_or_else(|_| ".".into());
+    let target = wide(&computer);
     let info = CREDUI_INFOW {
         cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
-        hwndParent: null_mut(),
+        hwndParent: owner as _,
         pszMessageText: message.as_ptr(),
         pszCaptionText: caption.as_ptr(),
         hbmBanner: null_mut(),
     };
     let mut user = [0u16; 514];
+    if let Ok(name) = std::env::var("USERNAME") {
+        let domain = std::env::var("USERDOMAIN").unwrap_or(computer);
+        for (slot, unit) in user[..513]
+            .iter_mut()
+            .zip(format!("{domain}\\{name}").encode_utf16())
+        {
+            *slot = unit;
+        }
+    }
     let mut password = [0u16; 257];
     let mut save = 0;
     let result = unsafe {

@@ -76,6 +76,7 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
             field,
             value,
         } => cells::update(pool, actor, targets, &field, &value).await,
+        Command::CustomerStats => contacts::stats(pool).await,
         Command::ListContacts { query } => contacts::list(pool, query, actor).await,
         Command::ListViews { include_archived } => views::list(pool, actor, include_archived).await,
         Command::SaveView { view } => views::save(pool, actor, view).await,

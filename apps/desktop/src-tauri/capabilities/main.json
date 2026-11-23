@@ -1,6 +1,17 @@
 {
   "identifier": "main",
   "description": "Use the typed CRM and health operations from the local Workbench window.",
-  "windows": ["main"],
-  "permissions": ["allow-core-health", "allow-core-changes", "allow-crm-request", "allow-mail-request", "allow-inbox-request", "allow-data-request"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-core-health",
+    "allow-core-changes",
+    "allow-crm-request",
+    "allow-mail-request",
+    "allow-inbox-request",
+    "allow-data-request",
+    "allow-choose-mail-assets",
+    "allow-save-inbox-attachment"
+  ]
 }

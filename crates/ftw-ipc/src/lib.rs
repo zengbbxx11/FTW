@@ -34,6 +34,10 @@ pub enum Operation {
     Changes,
     Crm(Box<crm::Command>),
     Mail(Box<mail::Command>),
+    DesktopMail {
+        owner: isize,
+        command: Box<mail::Command>,
+    },
     Agent(Box<mail::AgentCommand>),
     Inbox(Box<inbox::Command>),
     AgentInbox(Box<inbox::AgentCommand>),

@@ -140,11 +140,6 @@ const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'm
 
 function App() {
   const [page, setPage] = useState<Page>({ kind: 'contacts' })
-  const [theme, setTheme] = useState(() => localStorage.getItem('ftw-theme') === 'red' ? 'red' : 'teal')
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    localStorage.setItem('ftw-theme', theme)
-  }, [theme])
   const openContact = (id: string) => setPage({ kind: 'contact', id })
   const compose = (contact: Contact) => setPage({ kind: 'mail', contact })
   const history = (id: string) => setPage({ kind: 'mail', inboxContact: id })
@@ -165,9 +160,6 @@ function App() {
           </svg><span>{label}</span>
         </button>)}
       </nav>
-      <label className="theme-picker">主题<select value={theme} onChange={event => setTheme(event.target.value === 'red' ? 'red' : 'teal')}>
-        <option value="teal">深蓝青色</option><option value="red">红黑</option>
-      </select></label>
     </header>
     <main className="workspace" id="workbench" data-page={page.kind} tabIndex={-1}>
       {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true })} />}

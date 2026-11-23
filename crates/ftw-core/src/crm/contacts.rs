@@ -6,6 +6,30 @@ use ftw_ipc::crm::{
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, SqliteConnection, SqlitePool};
 use std::collections::HashMap;
 
+fn priority_filter() -> String {
+    format!("{}='A'", state_sql("customer_level"))
+}
+
+fn sample_filter() -> String {
+    format!("({} IN ('planned','in_progress','in_transit','evaluating') OR (c.sample_status='' AND c.stage='sample_in_progress'))", state_sql("sample_status"))
+}
+
+pub async fn stats(pool: &SqlitePool) -> Result<Reply> {
+    let row = sqlx::query(&format!(
+        "SELECT COUNT(*) active,COUNT(*) FILTER(WHERE {}) priority, COUNT(*) FILTER(WHERE {}) sample,
+        COUNT(*) FILTER(WHERE stage IN ('contacted','replied','requirements','quote_sample','sample_in_progress','negotiation')) in_progress,
+        COUNT(*) FILTER(WHERE stage='won') won FROM contacts c WHERE archived_at IS NULL",
+        priority_filter(), sample_filter()
+    )).fetch_one(pool).await?;
+    Ok(Reply::CustomerStats {
+        active: row.get("active"),
+        priority: row.get("priority"),
+        sample: row.get("sample"),
+        in_progress: row.get("in_progress"),
+        won: row.get("won"),
+    })
+}
+
 pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>) -> Result<Reply> {
     validation::text(&mut filters.keyword, "keyword", 300, false)?;
     let mut query = QueryBuilder::new(
@@ -31,14 +55,10 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
     match filters.quick_view.as_str() {
         "" => {}
         "priority" => {
-            query
-                .push(" AND ")
-                .push(state_sql("customer_level"))
-                .push("='A'");
+            query.push(" AND ").push(priority_filter());
         }
         "sample" => {
-            query.push(" AND (").push(state_sql("sample_status"))
-                .push(" IN ('planned','in_progress','in_transit','evaluating') OR (c.sample_status='' AND c.stage='sample_in_progress'))");
+            query.push(" AND ").push(sample_filter());
         }
         _ => return Err(Error::Invalid("quick_view")),
     }

@@ -164,8 +164,8 @@ impl MailService {
         })
     }
 
-    pub async fn desktop(&self, command: Command) -> Response {
-        response(self.desktop_call(command).await)
+    pub async fn desktop(&self, command: Command, owner: isize) -> Response {
+        response(self.desktop_call(command, owner).await)
     }
 
     pub async fn agent(&self, command: AgentCommand) -> Response {
@@ -286,7 +286,7 @@ impl MailService {
         }
     }
 
-    async fn desktop_call(&self, command: Command) -> Result<Reply> {
+    async fn desktop_call(&self, command: Command, owner: isize) -> Result<Reply> {
         match command {
             Command::ImportAssets { paths } => self.import_assets(paths).await,
             Command::ListAssets => self.list_assets(false).await,
@@ -300,28 +300,18 @@ impl MailService {
             }
             Command::SetAssetAccess { id, allowed } => {
                 if allowed {
-                    self.start_policy_change(policy::Change::AllowAsset { id })
-                        .await
+                    self.authorize_asset(id, owner).await
                 } else {
                     self.disable_asset_access(id).await
                 }
             }
             Command::AgentMailSettings => self.policy_settings().await,
-            Command::SetAgentMailPolicy { policy } => {
-                self.start_policy_change(policy::Change::Policy(policy))
-                    .await
+            Command::SetAgentMailPolicy { policy, agent_ids } => {
+                self.change_policy(policy, agent_ids, owner).await
             }
-            Command::RegisterMailAgent { name, token } => {
-                self.start_policy_change(policy::Change::Register {
-                    name,
-                    digest: policy::digest(&token.0)?,
-                })
-                .await
-            }
-            Command::RevokeMailAgent { id } => {
-                self.start_policy_change(policy::Change::Revoke { id })
-                    .await
-            }
+            Command::CancelMailPolicyReview { id } => self.cancel_policy_review(id).await,
+            Command::RegisterMailAgent { name, token } => self.register_agent(name, &token.0).await,
+            Command::RevokeMailAgent { id } => self.revoke_mail_agent(id).await,
             Command::ListAccounts => self.accounts(true).await,
             Command::SaveAccount {
                 name,
@@ -431,9 +421,7 @@ impl MailService {
                     hostname(&target)?
                 };
                 if !blocked {
-                    return self
-                        .start_policy_change(policy::Change::Unblock { target: normalized })
-                        .await;
+                    return self.unblock_address(normalized, owner).await;
                 }
                 let mut tx = self.pool.begin().await?;
                 sqlx::query("INSERT OR IGNORE INTO suppression_list(normalized) VALUES (?)")
