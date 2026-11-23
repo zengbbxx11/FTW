@@ -134,6 +134,12 @@ async fn respond(
             Operation::Crm(command) => crm::dispatch(database, *command, crm::Actor::DESKTOP).await,
             Operation::Mail(command) => mail.desktop(*command).await,
             Operation::Agent(command) => mail.agent(*command).await,
+            Operation::Inbox(command) => mail.inbox(*command).await,
+            Operation::AgentInbox(command) => mail.agent_inbox(*command).await,
+            Operation::AgentCrm(command) => crate::agent::crm_call(database, *command).await,
+            Operation::Data(command) => {
+                crate::data::dispatch(database, mail, profile, *command).await
+            }
         },
         Ok(_) => error_response("unsupported_protocol_version"),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {

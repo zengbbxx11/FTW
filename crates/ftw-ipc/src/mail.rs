@@ -49,6 +49,11 @@ pub enum Command {
         id: String,
         password: Secret,
     },
+    SetAccountPreferences {
+        id: String,
+        daily_limit: u16,
+        signature: String,
+    },
     TestAccount {
         id: String,
     },
@@ -95,7 +100,12 @@ pub enum AgentCommand {
     GetDraft {
         id: String,
     },
+    ListPending {
+        offset: u32,
+    },
     CreateDraft {
+        #[serde(default)]
+        request_id: Option<String>,
         contact_id: String,
         account_id: String,
         recipient: String,
@@ -121,6 +131,10 @@ pub struct Account {
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_limit: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -151,6 +165,8 @@ pub struct Draft {
     pub body: String,
     pub attachments: Vec<AttachmentInfo>,
     pub expires_at: Option<i64>,
+    pub thread_id: Option<String>,
+    pub has_reply: bool,
     pub outcome: Option<String>,
 }
 

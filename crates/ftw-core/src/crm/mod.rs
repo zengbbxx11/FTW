@@ -1,4 +1,4 @@
-mod contacts;
+pub(crate) mod contacts;
 mod duplicates;
 mod leads;
 mod timeline;
@@ -29,7 +29,7 @@ impl Actor<'_> {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum Error {
+pub(crate) enum Error {
     #[error("{0}")]
     Invalid(&'static str),
     #[error("record_not_found")]

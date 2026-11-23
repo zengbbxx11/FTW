@@ -13,13 +13,13 @@ export function Empty({ children }: { children: ReactNode }) {
   return <p className="empty">{children}</p>
 }
 
-export function Pagination({ offset, more, change }: { offset: number; more: boolean; change: (page: number) => void }) {
+export function Pagination({ offset, more, change, pageSize = PAGE_SIZE }: { offset: number; more: boolean; change: (page: number) => void; pageSize?: number }) {
   if (!offset && !more) return null
   return (
     <div className="pagination" aria-label="分页">
-      <button type="button" className="button" disabled={offset === 0} onClick={() => change(Math.max(0, offset - PAGE_SIZE))}>上一页</button>
-      <span>第 {Math.floor(offset / PAGE_SIZE) + 1} 页</span>
-      <button type="button" className="button" disabled={!more} onClick={() => change(offset + PAGE_SIZE)}>下一页</button>
+      <button type="button" className="button" disabled={offset === 0} onClick={() => change(Math.max(0, offset - pageSize))}>上一页</button>
+      <span>第 {Math.floor(offset / pageSize) + 1} 页</span>
+      <button type="button" className="button" disabled={!more} onClick={() => change(offset + pageSize)}>下一页</button>
     </div>
   )
 }

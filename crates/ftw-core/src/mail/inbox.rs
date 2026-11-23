@@ -1,0 +1,205 @@
+mod store;
+#[cfg(test)]
+mod tests;
+mod transport;
+
+use super::{audit, check_text, hostname, new_id, protect_password, Failure, MailService, Result};
+use ftw_ipc::{
+    crm::Source,
+    inbox::{self, AgentCommand, Command, Result as Reply},
+    Response,
+};
+use sqlx::{FromRow, Row};
+use std::time::Duration;
+
+const FOLDER: &str = "INBOX";
+
+#[derive(FromRow)]
+struct Settings {
+    host: String,
+    port: i64,
+    username: String,
+    protected: Vec<u8>,
+}
+
+impl MailService {
+    pub async fn inbox(&self, command: Command) -> Response {
+        let result = match command {
+            Command::Accounts => self.imap_accounts().await,
+            Command::Configure {
+                account_id,
+                host,
+                port,
+                username,
+                password,
+            } => {
+                self.configure_imap(account_id, host, port, username, password)
+                    .await
+            }
+            Command::Test { account_id } => self.test_imap(&account_id).await,
+            Command::Sync { account_id } => self.start_sync(account_id).await,
+            Command::List {
+                account_id,
+                contact_id,
+                unmatched,
+                offset,
+            } => store::list(&self.pool, account_id, contact_id, unmatched, offset).await,
+            Command::Get { id } => store::get(&self.pool, &id).await,
+            Command::Thread { id, offset } => store::thread(&self.pool, &id, offset).await,
+            Command::Link { id, contact_id } => store::link(&self.pool, &id, &contact_id).await,
+        };
+        response(result)
+    }
+
+    pub async fn agent_inbox(&self, command: AgentCommand) -> Response {
+        let result = match command {
+            AgentCommand::Sync { account_id } => self.start_sync(account_id).await,
+            AgentCommand::List { contact_id, offset } => {
+                store::list(&self.pool, None, contact_id, false, offset).await
+            }
+            AgentCommand::Thread { id, offset } => store::thread(&self.pool, &id, offset).await,
+        };
+        response(result)
+    }
+
+    async fn configure_imap(
+        &self,
+        id: String,
+        host: String,
+        port: u16,
+        username: String,
+        password: ftw_ipc::mail::Secret,
+    ) -> Result<Reply> {
+        let _lock = self
+            .imap
+            .try_lock()
+            .map_err(|_| Failure::Code("imap_busy"))?;
+        check_text(&username, 320)?;
+        let host = hostname(&host)?;
+        if port == 0 {
+            return Err(Failure::Code("imap_configuration_invalid"));
+        }
+        let protected = protect_password(&password.0)?;
+        let mut tx = self.pool.begin().await?;
+        let registered: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=?)")
+                .bind(&id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !registered {
+            return Err(Failure::Code("mail_not_found"));
+        }
+        let old: Option<(String, String, String)> =
+            sqlx::query_as("SELECT secret_ref,host,username FROM imap_accounts WHERE account_id=?")
+                .bind(&id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let secret = old.as_ref().map_or_else(new_id, |row| row.0.clone());
+        sqlx::query("INSERT INTO local_secrets(id,protected) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET protected=excluded.protected")
+            .bind(&secret).bind(protected).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO imap_accounts(account_id,host,port,username,secret_ref) VALUES (?,?,?,?,?)
+          ON CONFLICT(account_id) DO UPDATE SET host=excluded.host,port=excluded.port,username=excluded.username,updated_at=unixepoch()")
+            .bind(&id).bind(&host).bind(i64::from(port)).bind(username.trim()).bind(secret).execute(&mut *tx).await?;
+        if old.is_some_and(|(_, previous_host, previous_username)| {
+            previous_host != host || previous_username != username.trim()
+        }) {
+            sqlx::query("DELETE FROM imap_sync_state WHERE account_id=?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM inbox_locations WHERE account_id=?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        audit(
+            &mut tx,
+            Source::Manual,
+            "email_account",
+            &id,
+            "configure_imap",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
+    async fn imap_accounts(&self) -> Result<Reply> {
+        let rows = sqlx::query("SELECT a.id,a.display_name,a.email_address,i.host,i.port,i.username,s.last_sync,s.outcome
+          FROM email_accounts a LEFT JOIN imap_accounts i ON i.account_id=a.id
+          LEFT JOIN imap_sync_state s ON s.account_id=a.id AND s.folder='INBOX' ORDER BY a.display_name,a.id")
+            .map(|r: sqlx::sqlite::SqliteRow| inbox::Account {
+                account_id: r.get("id"), display_name: r.get("display_name"), email_address: r.get("email_address"),
+                host: r.get("host"), port: r.get::<Option<i64>, _>("port").map(|v| v as u16),
+                username: r.get("username"), last_sync: r.get("last_sync"), outcome: r.get("outcome"),
+            }).fetch_all(&self.pool).await?;
+        Ok(Reply::Accounts { rows })
+    }
+
+    async fn settings(&self, id: &str) -> Result<Settings> {
+        sqlx::query_as("SELECT i.host,i.port,i.username,s.protected FROM imap_accounts i JOIN local_secrets s ON s.id=i.secret_ref WHERE i.account_id=?")
+            .bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("imap_not_configured"))
+    }
+
+    async fn test_imap(&self, id: &str) -> Result<Reply> {
+        let settings = self.settings(id).await?;
+        let outcome = tokio::time::timeout(Duration::from_secs(7), async {
+            let mut session = transport::connect(&settings).await?;
+            session
+                .examine(FOLDER)
+                .await
+                .map_err(|_| Failure::Code("imap_inbox_unavailable"))?;
+            Ok::<_, Failure>(Reply::ConnectionVerified)
+        })
+        .await;
+        outcome.unwrap_or(Err(Failure::Code("imap_timeout")))
+    }
+
+    async fn start_sync(&self, account_id: String) -> Result<Reply> {
+        let guard = self
+            .imap
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| Failure::Code("imap_busy"))?;
+        let settings = self.settings(&account_id).await?;
+        let needed: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM imap_sync_state WHERE account_id=? AND folder=? AND last_sync>=unixepoch()-3)")
+            .bind(&account_id).bind(FOLDER).fetch_one(&self.pool).await?;
+        if !needed {
+            return Err(Failure::Code("imap_recent_sync"));
+        }
+        sqlx::query("INSERT INTO imap_sync_state(account_id,folder,uid_validity,last_uid,outcome) VALUES (?,?,0,0,'running')
+            ON CONFLICT(account_id,folder) DO UPDATE SET outcome='running'")
+            .bind(&account_id).bind(FOLDER).execute(&self.pool).await?;
+        let service = self.clone();
+        let id = account_id.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            let report = match tokio::time::timeout(
+                Duration::from_secs(45),
+                transport::synchronize(&service.pool, &id, &settings),
+            )
+            .await
+            {
+                Ok(Ok(true)) => "more_available",
+                Ok(Ok(false)) => "ok",
+                Ok(Err(ref error)) => error.code(),
+                Err(_) => "imap_timeout",
+            };
+            let _ = sqlx::query("UPDATE imap_sync_state SET last_sync=unixepoch(),outcome=? WHERE account_id=? AND folder=?")
+                .bind(report).bind(id).bind(FOLDER).execute(&service.pool).await;
+        });
+        Ok(Reply::SyncStarted { account_id })
+    }
+}
+
+fn response(result: Result<Reply>) -> Response {
+    match result {
+        Ok(data) => Response::Inbox {
+            data: Box::new(data),
+        },
+        Err(error) => Response::Error {
+            code: error.code().into(),
+            detail: None,
+        },
+    }
+}

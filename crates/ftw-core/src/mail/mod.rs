@@ -1,5 +1,6 @@
 mod approval;
 mod credentials;
+mod inbox;
 mod smtp;
 mod worker;
 
@@ -51,6 +52,7 @@ struct AccountRow {
     smtp_security: String,
     smtp_username: String,
     protected: Vec<u8>,
+    daily_limit: i64,
 }
 
 #[derive(serde::Serialize)]
@@ -76,6 +78,8 @@ impl Snapshot {
 pub struct MailService {
     pool: SqlitePool,
     prompt: Arc<Mutex<()>>,
+    imap: Arc<Mutex<()>>,
+    delivery: Arc<Mutex<()>>,
 }
 
 impl MailService {
@@ -85,11 +89,29 @@ impl MailService {
             .execute(&mut *tx).await?;
         sqlx::query("UPDATE email_outbox_jobs SET state='delivery_unknown', outcome='interrupted_during_submission' WHERE state='sending'")
             .execute(&mut *tx).await?;
+        sqlx::query("UPDATE imap_sync_state SET outcome='interrupted' WHERE outcome='running'")
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(Self {
             pool,
             prompt: Arc::new(Mutex::new(())),
+            imap: Arc::new(Mutex::new(())),
+            delivery: Arc::new(Mutex::new(())),
         })
+    }
+
+    pub async fn restore(
+        &self,
+        root: &std::path::Path,
+        filename: &str,
+    ) -> std::result::Result<String, &'static str> {
+        let _approval = self.prompt.try_lock().map_err(|_| "backup_mail_busy")?;
+        let _sync = self.imap.try_lock().map_err(|_| "backup_mail_busy")?;
+        let _delivery = self.delivery.try_lock().map_err(|_| "backup_mail_busy")?;
+        crate::storage::backup::restore(&self.pool, root, filename)
+            .await
+            .map_err(|_| "backup_restore_failed")
     }
 
     pub fn approval_in_progress(&self) -> bool {
@@ -103,6 +125,9 @@ impl MailService {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
+                let Ok(_delivery) = service.delivery.try_lock() else {
+                    continue;
+                };
                 // A failed final write leaves a durable 'sending' row for recovery on restart.
                 let _ = service.send_next().await;
             }
@@ -136,27 +161,41 @@ impl MailService {
                 self.drafts(contact_id, offset).await
             }
             AgentCommand::GetDraft { id } => self.get(&id).await,
+            AgentCommand::ListPending { offset } => self.pending(offset).await,
             AgentCommand::CreateDraft {
+                request_id,
                 contact_id,
                 account_id,
                 recipient,
                 subject,
                 body,
             } => {
-                self.save(
-                    None,
-                    DraftInput {
-                        contact_id,
-                        account_id,
-                        recipient,
-                        subject,
-                        body,
-                        attachments: Vec::new(),
-                        replace_attachments: false,
-                    },
-                    Source::Agent,
-                )
-                .await
+                let input = DraftInput {
+                    contact_id,
+                    account_id,
+                    recipient,
+                    subject,
+                    body,
+                    attachments: Vec::new(),
+                    replace_attachments: false,
+                };
+                if let Some(request) = request_id {
+                    if let Err(reply) =
+                        crate::agent::claim(&self.pool, "create_email_draft", &request, &input)
+                            .await
+                    {
+                        return reply;
+                    }
+                    let result = self.save(None, input, Source::Agent).await;
+                    return crate::agent::finish(
+                        &self.pool,
+                        "create_email_draft",
+                        &request,
+                        response(result),
+                    )
+                    .await;
+                }
+                self.save(None, input, Source::Agent).await
             }
             AgentCommand::RequestApproval { id } => self.request_approval(&id, Source::Agent).await,
             AgentCommand::SendApproved { id } => self.enqueue(&id, Source::Agent).await,
@@ -217,6 +256,39 @@ impl MailService {
                 tx.commit().await?;
                 Ok(Reply::Saved { id })
             }
+            Command::SetAccountPreferences {
+                id,
+                daily_limit,
+                signature,
+            } => {
+                if !(1..=500).contains(&daily_limit)
+                    || signature.len() > 2_000
+                    || signature.contains('\0')
+                {
+                    return Err(Failure::Code("invalid_account_preferences"));
+                }
+                let mut tx = self.pool.begin().await?;
+                let result =
+                    sqlx::query("UPDATE email_accounts SET daily_limit=?,signature=? WHERE id=?")
+                        .bind(i64::from(daily_limit))
+                        .bind(signature.trim())
+                        .bind(&id)
+                        .execute(&mut *tx)
+                        .await?;
+                if result.rows_affected() != 1 {
+                    return Err(Failure::Code("mail_not_found"));
+                }
+                audit(
+                    &mut tx,
+                    Source::Manual,
+                    "email_account",
+                    &id,
+                    "set_preferences",
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(Reply::Saved { id })
+            }
             Command::TestAccount { id } => {
                 let mut db = self.pool.acquire().await?;
                 let account = account(&mut db, &id).await?;
@@ -268,12 +340,14 @@ impl MailService {
     }
 
     async fn accounts(&self, desktop: bool) -> Result<Reply> {
-        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security FROM email_accounts ORDER BY display_name,id")
+        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security,daily_limit,signature FROM email_accounts ORDER BY display_name,id")
             .map(|r: SqliteRow| mail::Account {
                 id: r.get("id"), name: r.get("display_name"), email: r.get("email_address"),
                 host: desktop.then(|| r.get("smtp_host")),
                 port: desktop.then(|| r.get::<i64,_>("smtp_port") as u16),
                 security: desktop.then(|| r.get("smtp_security")),
+                daily_limit: desktop.then(|| r.get::<i64,_>("daily_limit") as u16),
+                signature: desktop.then(|| r.get("signature")),
             }).fetch_all(&self.pool).await?;
         Ok(Reply::Accounts { rows })
     }
@@ -287,10 +361,26 @@ impl MailService {
         Ok(Reply::Drafts { rows, has_more })
     }
 
+    async fn pending(&self, offset: u32) -> Result<Reply> {
+        let mut rows = sqlx::query(
+            "SELECT * FROM email_drafts WHERE state='pending_approval'
+            ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?",
+        )
+        .bind(i64::from(offset))
+        .map(draft_row)
+        .fetch_all(&self.pool)
+        .await?;
+        let has_more = rows.len() > 20;
+        rows.truncate(20);
+        Ok(Reply::Drafts { rows, has_more })
+    }
+
     async fn get(&self, id: &str) -> Result<Reply> {
         let row = sqlx::query(
             "SELECT d.*,a.email_address,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
-             (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome
+             (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome,
+             (SELECT 'sent:' || e.id FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id) thread_id,
+             EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.kind='message') has_reply
              FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
         ).bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_not_found"))?;
         let attachments = attachments(&row)?
@@ -302,6 +392,8 @@ impl MailService {
             body: row.get("body_text"),
             attachments,
             expires_at: row.get("expires_at"),
+            thread_id: row.get("thread_id"),
+            has_reply: row.get("has_reply"),
             outcome: row.get("outcome"),
             row: draft_row(row),
         };
@@ -569,7 +661,7 @@ async fn check_suppression(db: &mut SqliteConnection, recipient: &str) -> Result
 
 async fn account(db: &mut SqliteConnection, id: &str) -> Result<AccountRow> {
     sqlx::query_as(
-        "SELECT a.email_address,a.smtp_host,a.smtp_port,a.smtp_security,a.smtp_username,s.protected
+        "SELECT a.email_address,a.smtp_host,a.smtp_port,a.smtp_security,a.smtp_username,s.protected,a.daily_limit
         FROM email_accounts a JOIN local_secrets s ON s.id=a.secret_ref WHERE a.id=?",
     )
     .bind(id)

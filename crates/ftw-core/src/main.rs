@@ -1,4 +1,6 @@
+mod agent;
 mod crm;
+mod data;
 mod mail;
 mod server;
 mod storage;
@@ -94,8 +96,9 @@ async fn run() -> Result<(), CoreError> {
             Ok(())
         }
         Response::Error { code, .. } => Err(CoreError::Health(code)),
-        Response::Crm { .. } | Response::Mail { .. } => {
-            Err(CoreError::Health("unexpected response".into()))
-        }
+        Response::Crm { .. }
+        | Response::Mail { .. }
+        | Response::Inbox { .. }
+        | Response::Data { .. } => Err(CoreError::Health("unexpected response".into())),
     }
 }

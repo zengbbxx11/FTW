@@ -1,4 +1,4 @@
-mod backup;
+pub(crate) mod backup;
 
 use crate::CoreError;
 use sqlx::{
@@ -8,7 +8,7 @@ use sqlx::{
 };
 use std::{path::Path, time::Duration};
 
-static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+pub(crate) static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 pub async fn open(data: &Path, root: &Path) -> Result<SqlitePool, CoreError> {
     let filename = data.join("workbench.db");

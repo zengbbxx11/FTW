@@ -7,6 +7,7 @@ import { LeadDetail, LeadEditor, LeadList } from './crm/Leads'
 import { Timeline } from './crm/Timeline'
 import type { Contact } from './crm/api'
 import { MailCenter } from './mail/MailCenter'
+import { Dashboard, DataTools } from './data/DataTools'
 import './styles.css'
 
 type Health = {
@@ -121,14 +122,15 @@ function SystemStatus() {
 }
 
 type Page =
-  | { kind: 'contacts' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' }
+  | { kind: 'contacts' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' | 'dashboard' | 'data' }
   | { kind: 'contact' | 'lead'; id: string }
-  | { kind: 'mail'; contact?: Contact }
+  | { kind: 'mail'; contact?: Contact; inboxContact?: string; inboxOnly?: boolean }
 
 function App() {
   const [page, setPage] = useState<Page>({ kind: 'contacts' })
   const openContact = (id: string) => setPage({ kind: 'contact', id })
   const compose = (contact: Contact) => setPage({ kind: 'mail', contact })
+  const history = (id: string) => setPage({ kind: 'mail', inboxContact: id })
   const openLead = (id: string) => setPage({ kind: 'lead', id })
   const contacts = () => setPage({ kind: 'contacts' })
   const leads = () => setPage({ kind: 'leads' })
@@ -138,22 +140,26 @@ function App() {
       <div className="brand-mark" aria-hidden="true">F</div>
       <div className="brand-name">FTW <span>外贸智能工作台</span></div>
       <nav className="app-nav" aria-label="工作台">
+        <button onClick={() => setPage({ kind: 'dashboard' })} aria-current={page.kind === 'dashboard' ? 'page' : undefined}>工作台</button>
         <button onClick={contacts} aria-current={['contacts', 'contact', 'new-contact'].includes(page.kind) ? 'page' : undefined}>客户</button>
         <button onClick={leads} aria-current={['leads', 'lead', 'new-lead'].includes(page.kind) ? 'page' : undefined}>候选客户</button>
         <button onClick={() => setPage({ kind: 'activities' })} aria-current={page.kind === 'activities' ? 'page' : undefined}>跟进记录</button>
         <button onClick={() => setPage({ kind: 'mail' })} aria-current={page.kind === 'mail' ? 'page' : undefined}>邮件中心</button>
         <button onClick={() => setPage({ kind: 'system' })} aria-current={page.kind === 'system' ? 'page' : undefined}>系统状态</button>
+        <button onClick={() => setPage({ kind: 'data' })} aria-current={page.kind === 'data' ? 'page' : undefined}>数据与审计</button>
       </nav>
     </header>
     <main className="workspace">
-      {page.kind === 'contacts' && <ContactList compose={compose} create={() => setPage({ kind: 'new-contact' })} />}
-      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} compose={compose} />}
+      {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true })} />}
+      {page.kind === 'data' && <DataTools />}
+      {page.kind === 'contacts' && <ContactList compose={compose} history={history} create={() => setPage({ kind: 'new-contact' })} />}
+      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} compose={compose} history={history} />}
       {page.kind === 'new-contact' && <ContactEditor saved={openContact} cancel={contacts} />}
       {page.kind === 'leads' && <LeadList open={openLead} create={() => setPage({ kind: 'new-lead' })} />}
       {page.kind === 'lead' && <LeadDetail key={page.id} id={page.id} back={leads} openContact={openContact} />}
       {page.kind === 'new-lead' && <LeadEditor saved={openLead} cancel={leads} />}
       {page.kind === 'activities' && <><div className="page-heading"><h1>跟进记录</h1></div><Timeline openContact={openContact} /></>}
-      {page.kind === 'mail' && <MailCenter initialContact={page.contact} pickContact={contacts} openContact={openContact} />}
+      {page.kind === 'mail' && <MailCenter key={page.contact?.id ?? page.inboxContact ?? (page.inboxOnly ? 'inbox' : 'mail')} initialContact={page.contact} inboxContact={page.inboxContact} initialInbox={page.inboxOnly} pickContact={contacts} openContact={openContact} />}
       {page.kind === 'system' && <SystemStatus />}
     </main>
   </>

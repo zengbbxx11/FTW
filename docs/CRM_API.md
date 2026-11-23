@@ -1,6 +1,6 @@
 # M1 CRM 接口
 
-桌面 WebView 通过 Tauri 的 `crm_request` 调用 Core，参数对象包含 `command`。Rust 调用者可以使用 `ftw_ipc::crm::Command` 与 `ftw_ipc::crm::Result`。当前桌面请求由 Core 识别为 `manual`，请求正文不接受操作者、来源或 Agent 执行 ID。后续 MCP 适配器负责根据权限注入操作者。
+桌面 WebView 通过 Tauri 的 `crm_request` 调用 Core，参数对象包含 `command`。Rust 调用者可以使用 `ftw_ipc::crm::Command` 与 `ftw_ipc::crm::Result`。当前桌面请求由 Core 识别为 `manual`，请求正文不接受操作者、来源或 Agent 执行 ID。MCP 适配器经受限 Agent 命令进入同一套 CRM 校验，并由 Core 记录 Agent 来源和请求标识。
 
 内部 IPC 请求示例
 
@@ -31,6 +31,8 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 业务错误为 `crm_invalid_field`（`detail` 是字段或校验名称）、`crm_not_found`、`crm_read_only` 和 `database_unavailable`。常规错误响应不包含 SQL 或客户正文。Core 事务审计保存操作者、来源、操作和对象 ID。
 
 `quick_view` 支持 `priority` 与 `sample`。跟进可保存独立的 `channel`、`followup_category` 与 `customer_feedback`。这些字段缺省时保存为空文本，旧跟进在迁移后继续可读。
+
+客户 CSV 的桌面入口为「数据与审计 → 客户 CSV」。预览在事务中校验并回滚，正式导入重新检验，跳过冲突或无效行。CSV 导出含 UTF-8 BOM，导出到数据根目录的 `exports`。
 
 ## JSON Schema
 

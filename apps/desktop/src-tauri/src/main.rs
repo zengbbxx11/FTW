@@ -71,6 +71,28 @@ async fn mail_request(
     }
 }
 
+#[tauri::command]
+async fn inbox_request(
+    access: State<'_, CoreAccess>,
+    command: ftw_ipc::inbox::Command,
+) -> Result<Box<ftw_ipc::inbox::Result>, Issue> {
+    match call_core(&access, &Operation::Inbox(Box::new(command))).await? {
+        Response::Inbox { data } => Ok(data),
+        _ => Err(Issue::new("core_protocol", "Unexpected inbox response")),
+    }
+}
+
+#[tauri::command]
+async fn data_request(
+    access: State<'_, CoreAccess>,
+    command: ftw_ipc::data::Command,
+) -> Result<Box<ftw_ipc::data::Result>, Issue> {
+    match call_core(&access, &Operation::Data(Box::new(command))).await? {
+        Response::Data { data } => Ok(data),
+        _ => Err(Issue::new("core_protocol", "Unexpected data response")),
+    }
+}
+
 async fn call_core(access: &CoreAccess, operation: &Operation) -> Result<Response, Issue> {
     let _guard = access.0.lock().await;
     let exe = env::current_exe().map_err(|error| Issue::new("profile_unavailable", error))?;
@@ -196,7 +218,9 @@ fn main() -> ExitCode {
         .invoke_handler(tauri::generate_handler![
             core_health,
             crm_request,
-            mail_request
+            mail_request,
+            inbox_request,
+            data_request
         ])
         .setup(|app| {
             let mut window =

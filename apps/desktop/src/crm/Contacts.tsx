@@ -9,7 +9,7 @@ const defaultQuery: ContactQuery = {
   keyword: '', quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
 }
 
-export function ContactList({ compose, create }: { compose: (contact: Contact) => void; create: () => void }) {
+export function ContactList({ compose, history, create }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void }) {
   const [query, setQuery] = useState(defaultQuery)
   const [search, setSearch] = useState('')
   const [view, setView] = useState('all')
@@ -82,7 +82,7 @@ export function ContactList({ compose, create }: { compose: (contact: Contact) =
         <button className="button" type="button" onClick={close}>关闭详情</button>
       </header>
       <div className="contact-drawer-body" role="region" aria-label="客户资料和跟进" tabIndex={0}>
-        {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} drawer />}
+        {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} history={history} drawer />}
       </div>
     </dialog>
   </>
@@ -216,8 +216,8 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
   </form>
 }
 
-export function ContactDetail({ id, back, compose, drawer }: {
-  id: string; back: () => void; compose: (contact: Contact) => void; drawer?: boolean
+export function ContactDetail({ id, back, compose, history, drawer }: {
+  id: string; back: () => void; compose: (contact: Contact) => void; history: (id: string) => void; drawer?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const cache = useQueryClient()
@@ -241,6 +241,7 @@ export function ContactDetail({ id, back, compose, drawer }: {
       <div className="row-actions">
         {!archived && <button className="button" onClick={() => setEditing(true)}>编辑客户</button>}
         {!archived && input.methods.some(method => method.kind === 'email') && <button className="button primary" onClick={() => compose(record)}>写邮件</button>}
+        <button className="button" onClick={() => history(id)}>邮件往来</button>
         <ConfirmButton label={archived ? '恢复这个客户？' : '归档这个客户？已有跟进仍可查看。'}
           disabled={archive.isPending} onConfirm={() => archive.mutate(!archived)}>{archived ? '恢复客户' : '归档客户'}</ConfirmButton>
       </div>

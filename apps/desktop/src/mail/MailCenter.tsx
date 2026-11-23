@@ -2,18 +2,19 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateLabel, request, sourceLabel, type Contact } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
+import { ImapSettings, InboxView, MailThread } from './Inbox'
 import { mailCall, mailError, states, type Attachment, type Draft, type DraftInput, type MailCommand } from './api'
 
-type View = { kind: 'drafts' | 'accounts' } | { kind: 'draft' | 'edit'; id: string }
+type View = { kind: 'drafts' | 'accounts' | 'inbox' | 'imap' } | { kind: 'draft' | 'edit'; id: string }
 
 function ErrorNotice({ error }: { error: unknown }) {
   return <p className="alert error" role="alert">{mailError(error)}</p>
 }
 
-export function MailCenter({ initialContact, pickContact, openContact }: {
-  initialContact?: Contact; pickContact: () => void; openContact: (id: string) => void
+export function MailCenter({ initialContact, inboxContact, initialInbox, pickContact, openContact }: {
+  initialContact?: Contact; inboxContact?: string; initialInbox?: boolean; pickContact: () => void; openContact: (id: string) => void
 }) {
-  const [view, setView] = useState<View>({ kind: 'drafts' })
+  const [view, setView] = useState<View>({ kind: (initialInbox || inboxContact) ? 'inbox' : 'drafts' })
   const [compose, setCompose] = useState(initialContact !== undefined)
   const [offset, setOffset] = useState(0)
   const openDraft = (id: string) => { setCompose(false); setView({ kind: 'draft', id }) }
@@ -27,12 +28,16 @@ export function MailCenter({ initialContact, pickContact, openContact }: {
     <div className="page-heading"><h1>邮件中心</h1>
       <div className="row-actions">
         <button className="button" onClick={showList}>邮件草稿</button>
+        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'inbox' }) }}>收件箱</button>
         <button className="button" onClick={() => { setCompose(false); setView({ kind: 'accounts' }) }}>发件账户</button>
+        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'imap' }) }}>收件设置</button>
         <button className="button primary" onClick={initialContact ? () => setCompose(true) : pickContact}>从客户写邮件</button>
       </div>
     </div>
     {compose && initialContact ? <DraftForm contact={initialContact} saved={openDraft} close={showList} />
       : view.kind === 'accounts' ? <Accounts />
+      : view.kind === 'imap' ? <ImapSettings />
+      : view.kind === 'inbox' ? <InboxView contactId={inboxContact} openContact={openContact} />
       : view.kind === 'draft' || view.kind === 'edit' ?
         <DraftView key={view.id} id={view.id} editing={view.kind === 'edit'} openContact={openContact}
           edit={() => setView({ kind: 'edit', id: view.id })} saved={openDraft} back={showList} />
@@ -56,11 +61,13 @@ function Accounts() {
   const [port, setPort] = useState(465)
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState('')
+  const [preferences, setPreferences] = useState('')
   const action = useMutation({
     mutationFn: async (command: MailCommand) => mailCall(command, command.action === 'test_account' ? 'connection_verified' : 'saved'),
     onMutate: () => setNotice(''),
     onSuccess: async (result, command) => {
       if (command.action === 'replace_password') setEditing('')
+      if (command.action === 'set_account_preferences') setPreferences('')
       setNotice(result.kind === 'connection_verified' ? 'SMTP 连接和认证通过。' :
         command.action === 'set_suppression' ? '拒发规则已保存。' : '邮箱账户设置已保存。')
       await cache.invalidateQueries({ queryKey: ['mail-accounts'] })
@@ -85,6 +92,18 @@ function Accounts() {
           <strong>{account.name}</strong><span>{account.email}</span><small>{account.host}:{account.port}</small>
           <button className="button" disabled={action.isPending} onClick={() => action.mutate({ action: 'test_account', id: account.id })}>测试 SMTP</button>
           <button className="button" disabled={action.isPending} onClick={() => setEditing(account.id)}>更新授权码</button>
+          <button className="button" disabled={action.isPending} onClick={() => setPreferences(account.id)}>发送上限与签名</button>
+          {preferences === account.id && <form className="form-grid" onSubmit={event => {
+            event.preventDefault()
+            const form = new FormData(event.currentTarget)
+            action.mutate({ action: 'set_account_preferences', id: account.id,
+              daily_limit: Number(form.get('limit')), signature: String(form.get('signature') ?? '') })
+          }}>
+            <Field label="近 24 小时发送上限"><input name="limit" type="number" min="1" max="500" defaultValue={account.daily_limit ?? 30} required /></Field>
+            <Field label="纯文本签名"><textarea name="signature" rows={3} defaultValue={account.signature ?? ''} /></Field>
+            <div className="row-actions"><button className="button" disabled={action.isPending}>保存设置</button>
+              <button type="button" className="button" onClick={() => setPreferences('')}>取消</button></div>
+          </form>}
           {editing === account.id && <form className="row-actions" onSubmit={event => {
             event.preventDefault()
             const form = event.currentTarget
@@ -198,6 +217,10 @@ function DraftForm({ contact, existing, saved, close }: {
         <Field label="主题"><input value={subject} onChange={e => setSubject(e.target.value)} required /></Field>
       </div>
       <Field label="正文"><textarea rows={10} value={body} onChange={e => setBody(e.target.value)} required /></Field>
+      {senderRows.find(row => row.id === sender)?.signature && <button type="button" className="button" onClick={() => {
+        const signature = senderRows.find(row => row.id === sender)?.signature
+        if (signature && !body.trimEnd().endsWith(signature)) setBody(body.trimEnd() + (body.trim() ? '\n\n' : '') + signature)
+      }}>插入账户签名</button>}
       <Field label="附件"><input type="file" multiple disabled={readingFiles} onChange={e => void selectFiles(e.target.files)} /></Field>
       {(replace ? files : existing?.attachments ?? []).map((file, i) => <small key={i}>{file.filename}</small>)}
       {(files.length > 0 || Boolean(existing?.attachments.length && !replace)) && <button className="text-button" type="button"
@@ -214,6 +237,7 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
 }) {
   const cache = useQueryClient()
   const [prompt, setPrompt] = useState(false)
+  const [history, setHistory] = useState(false)
   const draft = useQuery({
     queryKey: ['mail-draft', id], queryFn: () => mailCall({ action: 'get_draft', id }, 'draft'),
     refetchInterval: editing ? false : 1800,
@@ -236,6 +260,7 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
   })
   if (draft.isError) return <><button className="button" onClick={back}>返回草稿</button><ErrorNotice error={draft.error} /></>
   if (!record) return <Empty>正在读取草稿…</Empty>
+  if (history && record.thread_id) return <MailThread threadId={record.thread_id} close={() => setHistory(false)} openContact={openContact} />
   if (editing) return contact.isError ? <ErrorNotice error={contact.error} /> : contact.data ?
     <DraftForm contact={contact.data.record} existing={record} saved={saved} close={() => saved(id)} /> : <Empty>正在读取客户…</Empty>
 
@@ -243,9 +268,10 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
   return <section className="panel">
     <button className="text-button back-link" onClick={back}>返回邮件草稿</button>
     <div className="section-heading">
-      <div><h2>{record.subject}</h2><p className="muted">{states[record.state]} · 修订 {record.revision} · {sourceLabel(record.source)}</p></div>
+      <div><h2>{record.subject}</h2><p className="muted">{states[record.state]}{record.has_reply ? ' · 已有回复' : ''} · 修订 {record.revision} · {sourceLabel(record.source)}</p></div>
       <div className="row-actions">
         <button className="button" onClick={() => openContact(record.contact_id)}>打开客户</button>
+        {record.thread_id && <button className="button" onClick={() => setHistory(true)}>邮件往来</button>}
         {['draft', 'pending_approval', 'approved'].includes(record.state) && <button className="button" onClick={edit}>编辑草稿</button>}
         {record.state === 'draft' && <button className="button primary" disabled={transition.isPending} onClick={() => transition.mutate('request_approval')}>提交审核</button>}
         {(record.state === 'pending_approval' || (record.state === 'approved' && expired)) &&

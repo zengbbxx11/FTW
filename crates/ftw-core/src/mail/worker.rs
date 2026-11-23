@@ -104,6 +104,11 @@ async fn verify(db: &mut SqliteConnection, job: &Job) -> Result<(Snapshot, Accou
     if account.email_address != draft.sender {
         return Err(Failure::Code("approval_snapshot_changed"));
     }
+    let attempts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_outbox_jobs j JOIN email_drafts d ON d.id=j.draft_id WHERE d.account_id=? AND j.last_attempt_at>unixepoch()-86400")
+        .bind(&draft.account_id).fetch_one(&mut *db).await?;
+    if attempts >= account.daily_limit {
+        return Err(Failure::Code("smtp_daily_limit"));
+    }
     Ok((draft, account))
 }
 

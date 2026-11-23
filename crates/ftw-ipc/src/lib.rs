@@ -1,4 +1,7 @@
+pub mod agent;
 pub mod crm;
+pub mod data;
+pub mod inbox;
 pub mod mail;
 mod profile;
 mod windows;
@@ -29,6 +32,10 @@ pub enum Operation {
     Crm(Box<crm::Command>),
     Mail(Box<mail::Command>),
     Agent(Box<mail::AgentCommand>),
+    Inbox(Box<inbox::Command>),
+    AgentInbox(Box<inbox::AgentCommand>),
+    AgentCrm(Box<agent::Command>),
+    Data(Box<data::Command>),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -52,6 +59,12 @@ pub enum Response {
     },
     Mail {
         data: Box<mail::Result>,
+    },
+    Inbox {
+        data: Box<inbox::Result>,
+    },
+    Data {
+        data: Box<data::Result>,
     },
     Error {
         code: String,

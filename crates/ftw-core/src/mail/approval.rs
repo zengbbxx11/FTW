@@ -211,6 +211,7 @@ mod tests {
     async fn new_draft(service: &MailService, contact_id: String) -> String {
         let result = service
             .agent(AgentCommand::CreateDraft {
+                request_id: None,
                 contact_id,
                 account_id: "acct".into(),
                 recipient: "receiver@example.test".into(),
@@ -368,6 +369,93 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome, "recipient_suppressed");
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn daily_limit_counts_unconfirmed_attempts_before_smtp_submission() {
+        let (_directory, service, contact) = setup().await;
+        sqlx::query("UPDATE email_accounts SET daily_limit=1 WHERE id='acct'")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        let first = new_draft(&service, contact.clone()).await;
+        let (revision, digest) = submit_review(&service, &first).await;
+        service
+            .record_approval(&first, revision, &digest)
+            .await
+            .unwrap();
+        service.enqueue(&first, Source::Agent).await.unwrap();
+        let (port, server) = fake_server(true).await;
+        service
+            .send_next_with(|_| Ok(test_transport(port)))
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let second = new_draft(&service, contact).await;
+        let (revision, digest) = submit_review(&service, &second).await;
+        service
+            .record_approval(&second, revision, &digest)
+            .await
+            .unwrap();
+        service.enqueue(&second, Source::Agent).await.unwrap();
+        service
+            .send_next_with(|_| panic!("account limit must be checked before connecting"))
+            .await
+            .unwrap();
+        let outcome: String =
+            sqlx::query_scalar("SELECT outcome FROM email_outbox_jobs WHERE draft_id=?")
+                .bind(second)
+                .fetch_one(&service.pool)
+                .await
+                .unwrap();
+        assert_eq!(outcome, "smtp_daily_limit");
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn restore_requires_new_approval_and_never_replays_a_queued_job() {
+        let (directory, service, contact) = setup().await;
+        let approved = new_draft(&service, contact.clone()).await;
+        let queued = new_draft(&service, contact).await;
+        for draft in [&approved, &queued] {
+            let (revision, digest) = submit_review(&service, draft).await;
+            service
+                .record_approval(draft, revision, &digest)
+                .await
+                .unwrap();
+        }
+        service.enqueue(&queued, Source::Agent).await.unwrap();
+        let backup = crate::storage::backup::create(&service.pool, directory.path(), "manual")
+            .await
+            .unwrap();
+        service
+            .restore(
+                directory.path(),
+                backup.file_name().unwrap().to_str().unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            service.enqueue(&approved, Source::Agent).await,
+            Err(Failure::Code("approval_required"))
+        ));
+        service
+            .send_next_with(|_| panic!("a restored job must not be submitted"))
+            .await
+            .unwrap();
+        let job: (String, String) =
+            sqlx::query_as("SELECT state,outcome FROM email_outbox_jobs WHERE draft_id=?")
+                .bind(queued)
+                .fetch_one(&service.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            job,
+            ("delivery_unknown".into(), "restored_without_resend".into())
+        );
         service.pool.close().await;
     }
 
