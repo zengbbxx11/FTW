@@ -49,10 +49,16 @@ terminal opened in this directory, Codex can be configured with:
   codex mcp add ftw -- (Join-Path $PWD 'ftw-mcp.exe')
 
 WorkBuddy uses the same executable in its local MCP settings.
-All real mail requires a separate approval in FTW Workbench.
+FTW starts in manual approval mode. In Mail Center > Agent mail permissions,
+the user can enable standing authorization after Windows account verification.
+Register each Agent separately and supply its FTW_AGENT_TOKEN to its MCP process
+environment. Keep this token out of chat prompts, logs and project files.
 
-Use FTW Data and Audit for backups and restoration. Close FTW and let
-the Core finish or exit before moving an entire live data directory.
+Use FTW Data and Audit for backups and restoration. Keep mail-objects with
+the matching backup database. Close Workbench and all MCP clients, and let
+Core exit before moving the complete live data directory, including the
+agent-send-safety.sqlite and mail-objects files. The application will take
+a database backup before applying new migrations.
 '@ | Set-Content -LiteralPath (Join-Path $destination 'README.txt') -Encoding UTF8
 
 $zip = Join-Path $packages "$name.zip"

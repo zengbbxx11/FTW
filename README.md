@@ -1,6 +1,6 @@
 # FTW 外贸智能工作台
 
-FTW 是面向 Windows 10/11 x64 的本地外贸工作台。工作台提供客户表格、阶段看板、跟进、候选客户、SMTP 人工审批、IMAP 收件、Agent 接入及数据管理。可在「系统状态」查看 Core、迁移版本和数据目录。
+FTW 是面向 Windows 10/11 x64 的本地外贸工作台。工作台提供可保存的客户表格和看板、自定义字段、跟进、候选客户、SMTP、IMAP、Agent 接入和数据管理。用户与 Agent 通过同一个 Core 操作客户和邮件。可在「系统状态」查看 Core、迁移版本和数据目录。
 
 ## 开发运行
 
@@ -51,3 +51,9 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\build-po
 - [CRM 接口与 JSON Schema](docs/CRM_API.md)
 - [变更记录](docs/CHANGELOG.md)
 - [V1 产品与技术基线](FTW_产品与技术规格书_V1.md)
+
+### 开始使用
+
+- 先在「客户」添加客户和收件邮箱，再从详情点击「写邮件」。在「邮件中心」配置 SMTP 发件账户，在「收件设置」配置 IMAP。
+- 「邮件中心 → Agent 发信权限」可以登记 Codex、WorkBuddy 或其他 MCP stdio 客户端。持续授权由用户经 Windows 核验后开启，按发件邮箱、发送用途、数量和间隔生效。新数据目录默认逐封人工审批。
+- 从早期版本升级时，关闭旧工作台与 MCP 客户端，确认旧 Core 已退出，再成套替换三个 EXE。迁移由 Core 完成。复制便携数据目录时，保留同目录发件安全账本和附件对象。

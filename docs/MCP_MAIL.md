@@ -26,7 +26,7 @@ codex mcp add ftw -- "D:\FTW-Portable\ftw-mcp.exe"
 
 [WorkBuddy 官方 MCP 指引](https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide) · [WorkBuddy 本地 stdio 连接器技术说明](https://open.workbuddy.cn/docs/connector)
 
-## 发送步骤
+## 逐封人工审批
 
 1. 打开 FTW，在「邮件中心 → 发件账户」配置账户名、发件邮箱、SMTP 主机、端口、登录名及授权码，选择 TLS 或强制 STARTTLS。点「测试 SMTP」验证连接和认证。凭据加密使用当前 Windows 用户的 DPAPI，移动到其他用户或设备时可通过「更新授权码」重新授权。
 2. 在「客户」维护收件邮箱。可在客户详情点「写邮件」，也可让 Codex 或 WorkBuddy 通过 `list_customers` 和 `get_customer` 找到联系人，通过 `list_email_accounts` 选取发件账号。
@@ -68,6 +68,14 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 | `create_email_draft` | `contact_id`、`account_id`、`recipient`、`subject`、`body`，可选 `request_id` |
 | `request_email_approval` | `draft_id` |
 | `send_approved_email` | `draft_id` |
+| `list_customer_views` | 空对象 |
+| `query_customers` | 与 Core 客户视图相同的 `filter`、`order`、`page_size` 等查询参数 |
+| `check_customer_outreach` | `recipient` |
+| `send_authorized_email` | `draft_id`、`revision`、`purpose`、`task_id`、`request_id` |
+| `list_email_assets` | 空对象，需要 MCP 启动环境中的已登记令牌 |
+| `attach_email_assets` | `draft_id`、`revision`、`asset_ids` |
+| `fetch_inbox_message` | `message_id` |
+| `read_inbox_body` | `message_id`、可选 `offset` |
 
 重试写入时使用相同的 `request_id` 和参数。Core 会返回已记录的结果，参数改变时需要新的请求 ID。若 Core 返回 `agent_request_uncertain`，先查看客户资料或草稿确认执行结果。
 
