@@ -92,6 +92,10 @@ impl PipeEndpoint {
     }
 
     pub async fn health(&self) -> Result<Response, PipeOpenError> {
+        self.request(&Operation::Health).await
+    }
+
+    pub async fn request(&self, operation: &Operation) -> Result<Response, PipeOpenError> {
         // Keep a pipe server from impersonating the client when it accepts a connection.
         let mut client = loop {
             let connection = ClientOptions::new()
@@ -111,7 +115,7 @@ impl PipeEndpoint {
 
         let request = Request {
             version: PROTOCOL_VERSION,
-            operation: Operation::Health,
+            operation,
         };
         write_frame(&mut client, &request)
             .await

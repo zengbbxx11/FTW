@@ -1,4 +1,4 @@
-use crate::{storage, CoreError};
+use crate::{crm, storage, CoreError};
 use ftw_ipc::{
     display_path, read_frame, write_frame, Health, Operation, PipeEndpoint, Profile, Request,
     Response, PROTOCOL_VERSION,
@@ -14,7 +14,7 @@ use std::{
 use tokio::{io::AsyncReadExt, net::windows::named_pipe::NamedPipeServer};
 
 const IDLE_LIMIT: Duration = Duration::from_secs(300);
-const REQUEST_LIMIT: Duration = Duration::from_secs(2);
+const REQUEST_LIMIT: Duration = Duration::from_secs(10);
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_PIPE_NOT_CONNECTED: i32 = 233;
 
@@ -52,7 +52,7 @@ fn lock_data(profile: &Profile) -> Result<File, CoreError> {
 }
 
 async fn run(profile: &Profile, log: &mut File, idle_exit: bool) -> Result<(), CoreError> {
-    let database = storage::open(&profile.data).await?;
+    let database = storage::open(&profile.data, &profile.root).await?;
     let endpoint = PipeEndpoint::for_data_directory(&profile.data)
         .map_err(|error| CoreError::Io("pipe_unavailable", error))?;
     let mut pipe = endpoint
@@ -125,6 +125,7 @@ async fn respond(
                 },
                 Err(_) => error_response("database_unavailable"),
             },
+            Operation::Crm(command) => crm::dispatch(database, *command, crm::Actor::DESKTOP).await,
         },
         Ok(_) => error_response("unsupported_protocol_version"),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
@@ -135,12 +136,15 @@ async fn respond(
 
     write_frame(pipe, &response).await?;
     // DisconnectNamedPipe can discard unread bytes. Wait until the client has the response.
-    let _ = pipe.read_u8().await;
+    let _ = tokio::time::timeout(Duration::from_millis(400), pipe.read_u8()).await;
     Ok(())
 }
 
 fn error_response(code: &str) -> Response {
-    Response::Error { code: code.into() }
+    Response::Error {
+        code: code.into(),
+        detail: None,
+    }
 }
 
 fn log_event(file: &mut File, event: &str) -> io::Result<()> {

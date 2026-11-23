@@ -1,6 +1,6 @@
 # FTW 外贸智能工作台
 
-FTW 是面向 Windows 10/11 x64 的本地外贸工作台。当前 M0 桌面窗口显示独立 Core 的连接状态、数据库迁移版本、数据目录和进程 ID。
+FTW 是面向 Windows 10/11 x64 的本地外贸工作台。当前 M1 支持客户资料、联系渠道、产品兴趣、候选客户审核和客户跟进。可在「系统状态」查看 Core、迁移版本和数据目录。
 
 ## 开发运行
 
@@ -43,8 +43,9 @@ Pop-Location
 
 ## 阶段与文档
 
-M1 才开始 CRM、候选客户和跟进。邮件审批、收件关联、MCP 和可发布 ZIP 分别在 M2 至 M5 交付。
+升级 M0 数据前先结束旧版 Core。新版迁移以前在数据根目录的 `backups` 中生成 SQLite 一致性快照。邮件审批、收件关联、MCP 和可发布 ZIP 分别在 M2 至 M5 交付。
 
 - [Core 与存储设计](docs/ARCHITECTURE.md)
+- [CRM 接口与 JSON Schema](docs/CRM_API.md)
 - [变更记录](docs/CHANGELOG.md)
 - [V1 产品与技术基线](FTW_产品与技术规格书_V1.md)

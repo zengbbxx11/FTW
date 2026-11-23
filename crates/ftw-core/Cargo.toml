@@ -6,10 +6,13 @@ license.workspace = true
 
 [dependencies]
 ftw-ipc.workspace = true
+libsqlite3-sys = "0.30.1"
 serde_json.workspace = true
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 thiserror.workspace = true
 tokio.workspace = true
+url = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

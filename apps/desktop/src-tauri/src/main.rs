@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use ftw_ipc::{Health, PipeEndpoint, PipeOpenError, Profile, Response, CORE_ALREADY_RUNNING};
+use ftw_ipc::{
+    crm, Health, Operation, PipeEndpoint, PipeOpenError, Profile, Response, CORE_ALREADY_RUNNING,
+};
 use serde::Serialize;
 use std::{
     env, io,
@@ -19,21 +21,21 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const STARTUP_LIMIT: Duration = Duration::from_secs(15);
-const QUERY_LIMIT: Duration = Duration::from_secs(3);
+const QUERY_LIMIT: Duration = Duration::from_secs(12);
 
 #[derive(Default)]
 struct CoreAccess(Mutex<()>);
 
 #[derive(Serialize)]
 struct Issue {
-    code: &'static str,
+    code: String,
     detail: String,
 }
 
 impl Issue {
-    fn new(code: &'static str, detail: impl ToString) -> Self {
+    fn new(code: impl Into<String>, detail: impl ToString) -> Self {
         Self {
-            code,
+            code: code.into(),
             detail: detail.to_string(),
         }
     }
@@ -41,6 +43,24 @@ impl Issue {
 
 #[tauri::command]
 async fn core_health(access: State<'_, CoreAccess>) -> Result<Health, Issue> {
+    match call_core(&access, &Operation::Health).await? {
+        Response::Ready { health } => Ok(health),
+        _ => Err(Issue::new("core_protocol", "Unexpected Core response")),
+    }
+}
+
+#[tauri::command]
+async fn crm_request(
+    access: State<'_, CoreAccess>,
+    command: crm::Command,
+) -> Result<Box<crm::Result>, Issue> {
+    match call_core(&access, &Operation::Crm(Box::new(command))).await? {
+        Response::Crm { data } => Ok(data),
+        _ => Err(Issue::new("core_protocol", "Unexpected CRM response")),
+    }
+}
+
+async fn call_core(access: &CoreAccess, operation: &Operation) -> Result<Response, Issue> {
     let _guard = access.0.lock().await;
     let exe = env::current_exe().map_err(|error| Issue::new("profile_unavailable", error))?;
     let dev_root = development_root();
@@ -52,6 +72,7 @@ async fn core_health(access: State<'_, CoreAccess>) -> Result<Health, Issue> {
         &endpoint,
         &exe.with_file_name("ftw-core.exe"),
         dev_root.as_deref(),
+        operation,
     )
     .await
 }
@@ -67,7 +88,8 @@ async fn connect(
     endpoint: &PipeEndpoint,
     core_exe: &Path,
     dev_root: Option<&Path>,
-) -> Result<Health, Issue> {
+    operation: &Operation,
+) -> Result<Response, Issue> {
     let deadline = Instant::now() + STARTUP_LIMIT;
     let mut started = false;
     let mut child: Option<Child> = None;
@@ -81,9 +103,11 @@ async fn connect(
             ));
         }
 
-        match timeout(time_left.min(QUERY_LIMIT), endpoint.health()).await {
-            Ok(Ok(Response::Ready { health })) => return Ok(health),
-            Ok(Ok(Response::Error { code })) => return Err(Issue::new("core_unhealthy", code)),
+        match timeout(time_left.min(QUERY_LIMIT), endpoint.request(operation)).await {
+            Ok(Ok(Response::Error { code, detail })) => {
+                return Err(Issue::new(code, detail.unwrap_or_default()))
+            }
+            Ok(Ok(response)) => return Ok(response),
             Ok(Err(PipeOpenError::Absent)) if !started => {
                 child = Some(spawn_core(core_exe, dev_root)?);
                 started = true;
@@ -93,7 +117,7 @@ async fn connect(
             Err(_) => {
                 return Err(Issue::new(
                     "core_timeout",
-                    "Core did not answer the health request",
+                    "Core did not answer the request",
                 ))
             }
         }
@@ -158,7 +182,7 @@ fn main() -> ExitCode {
 
     let app = tauri::Builder::default()
         .manage(CoreAccess::default())
-        .invoke_handler(tauri::generate_handler![core_health])
+        .invoke_handler(tauri::generate_handler![core_health, crm_request])
         .setup(|app| {
             let mut window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

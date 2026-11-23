@@ -1,3 +1,4 @@
+pub mod crm;
 mod profile;
 mod windows;
 
@@ -11,19 +12,20 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CORE_ALREADY_RUNNING: i32 = 3;
 
-const FRAME_LIMIT: usize = 8 * 1024;
+const FRAME_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Request {
+pub struct Request<T = Operation> {
     pub version: u16,
-    pub operation: Operation,
+    pub operation: T,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     Health,
+    Crm(Box<crm::Command>),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -39,8 +41,17 @@ pub struct Health {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    Ready { health: Health },
-    Error { code: String },
+    Ready {
+        health: Health,
+    },
+    Crm {
+        data: Box<crm::Result>,
+    },
+    Error {
+        code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 pub async fn read_frame<T: serde::de::DeserializeOwned>(

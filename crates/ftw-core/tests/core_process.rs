@@ -68,7 +68,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     let mut first = CoreProcess::start(root);
     let health = first.ready(root).await;
     assert_eq!(health.process_id, first.0.id());
-    assert_eq!(health.schema_version, 1);
+    assert_eq!(health.schema_version, 2);
     assert!(matches!(health.storage_mode, StorageMode::Development));
     assert!(health.data_root.contains("FTW 验收 "));
 
@@ -104,7 +104,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     database.close().await.unwrap();
 
     let mut restarted = CoreProcess::start(root);
-    assert_eq!(restarted.ready(root).await.schema_version, 1);
+    assert_eq!(restarted.ready(root).await.schema_version, 2);
     drop(restarted);
 
     let mut database = open_database(&data).await;
@@ -178,4 +178,414 @@ fn core_rejects_a_read_only_lock_location() {
     assert!(!outcome.status.success());
     assert!(String::from_utf8_lossy(&outcome.stderr).contains("data_unavailable"));
     assert!(!data.join("workbench.db").exists());
+}
+
+use ftw_ipc::{crm, Operation};
+
+async fn crm_call(pipe: &PipeEndpoint, command: crm::Command) -> Response {
+    timeout(
+        Duration::from_secs(5),
+        pipe.request(&Operation::Crm(Box::new(command))),
+    )
+    .await
+    .expect("Core response deadline")
+    .expect("CRM pipe exchange")
+}
+
+async fn crm_ok(pipe: &PipeEndpoint, command: crm::Command) -> crm::Result {
+    match crm_call(pipe, command).await {
+        Response::Crm { data } => *data,
+        response => panic!("expected CRM result, received {response:?}"),
+    }
+}
+
+fn saved(result: crm::Result) -> String {
+    match result {
+        crm::Result::Saved { id } => id,
+        other => panic!("expected saved record, received {other:?}"),
+    }
+}
+
+fn contact(display_name: &str, email: &str) -> Box<crm::ContactInput> {
+    Box::new(crm::ContactInput {
+        display_name: display_name.into(),
+        company_name: "FTW Test Company".into(),
+        country_region: "中国".into(),
+        customer_level: "A".into(),
+        customer_type: "经销商".into(),
+        customer_source: "手动录入".into(),
+        stage: "requirements".into(),
+        methods: vec![crm::Method {
+            id: None,
+            kind: "email".into(),
+            value: email.into(),
+            label: "工作".into(),
+            is_primary: true,
+            is_verified: false,
+        }],
+        interests: vec![crm::Interest {
+            id: None,
+            product_text: "BK05".into(),
+            intent_quantity: Some(500),
+            quantity_is_estimate: true,
+            requirement: "样品".into(),
+        }],
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn crm_contacts_timeline_search_and_archive_survive_restart() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let mut first = CoreProcess::start(root);
+    first.ready(root).await;
+    let pipe = PipeEndpoint::for_data_directory(&root.join("data")).unwrap();
+    let id = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveContact {
+                id: None,
+                input: contact("深圳采购联系人", "Used@Example.com"),
+                allow_duplicate: false,
+            },
+        )
+        .await,
+    );
+
+    let result = crm_ok(
+        &pipe,
+        crm::Command::SaveContact {
+            id: None,
+            input: contact("重复客户", "used@example.COM"),
+            allow_duplicate: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(result, crm::Result::Duplicates { ref matches } if matches[0].id == id && matches[0].reason == "email")
+    );
+
+    let second_id = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveContact {
+                id: None,
+                input: contact("同公司第二联系人", "second@example.com"),
+                allow_duplicate: true,
+            },
+        )
+        .await,
+    );
+    assert_ne!(id, second_id);
+
+    for keyword in ["深圳", "深圳采", "BK05", "used@example.com"] {
+        let result = crm_ok(
+            &pipe,
+            crm::Command::ListContacts {
+                query: crm::ContactQuery {
+                    keyword: keyword.into(),
+                    country: "中国".into(),
+                    stage: "requirements".into(),
+                    level: "A".into(),
+                    customer_type: "经销商".into(),
+                    source: "手动录入".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await;
+        let crm::Result::Contacts { rows, .. } = result else {
+            panic!("expected customer list")
+        };
+        assert!(!rows.is_empty());
+        assert!(rows.iter().any(|row| row.id == id));
+    }
+
+    let result = crm_ok(&pipe, crm::Command::GetContact { id: id.clone() }).await;
+    let crm::Result::Contact { mut record } = result else {
+        panic!("expected customer")
+    };
+    assert_eq!(record.input.methods[0].value, "Used@Example.com");
+    let channel_id = record.input.methods[0].id.clone();
+    record.input.customer_level = "B".into();
+    record.input.methods.push(crm::Method {
+        id: None,
+        kind: "whatsapp".into(),
+        value: "+0012345".into(),
+        label: String::new(),
+        is_primary: true,
+        is_verified: false,
+    });
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveContact {
+                id: Some(id.clone()),
+                input: Box::new(record.input),
+                allow_duplicate: true,
+            },
+        )
+        .await,
+    );
+
+    let activity_id = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveActivity {
+                id: None,
+                input: crm::ActivityInput {
+                    contact_id: id.clone(),
+                    event_type: "call".into(),
+                    occurred_at: 1_760_000_000,
+                    summary: "讨论样品".into(),
+                    details: "确认采购意向".into(),
+                },
+            },
+        )
+        .await,
+    );
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveActivity {
+                id: Some(activity_id.clone()),
+                input: crm::ActivityInput {
+                    contact_id: id.clone(),
+                    event_type: "call".into(),
+                    occurred_at: 1_760_000_100,
+                    summary: "更新样品跟进".into(),
+                    details: "保留历史记录".into(),
+                },
+            },
+        )
+        .await,
+    );
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SetArchived {
+                id: id.clone(),
+                archived: true,
+            },
+        )
+        .await,
+    );
+
+    drop(first);
+    let mut restarted = CoreProcess::start(root);
+    restarted.ready(root).await;
+
+    let result = crm_ok(
+        &pipe,
+        crm::Command::ListContacts {
+            query: crm::ContactQuery::default(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(result, crm::Result::Contacts { rows, .. } if rows.len() == 1 && rows[0].id == second_id)
+    );
+    let result = crm_ok(&pipe, crm::Command::GetContact { id: id.clone() }).await;
+    let crm::Result::Contact { record } = result else {
+        panic!("expected archived customer")
+    };
+    assert!(record.archived_at.is_some());
+    assert_eq!(record.input.customer_level, "B");
+    assert_eq!(record.input.methods[0].id, channel_id);
+    assert_eq!(record.input.methods[1].value, "+0012345");
+    assert_eq!(record.observed_last_contact_at, Some(1_760_000_100));
+    let result = crm_ok(
+        &pipe,
+        crm::Command::ListActivities {
+            contact_id: Some(id.clone()),
+            event_type: "call".into(),
+            offset: 0,
+        },
+    )
+    .await;
+    assert!(matches!(result, crm::Result::Activities { rows, .. }
+        if rows.len() == 1 && rows[0].id == activity_id && rows[0].source == "manual"));
+
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SetArchived {
+                id: id.clone(),
+                archived: false,
+            },
+        )
+        .await,
+    );
+    drop(restarted);
+    let mut database = open_database(&root.join("data")).await;
+    let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE entity_id=?")
+        .bind(&id)
+        .fetch_one(&mut database)
+        .await
+        .unwrap();
+    assert_eq!(audit_count, 4);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn candidate_review_deduplication_and_promotion_use_one_core_transaction() {
+    let directory = tempdir().unwrap();
+    let mut core = CoreProcess::start(directory.path());
+    core.ready(directory.path()).await;
+    let pipe = PipeEndpoint::for_data_directory(&directory.path().join("data")).unwrap();
+    let lead = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveLead {
+                id: None,
+                allow_duplicate: false,
+                input: Box::new(crm::LeadInput {
+                    display_name: "Potential buyer".into(),
+                    email: "Buyer@Example.com".into(),
+                    website_url: "https://www.example.com/profile".into(),
+                    source_urls: vec!["https://example.com/about".into()],
+                    business_summary: "unverified statement".into(),
+                    research_notes: "unverified notes".into(),
+                    confidence: Some(66),
+                    ..Default::default()
+                }),
+            },
+        )
+        .await,
+    );
+    let result = crm_ok(
+        &pipe,
+        crm::Command::SaveLead {
+            id: None,
+            allow_duplicate: false,
+            input: Box::new(crm::LeadInput {
+                display_name: "Same website".into(),
+                website_url: "https://example.com/sales".into(),
+                ..Default::default()
+            }),
+        },
+    )
+    .await;
+    assert!(matches!(result, crm::Result::Duplicates { ref matches }
+        if matches[0].id == lead && matches[0].reason == "domain"));
+
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SetLeadReview {
+                id: lead.clone(),
+                rejected: true,
+            },
+        )
+        .await,
+    );
+    let rejected = crm_call(
+        &pipe,
+        crm::Command::PromoteLead {
+            id: lead.clone(),
+            allow_duplicate: false,
+        },
+    )
+    .await;
+    assert!(matches!(rejected, Response::Error { code, .. } if code == "crm_read_only"));
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SetLeadReview {
+                id: lead.clone(),
+                rejected: false,
+            },
+        )
+        .await,
+    );
+
+    let id = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::PromoteLead {
+                id: lead.clone(),
+                allow_duplicate: false,
+            },
+        )
+        .await,
+    );
+    let duplicate_call = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::PromoteLead {
+                id: lead.clone(),
+                allow_duplicate: false,
+            },
+        )
+        .await,
+    );
+    assert_eq!(id, duplicate_call);
+    let result = crm_ok(&pipe, crm::Command::GetContact { id: id.clone() }).await;
+    let crm::Result::Contact { record } = result else {
+        panic!("expected promoted contact")
+    };
+    assert!(record.input.notes.is_empty() && record.input.main_need.is_empty());
+    assert!(!record.input.methods[0].is_verified);
+    let result = crm_ok(&pipe, crm::Command::GetLead { id: lead }).await;
+    let crm::Result::Lead { record, .. } = result else {
+        panic!("expected candidate")
+    };
+    assert_eq!(record.promoted_contact_id, Some(id));
+    assert_eq!(record.input.source_urls, ["https://example.com/about"]);
+}
+
+#[tokio::test]
+async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
+    use sqlx::migrate::Migrate;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let data = root.join("data");
+    fs::create_dir(&data).unwrap();
+    let migrations = sqlx::migrate!("./migrations");
+    let mut original = open_database(&data).await;
+    original.ensure_migrations_table().await.unwrap();
+    original
+        .apply(migrations.iter().next().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value) VALUES ('existing','keep this')")
+        .execute(&mut original)
+        .await
+        .unwrap();
+    original.close().await.unwrap();
+
+    let mut core = CoreProcess::start(root);
+    assert_eq!(core.ready(root).await.schema_version, 2);
+    let snapshot = fs::read_dir(root.join("backups"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "db"))
+        .unwrap();
+    let mut backup = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(snapshot)
+            .read_only(true),
+    )
+    .await
+    .unwrap();
+    let retained: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='existing'")
+            .fetch_one(&mut backup)
+            .await
+            .unwrap();
+    let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&mut backup)
+        .await
+        .unwrap();
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&mut backup)
+        .await
+        .unwrap();
+    assert_eq!(
+        (retained.as_str(), version, integrity.as_str()),
+        ("keep this", 1, "ok")
+    );
+    backup.close().await.unwrap();
 }

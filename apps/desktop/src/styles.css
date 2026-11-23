@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./crm.css";
 
 @theme {
   --font-sans: "Segoe UI", "Microsoft YaHei UI", sans-serif;
@@ -17,7 +18,7 @@
 
 @layer components {
   .app-header {
-    @apply flex items-center gap-3 border-b border-slate-200 bg-white px-6 py-4 sm:px-9;
+    @apply flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-6 py-4 sm:px-9;
   }
 
   .brand-mark {
@@ -33,7 +34,7 @@
   }
 
   .workspace {
-    @apply mx-auto max-w-4xl px-6 py-10 sm:px-9 sm:py-14;
+    @apply mx-auto max-w-7xl px-6 py-8 sm:px-9 sm:py-10;
   }
 
   .page-heading {

@@ -1009,19 +1009,22 @@ dependencies = [
 
 [[package]]
 name = "ftw-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ftw-ipc",
+ "libsqlite3-sys",
  "serde_json",
  "sqlx",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]
 name = "ftw-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ftw-ipc",
  "serde",
@@ -1033,8 +1036,9 @@ dependencies = [
 
 [[package]]
 name = "ftw-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2 0.10.9",

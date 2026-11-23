@@ -1,0 +1,218 @@
+@layer components {
+  .app-nav {
+    @apply flex flex-wrap gap-1 sm:ml-auto;
+  }
+
+  .app-nav button {
+    @apply rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100;
+  }
+
+  .app-nav button[aria-current="page"] {
+    @apply bg-teal-50 text-teal-900;
+  }
+
+  .button {
+    @apply inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .button.primary {
+    @apply border-teal-800 bg-teal-800 text-white hover:bg-teal-900;
+  }
+
+  .text-button {
+    @apply text-left text-sm font-semibold text-teal-800 underline-offset-4 hover:underline;
+  }
+
+  .back-link {
+    @apply mb-4;
+  }
+
+  .page-heading p {
+    @apply mt-2 text-sm text-slate-600;
+  }
+
+  .panel, .filters, .table-wrap, .empty {
+    @apply mb-4 rounded-xl border border-slate-200 bg-white;
+  }
+
+  .panel, .filters {
+    @apply p-4 sm:p-5;
+  }
+
+  .panel > h2 {
+    @apply mb-4;
+  }
+
+  .filters, .form-grid, .profile-grid {
+    @apply grid gap-4 sm:grid-cols-2 lg:grid-cols-4;
+  }
+
+  .form-grid, .profile-grid {
+    @apply lg:grid-cols-3;
+  }
+
+  .more-filters {
+    @apply col-span-full text-sm;
+  }
+
+  .more-filters summary {
+    @apply cursor-pointer font-medium text-slate-700;
+  }
+
+  .more-filters .form-grid {
+    @apply mt-3;
+  }
+
+  .field {
+    @apply flex min-w-0 flex-col gap-1.5 text-sm font-medium text-slate-800;
+  }
+
+  input:not([type="checkbox"]), select, textarea {
+    @apply min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-teal-700 focus:outline-2 focus:outline-teal-600;
+  }
+
+  input[type="checkbox"] {
+    @apply mr-1.5 size-4 align-middle accent-teal-800;
+  }
+
+  textarea {
+    @apply resize-y;
+  }
+
+  .empty {
+    @apply px-5 py-8 text-center text-sm text-slate-600;
+  }
+
+  .panel .empty {
+    @apply mb-0 bg-slate-50;
+  }
+
+  .table-wrap {
+    @apply w-full overflow-x-auto;
+  }
+
+  table {
+    @apply w-full min-w-160 border-collapse text-left text-sm;
+  }
+
+  th, td {
+    @apply border-b border-slate-200 px-4 py-3 align-top;
+  }
+
+  th {
+    @apply bg-slate-50 font-semibold text-slate-600;
+  }
+
+  tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  td, .profile-grid dd, .record-list span, .source-list li {
+    overflow-wrap: anywhere;
+  }
+
+  small {
+    @apply mt-1 block text-xs text-slate-600;
+  }
+
+  .pagination, .form-footer, .section-heading, .row-actions {
+    @apply flex flex-wrap items-center gap-3;
+  }
+
+  .pagination, .form-footer {
+    @apply justify-end text-sm;
+  }
+
+  .section-heading {
+    @apply mb-4 justify-between;
+  }
+
+  .section-heading:last-child {
+    @apply mb-0;
+  }
+
+  .row-actions {
+    @apply text-sm;
+  }
+
+  .collection-row {
+    @apply items-end border-t border-slate-200 py-3;
+  }
+
+  .collection-row .row-actions {
+    @apply min-h-10;
+  }
+
+  .profile-grid dt {
+    @apply text-xs font-medium text-slate-600;
+  }
+
+  .profile-grid dd {
+    @apply mt-1 whitespace-pre-wrap text-sm text-slate-900;
+  }
+
+  .panel-columns {
+    @apply grid gap-x-4 sm:grid-cols-2;
+  }
+
+  .record-list, .timeline {
+    @apply divide-y divide-slate-200;
+  }
+
+  .record-list li, .timeline li {
+    @apply py-3 text-sm;
+  }
+
+  .record-list li {
+    @apply flex flex-wrap items-baseline gap-x-3;
+  }
+
+  .timeline .section-heading {
+    @apply mb-0;
+  }
+
+  .long-text {
+    @apply mt-2 whitespace-pre-wrap text-slate-700;
+    overflow-wrap: anywhere;
+  }
+
+  .inline-form {
+    @apply mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4;
+  }
+
+  .inline-form .form-footer {
+    @apply mt-4;
+  }
+
+  .alert {
+    @apply mb-4 rounded-lg border px-4 py-3 text-sm;
+  }
+
+  .alert.error {
+    @apply border-rose-200 bg-rose-50 text-rose-900;
+  }
+
+  .alert.warning {
+    @apply border-amber-200 bg-amber-50 text-amber-950;
+  }
+
+  .alert ul, .source-list {
+    @apply my-2 list-disc pl-5;
+  }
+
+  .panel h3 {
+    @apply mt-4 text-sm font-semibold;
+  }
+
+  .confirmation {
+    @apply fixed inset-0 m-auto w-[min(26rem,90vw)] rounded-xl border border-slate-200 bg-white p-5 text-slate-900 shadow-lg;
+  }
+
+  .confirmation::backdrop {
+    @apply bg-slate-950/40;
+  }
+
+  .confirmation .form-footer {
+    @apply mt-5;
+  }
+}

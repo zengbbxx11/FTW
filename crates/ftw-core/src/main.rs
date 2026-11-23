@@ -1,3 +1,4 @@
+mod crm;
 mod server;
 mod storage;
 
@@ -91,6 +92,7 @@ async fn run() -> Result<(), CoreError> {
             println!("{json}");
             Ok(())
         }
-        Response::Error { code } => Err(CoreError::Health(code)),
+        Response::Error { code, .. } => Err(CoreError::Health(code)),
+        Response::Crm { .. } => Err(CoreError::Health("unexpected response".into())),
     }
 }

@@ -1,3 +1,5 @@
+mod backup;
+
 use crate::CoreError;
 use sqlx::{
     migrate::Migrator,
@@ -8,9 +10,13 @@ use std::{path::Path, time::Duration};
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-pub async fn open(data: &Path) -> Result<SqlitePool, CoreError> {
+pub async fn open(data: &Path, root: &Path) -> Result<SqlitePool, CoreError> {
+    let filename = data.join("workbench.db");
+    let existing = filename
+        .try_exists()
+        .map_err(|error| CoreError::Io("data_unavailable", error))?;
     let options = SqliteConnectOptions::new()
-        .filename(data.join("workbench.db"))
+        .filename(filename)
         .create_if_missing(true)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
@@ -20,9 +26,17 @@ pub async fn open(data: &Path) -> Result<SqlitePool, CoreError> {
         .max_connections(1)
         .connect_with(options)
         .await?;
-    if let Err(error) = MIGRATOR.run(&pool).await {
+    let migration = async {
+        if let Some(latest) = MIGRATOR.iter().last().filter(|_| existing) {
+            backup::before_migration(&pool, root, latest.version).await?;
+        }
+        MIGRATOR.run(&pool).await?;
+        Ok::<_, CoreError>(())
+    }
+    .await;
+    if let Err(error) = migration {
         pool.close().await;
-        return Err(error.into());
+        return Err(error);
     }
     Ok(pool)
 }

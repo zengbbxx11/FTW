@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "Read Core health from the local Workbench window.",
+  "description": "Use the typed CRM and health operations from the local Workbench window.",
   "windows": ["main"],
-  "permissions": ["allow-core-health"]
+  "permissions": ["allow-core-health", "allow-crm-request"]
 }
