@@ -1,0 +1,13 @@
+[package]
+name = "ftw-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ftw-ipc.workspace = true
+rmcp = { version = "3.11", features = ["transport-io"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+schemars = "1"

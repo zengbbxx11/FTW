@@ -16,6 +16,10 @@ try {
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('test', '--locked', '--workspace')
     Invoke-Checked cargo @('build', '--locked', '--workspace')
+    $metadata = cargo metadata --locked --no-deps --format-version 1
+    if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
+    $target = ($metadata | ConvertFrom-Json).target_directory
+    Invoke-Checked node @((Join-Path $PSScriptRoot 'test-mcp.mjs'), $target)
     if ($Clippy) {
         Invoke-Checked cargo @('clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings')
     }

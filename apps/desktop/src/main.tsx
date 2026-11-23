@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ContactDetail, ContactEditor, ContactList } from './crm/Contacts'
 import { LeadDetail, LeadEditor, LeadList } from './crm/Leads'
 import { Timeline } from './crm/Timeline'
+import type { Contact } from './crm/api'
+import { MailCenter } from './mail/MailCenter'
 import './styles.css'
 
 type Health = {
@@ -121,10 +123,12 @@ function SystemStatus() {
 type Page =
   | { kind: 'contacts' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' }
   | { kind: 'contact' | 'lead'; id: string }
+  | { kind: 'mail'; contact?: Contact }
 
 function App() {
   const [page, setPage] = useState<Page>({ kind: 'contacts' })
   const openContact = (id: string) => setPage({ kind: 'contact', id })
+  const compose = (contact: Contact) => setPage({ kind: 'mail', contact })
   const openLead = (id: string) => setPage({ kind: 'lead', id })
   const contacts = () => setPage({ kind: 'contacts' })
   const leads = () => setPage({ kind: 'leads' })
@@ -137,17 +141,19 @@ function App() {
         <button onClick={contacts} aria-current={['contacts', 'contact', 'new-contact'].includes(page.kind) ? 'page' : undefined}>客户</button>
         <button onClick={leads} aria-current={['leads', 'lead', 'new-lead'].includes(page.kind) ? 'page' : undefined}>候选客户</button>
         <button onClick={() => setPage({ kind: 'activities' })} aria-current={page.kind === 'activities' ? 'page' : undefined}>跟进记录</button>
+        <button onClick={() => setPage({ kind: 'mail' })} aria-current={page.kind === 'mail' ? 'page' : undefined}>邮件中心</button>
         <button onClick={() => setPage({ kind: 'system' })} aria-current={page.kind === 'system' ? 'page' : undefined}>系统状态</button>
       </nav>
     </header>
     <main className="workspace">
-      {page.kind === 'contacts' && <ContactList open={openContact} create={() => setPage({ kind: 'new-contact' })} />}
-      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} />}
+      {page.kind === 'contacts' && <ContactList compose={compose} create={() => setPage({ kind: 'new-contact' })} />}
+      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} compose={compose} />}
       {page.kind === 'new-contact' && <ContactEditor saved={openContact} cancel={contacts} />}
       {page.kind === 'leads' && <LeadList open={openLead} create={() => setPage({ kind: 'new-lead' })} />}
       {page.kind === 'lead' && <LeadDetail key={page.id} id={page.id} back={leads} openContact={openContact} />}
       {page.kind === 'new-lead' && <LeadEditor saved={openLead} cancel={leads} />}
       {page.kind === 'activities' && <><div className="page-heading"><h1>跟进记录</h1></div><Timeline openContact={openContact} /></>}
+      {page.kind === 'mail' && <MailCenter initialContact={page.contact} pickContact={contacts} openContact={openContact} />}
       {page.kind === 'system' && <SystemStatus />}
     </main>
   </>

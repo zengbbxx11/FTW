@@ -12,7 +12,7 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 
 | 操作 | 参数 | 成功返回 |
 | --- | --- | --- |
-| `list_contacts` | `query` 支持 `keyword`、`country`、`stage`、`level`、`customer_type`、`source`、`archive`、`sort`、`offset` | `contacts` |
+| `list_contacts` | `query` 支持 `keyword`、`quick_view`、`country`、`stage`、`level`、`customer_type`、`source`、`archive`、`sort`、`offset` | `contacts` |
 | `get_contact` | `id` | `contact`，包含资料、渠道和产品兴趣 |
 | `save_contact` | `id`（新建为空）、`input`、`allow_duplicate` | `saved` 或 `duplicates` |
 | `set_archived` | `id`、`archived` | `saved` |
@@ -29,6 +29,8 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 去重按规范化邮箱、网站域名、公司与国家组合提示。匹配的记录由调用者复核，确认时重新提交 `allow_duplicate: true`，源记录不会合并或删除。每种渠道最多设一个主要账号。产品兴趣为自由文本，数量用非负整数，可标记为估算。联系方式和产品兴趣随联系人事务提交并保留已有子项 ID。
 
 业务错误为 `crm_invalid_field`（`detail` 是字段或校验名称）、`crm_not_found`、`crm_read_only` 和 `database_unavailable`。常规错误响应不包含 SQL 或客户正文。Core 事务审计保存操作者、来源、操作和对象 ID。
+
+`quick_view` 支持 `priority` 与 `sample`。跟进可保存独立的 `channel`、`followup_category` 与 `customer_feedback`。这些字段缺省时保存为空文本，旧跟进在迁移后继续可读。
 
 ## JSON Schema
 

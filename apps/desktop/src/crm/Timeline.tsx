@@ -37,7 +37,8 @@ export function Timeline({ contact, openContact }: { contact?: Contact; openCont
           <li key={event.id}>
             <div className="section-heading">
               <div><strong>{event.summary}</strong>
-                <small>{dateLabel(event.occurred_at)} · {activityTypes[event.event_type]} · {sourceLabel(event.source)}</small></div>
+                <small>{dateLabel(event.occurred_at)} · {activityTypes[event.event_type]} · {sourceLabel(event.source)}
+                  {event.channel && ' · ' + event.channel}{event.followup_category && ' · ' + event.followup_category}</small></div>
               <div className="row-actions">
                 {openContact && <button className="text-button" onClick={() => openContact(event.contact_id)}>{event.contact_name}</button>}
                 {editor === null && event.source !== 'system' && (!contact || contact.archived_at === null) &&
@@ -45,6 +46,7 @@ export function Timeline({ contact, openContact }: { contact?: Contact; openCont
               </div>
             </div>
             {event.details && <p className="long-text">{event.details}</p>}
+            {event.customer_feedback && <p className="long-text">客户反馈 {event.customer_feedback}</p>}
           </li>
         ))}</ol>}
       <Pagination offset={offset} more={query.data.has_more} change={setOffset} />
@@ -59,6 +61,8 @@ function ActivityEditor({ activity, contactId, close }: {
     contact_id: contactId, event_type: activity?.event_type ?? 'note',
     occurred_at: activity?.occurred_at ?? Math.floor(Date.now() / 1000),
     summary: activity?.summary ?? '', details: activity?.details ?? '',
+    channel: activity?.channel ?? '', followup_category: activity?.followup_category ?? '',
+    customer_feedback: activity?.customer_feedback ?? '',
   })
   const cache = useQueryClient()
   const mutation = useMutation({
@@ -81,6 +85,9 @@ function ActivityEditor({ activity, contactId, close }: {
           onChange={e => setInput(old => ({ ...old, occurred_at: fromDateInput(e.target.value) ?? 0 }))} /></Field>
         <Field label="摘要（必填）"><input required autoFocus value={input.summary}
           onChange={e => setInput(old => ({ ...old, summary: e.target.value }))} /></Field>
+        <Field label="沟通渠道"><input placeholder="阿里国际站、邮件等" value={input.channel} onChange={e => setInput(old => ({ ...old, channel: e.target.value }))} /></Field>
+        <Field label="跟进类型"><input placeholder="样品物流、认证或需求" value={input.followup_category} onChange={e => setInput(old => ({ ...old, followup_category: e.target.value }))} /></Field>
+        <Field label="客户反馈或需求"><textarea rows={3} value={input.customer_feedback} onChange={e => setInput(old => ({ ...old, customer_feedback: e.target.value }))} /></Field>
         <Field label="详情"><textarea rows={3} value={input.details}
           onChange={e => setInput(old => ({ ...old, details: e.target.value }))} /></Field>
       </div>

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply> {
     validation::text(&mut filters.keyword, "keyword", 300, false)?;
     let mut query = QueryBuilder::new(
-        "SELECT c.id, c.display_name, c.company_name, c.country_region, c.stage, c.customer_level,
+        "SELECT c.id, c.display_name, c.company_name, c.country_region, c.stage, c.customer_level, c.sample_status,
          c.archived_at, c.source, COALESCE(c.last_contact_at, (SELECT MAX(occurred_at)
             FROM activities WHERE contact_id = c.id)) AS effective_last,
          (SELECT value FROM contact_methods WHERE contact_id = c.id AND kind = 'email'
@@ -24,6 +24,16 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
             query.push(" AND archived_at IS NOT NULL");
         }
         ArchiveFilter::All => {}
+    }
+    match filters.quick_view.as_str() {
+        "" => {}
+        "priority" => {
+            query.push(" AND (c.customer_level='A' COLLATE NOCASE OR c.customer_level='重点客户' OR c.customer_level LIKE 'A |%')");
+        }
+        "sample" => {
+            query.push(" AND (c.stage='sample_in_progress' OR c.sample_status NOT IN ('','未涉及','无样品'))");
+        }
+        _ => return Err(Error::Invalid("quick_view")),
     }
     for (column, value) in [
         ("country_region", filters.country),
@@ -76,6 +86,7 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
             country_region: row.get("country_region"),
             stage: row.get("stage"),
             customer_level: row.get("customer_level"),
+            sample_status: row.get("sample_status"),
             email: row.get("email"),
             last_contact_at: row.get("effective_last"),
             archived_at: row.get("archived_at"),

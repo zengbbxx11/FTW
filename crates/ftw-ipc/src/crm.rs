@@ -80,18 +80,26 @@ pub struct LeadInput {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct ActivityInput {
     pub contact_id: String,
     pub event_type: String,
     pub occurred_at: i64,
     pub summary: String,
     pub details: String,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub followup_category: String,
+    #[serde(default)]
+    pub customer_feedback: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContactQuery {
     pub keyword: String,
+    pub quick_view: String,
     pub country: String,
     pub stage: String,
     pub level: String,
@@ -207,6 +215,7 @@ pub struct ContactRow {
     pub country_region: String,
     pub stage: String,
     pub customer_level: String,
+    pub sample_status: String,
     pub email: Option<String>,
     pub last_contact_at: Option<i64>,
     pub archived_at: Option<i64>,
@@ -252,6 +261,9 @@ pub struct Activity {
     pub occurred_at: i64,
     pub summary: String,
     pub details: String,
+    pub channel: String,
+    pub followup_category: String,
+    pub customer_feedback: String,
     pub source: String,
 }
 

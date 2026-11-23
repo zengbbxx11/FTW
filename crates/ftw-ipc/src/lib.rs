@@ -1,4 +1,5 @@
 pub mod crm;
+pub mod mail;
 mod profile;
 mod windows;
 
@@ -26,6 +27,8 @@ pub struct Request<T = Operation> {
 pub enum Operation {
     Health,
     Crm(Box<crm::Command>),
+    Mail(Box<mail::Command>),
+    Agent(Box<mail::AgentCommand>),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -46,6 +49,9 @@ pub enum Response {
     },
     Crm {
         data: Box<crm::Result>,
+    },
+    Mail {
+        data: Box<mail::Result>,
     },
     Error {
         code: String,

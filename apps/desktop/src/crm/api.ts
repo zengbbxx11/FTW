@@ -4,7 +4,7 @@ export const PAGE_SIZE = 20
 
 export const stages = {
   prospect: '待开发', contacted: '已联系', replied: '已回复', requirements: '需求沟通',
-  quote_sample: '报价或样品', negotiation: '商务谈判', won: '已成交', paused: '暂停', excluded: '不开发',
+  quote_sample: '报价或样品', sample_in_progress: '样品推进中', lost: '客户流失', negotiation: '商务谈判', won: '已成交', paused: '暂停', excluded: '不开发',
 } as const
 export type Stage = keyof typeof stages
 
@@ -61,6 +61,7 @@ export type ContactInput = {
 
 export type ContactRow = Pick<ContactInput, 'display_name' | 'company_name' | 'country_region' | 'stage' | 'customer_level' | 'last_contact_at'> & {
   id: string
+  sample_status: string
   email: string | null
   archived_at: number | null
   source: string
@@ -77,6 +78,7 @@ export type Contact = {
 
 export type ContactQuery = {
   keyword: string
+  quick_view: '' | 'priority' | 'sample'
   country: string
   stage: string
   level: string
@@ -116,6 +118,9 @@ export type ActivityInput = {
   occurred_at: number
   summary: string
   details: string
+  channel: string
+  followup_category: string
+  customer_feedback: string
 }
 
 export type Activity = ActivityInput & { id: string; contact_name: string; source: string }

@@ -60,6 +60,17 @@ async fn crm_request(
     }
 }
 
+#[tauri::command]
+async fn mail_request(
+    access: State<'_, CoreAccess>,
+    command: ftw_ipc::mail::Command,
+) -> Result<Box<ftw_ipc::mail::Result>, Issue> {
+    match call_core(&access, &Operation::Mail(Box::new(command))).await? {
+        Response::Mail { data } => Ok(data),
+        _ => Err(Issue::new("core_protocol", "Unexpected mail response")),
+    }
+}
+
 async fn call_core(access: &CoreAccess, operation: &Operation) -> Result<Response, Issue> {
     let _guard = access.0.lock().await;
     let exe = env::current_exe().map_err(|error| Issue::new("profile_unavailable", error))?;
@@ -182,7 +193,11 @@ fn main() -> ExitCode {
 
     let app = tauri::Builder::default()
         .manage(CoreAccess::default())
-        .invoke_handler(tauri::generate_handler![core_health, crm_request])
+        .invoke_handler(tauri::generate_handler![
+            core_health,
+            crm_request,
+            mail_request
+        ])
         .setup(|app| {
             let mut window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

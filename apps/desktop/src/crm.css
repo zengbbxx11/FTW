@@ -216,3 +216,16 @@
     @apply mt-5;
   }
 }
+
+@layer components {
+  .customer-views { @apply mb-4 flex flex-wrap gap-2; }
+  .customer-views [aria-pressed="true"] { @apply border-teal-700 bg-teal-50 text-teal-900; }
+  .stage-tag { @apply inline-flex rounded-md bg-teal-50 px-2 py-1 text-xs text-teal-900; }
+  .stage-board { @apply flex items-start gap-3 overflow-x-auto pb-5; }
+  .stage-column { @apply w-60 shrink-0 rounded-xl border border-slate-200 bg-slate-100 p-3; }
+  .stage-column h2 { @apply mb-3 font-semibold text-slate-700; }
+  .stage-card { @apply mb-2 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm shadow-sm hover:border-teal-600; }
+  .contact-drawer { @apply fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-[min(46rem,96vw)] max-w-none overflow-auto border-l border-slate-200 bg-slate-100 p-5 shadow-xl; }
+  .contact-drawer::backdrop { @apply bg-slate-950/35; }
+  .mail-body { @apply my-4 whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm; overflow-wrap: anywhere; }
+}

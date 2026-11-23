@@ -12,7 +12,7 @@ try {
     $env:FTW_DEV_ROOT = Join-Path $root '.ftw-dev\workbench'
     Push-Location -LiteralPath $root
     try {
-        Invoke-Checked cargo @('build', '--locked', '-p', 'ftw-core')
+        Invoke-Checked cargo @('build', '--locked', '-p', 'ftw-core', '-p', 'ftw-mcp')
         if ($CoreOnly) {
             $metadata = cargo metadata --no-deps --format-version 1
             if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }

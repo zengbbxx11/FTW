@@ -2,5 +2,5 @@
   "identifier": "main",
   "description": "Use the typed CRM and health operations from the local Workbench window.",
   "windows": ["main"],
-  "permissions": ["allow-core-health", "allow-crm-request"]
+  "permissions": ["allow-core-health", "allow-crm-request", "allow-mail-request"]
 }

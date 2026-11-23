@@ -1,0 +1,579 @@
+mod approval;
+mod credentials;
+mod smtp;
+mod worker;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use ftw_ipc::{
+    crm::{self, Source},
+    mail::{self, AgentCommand, Command, DraftInput, Result as Reply},
+    Response,
+};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use sqlx::{sqlite::SqliteRow, FromRow, Row, SqliteConnection, SqlitePool};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+type Result<T> = std::result::Result<T, Failure>;
+
+#[derive(Debug)]
+enum Failure {
+    Code(&'static str),
+    Database(sqlx::Error),
+}
+
+impl From<sqlx::Error> for Failure {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+impl Failure {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Code(code) => code,
+            Self::Database(error) => {
+                // Only the database category is exposed across IPC.
+                let _ = error;
+                "database_unavailable"
+            }
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct AccountRow {
+    email_address: String,
+    smtp_host: String,
+    smtp_port: i64,
+    smtp_security: String,
+    smtp_username: String,
+    protected: Vec<u8>,
+}
+
+#[derive(serde::Serialize)]
+struct Snapshot {
+    contact_id: String,
+    account_id: String,
+    sender: String,
+    recipient: String,
+    subject: String,
+    body: String,
+    attachments: Vec<mail::Attachment>,
+}
+
+impl Snapshot {
+    fn digest(&self) -> Result<String> {
+        let encoded =
+            serde_json::to_vec(self).map_err(|_| Failure::Code("smtp_message_invalid"))?;
+        Ok(format!("{:x}", Sha256::digest(encoded)))
+    }
+}
+
+#[derive(Clone)]
+pub struct MailService {
+    pool: SqlitePool,
+    prompt: Arc<Mutex<()>>,
+}
+
+impl MailService {
+    pub async fn new(pool: SqlitePool) -> std::result::Result<Self, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE email_drafts SET state='delivery_unknown', updated_at=unixepoch() WHERE state='sending'")
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE email_outbox_jobs SET state='delivery_unknown', outcome='interrupted_during_submission' WHERE state='sending'")
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(Self {
+            pool,
+            prompt: Arc::new(Mutex::new(())),
+        })
+    }
+
+    pub fn approval_in_progress(&self) -> bool {
+        self.prompt.try_lock().is_err()
+    }
+
+    pub fn start_worker(&self) -> tokio::task::JoinHandle<()> {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(450));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                // A failed final write leaves a durable 'sending' row for recovery on restart.
+                let _ = service.send_next().await;
+            }
+        })
+    }
+
+    pub async fn desktop(&self, command: Command) -> Response {
+        response(self.desktop_call(command).await)
+    }
+
+    pub async fn agent(&self, command: AgentCommand) -> Response {
+        let result = match command {
+            AgentCommand::ListCustomers { query } => {
+                return crate::crm::dispatch(
+                    &self.pool,
+                    crm::Command::ListContacts { query: *query },
+                    agent_actor(),
+                )
+                .await
+            }
+            AgentCommand::GetCustomer { id } => {
+                return crate::crm::dispatch(
+                    &self.pool,
+                    crm::Command::GetContact { id },
+                    agent_actor(),
+                )
+                .await
+            }
+            AgentCommand::ListAccounts => self.accounts(false).await,
+            AgentCommand::ListDrafts { contact_id, offset } => {
+                self.drafts(contact_id, offset).await
+            }
+            AgentCommand::GetDraft { id } => self.get(&id).await,
+            AgentCommand::CreateDraft {
+                contact_id,
+                account_id,
+                recipient,
+                subject,
+                body,
+            } => {
+                self.save(
+                    None,
+                    DraftInput {
+                        contact_id,
+                        account_id,
+                        recipient,
+                        subject,
+                        body,
+                        attachments: Vec::new(),
+                        replace_attachments: false,
+                    },
+                    Source::Agent,
+                )
+                .await
+            }
+            AgentCommand::RequestApproval { id } => self.request_approval(&id, Source::Agent).await,
+            AgentCommand::SendApproved { id } => self.enqueue(&id, Source::Agent).await,
+        };
+        response(result)
+    }
+
+    async fn desktop_call(&self, command: Command) -> Result<Reply> {
+        match command {
+            Command::ListAccounts => self.accounts(true).await,
+            Command::SaveAccount {
+                name,
+                email,
+                host,
+                port,
+                security,
+                username,
+                password,
+            } => {
+                check_text(&name, 180)?;
+                check_text(&username, 320)?;
+                let email = email_address(&email)?;
+                let host = hostname(&host)?;
+                if port == 0 || !matches!(security.as_str(), "tls" | "starttls") {
+                    return Err(Failure::Code("smtp_configuration_invalid"));
+                }
+                let protected = protect_password(&password.0)?;
+                let id = new_id();
+                let mut tx = self.pool.begin().await?;
+                sqlx::query("INSERT INTO local_secrets(id, protected) VALUES (?,?)")
+                    .bind(&id)
+                    .bind(protected)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query("INSERT INTO email_accounts(id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,secret_ref) VALUES (?,?,?,?,?,?,?,?)")
+                    .bind(&id).bind(name.trim()).bind(email).bind(host).bind(i64::from(port)).bind(security)
+                    .bind(username.trim()).bind(&id).execute(&mut *tx).await?;
+                audit(&mut tx, Source::Manual, "email_account", &id, "create").await?;
+                tx.commit().await?;
+                Ok(Reply::Saved { id })
+            }
+            Command::ReplacePassword { id, password } => {
+                let protected = protect_password(&password.0)?;
+                let mut tx = self.pool.begin().await?;
+                let change = sqlx::query("UPDATE local_secrets SET protected=? WHERE id=(SELECT secret_ref FROM email_accounts WHERE id=?)")
+                    .bind(protected).bind(&id).execute(&mut *tx).await?;
+                if change.rows_affected() != 1 {
+                    return Err(Failure::Code("mail_not_found"));
+                }
+                audit(
+                    &mut tx,
+                    Source::Manual,
+                    "email_account",
+                    &id,
+                    "replace_password",
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(Reply::Saved { id })
+            }
+            Command::TestAccount { id } => {
+                let mut db = self.pool.acquire().await?;
+                let account = account(&mut db, &id).await?;
+                drop(db);
+                let transport = smtp::transport(&account)?;
+                match tokio::time::timeout(Duration::from_secs(7), transport.test_connection())
+                    .await
+                {
+                    Ok(Ok(true)) => Ok(Reply::ConnectionVerified),
+                    _ => Err(Failure::Code("smtp_connection_failed")),
+                }
+            }
+            Command::ListDrafts { contact_id, offset } => self.drafts(contact_id, offset).await,
+            Command::GetDraft { id } => self.get(&id).await,
+            Command::SaveDraft { id, input } => self.save(id, input, Source::Manual).await,
+            Command::RequestApproval { id } => self.request_approval(&id, Source::Manual).await,
+            Command::OpenApproval { id } => self.open_approval(id).await,
+            Command::SendApproved { id } => self.enqueue(&id, Source::Manual).await,
+            Command::SetSuppression { target, blocked } => {
+                let normalized = if target.contains('@') {
+                    email_address(&target)?.to_ascii_lowercase()
+                } else {
+                    hostname(&target)?
+                };
+                let mut tx = self.pool.begin().await?;
+                if blocked {
+                    sqlx::query("INSERT OR IGNORE INTO suppression_list(normalized) VALUES (?)")
+                        .bind(&normalized)
+                        .execute(&mut *tx)
+                        .await?;
+                } else {
+                    sqlx::query("DELETE FROM suppression_list WHERE normalized=?")
+                        .bind(&normalized)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                audit(
+                    &mut tx,
+                    Source::Manual,
+                    "suppression",
+                    &normalized,
+                    if blocked { "block" } else { "unblock" },
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(Reply::Saved { id: normalized })
+            }
+        }
+    }
+
+    async fn accounts(&self, desktop: bool) -> Result<Reply> {
+        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security FROM email_accounts ORDER BY display_name,id")
+            .map(|r: SqliteRow| mail::Account {
+                id: r.get("id"), name: r.get("display_name"), email: r.get("email_address"),
+                host: desktop.then(|| r.get("smtp_host")),
+                port: desktop.then(|| r.get::<i64,_>("smtp_port") as u16),
+                security: desktop.then(|| r.get("smtp_security")),
+            }).fetch_all(&self.pool).await?;
+        Ok(Reply::Accounts { rows })
+    }
+
+    async fn drafts(&self, contact: Option<String>, offset: u32) -> Result<Reply> {
+        let mut rows = sqlx::query("SELECT * FROM email_drafts WHERE (? IS NULL OR contact_id=?) ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?")
+            .bind(contact.as_deref()).bind(contact.as_deref()).bind(i64::from(offset)).map(draft_row)
+            .fetch_all(&self.pool).await?;
+        let has_more = rows.len() > 20;
+        rows.truncate(20);
+        Ok(Reply::Drafts { rows, has_more })
+    }
+
+    async fn get(&self, id: &str) -> Result<Reply> {
+        let row = sqlx::query(
+            "SELECT d.*,a.email_address,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
+             (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome
+             FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
+        ).bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_not_found"))?;
+        let attachments = attachments(&row)?
+            .iter()
+            .map(attachment_info)
+            .collect::<Result<Vec<_>>>()?;
+        let record = mail::Draft {
+            sender: row.get("email_address"),
+            body: row.get("body_text"),
+            attachments,
+            expires_at: row.get("expires_at"),
+            outcome: row.get("outcome"),
+            row: draft_row(row),
+        };
+        Ok(Reply::Draft {
+            record: Box::new(record),
+        })
+    }
+
+    async fn save(
+        &self,
+        id: Option<String>,
+        mut input: DraftInput,
+        source: Source,
+    ) -> Result<Reply> {
+        input.recipient = email_address(&input.recipient)?;
+        check_text(&input.subject, 360)?;
+        if input.body.trim().is_empty() || input.body.len() > 12_000 || input.body.contains('\0') {
+            return Err(Failure::Code("invalid_mail_body"));
+        }
+        validate_attachments(&input.attachments)?;
+        let updating = id.is_some();
+        let id = id.unwrap_or_else(new_id);
+        let mut tx = self.pool.begin().await?;
+        check_recipient(&mut tx, &input.contact_id, &input.recipient).await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=?)")
+                .bind(&input.account_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !exists {
+            return Err(Failure::Code("mail_not_found"));
+        }
+        let encoded = json!(input.attachments).to_string();
+        let affected = if updating {
+            sqlx::query("UPDATE email_drafts SET contact_id=?,account_id=?,recipient=?,subject=?,body_text=?,attachments_json=CASE WHEN ? THEN ? ELSE attachments_json END,
+                revision=revision+1,state='draft',updated_at=unixepoch() WHERE id=? AND state IN ('draft','pending_approval','approved')")
+                .bind(input.contact_id).bind(input.account_id).bind(input.recipient).bind(input.subject.trim()).bind(input.body)
+                .bind(input.replace_attachments || !input.attachments.is_empty()).bind(encoded).bind(&id).execute(&mut *tx).await?.rows_affected()
+        } else {
+            sqlx::query("INSERT INTO email_drafts(id,contact_id,account_id,recipient,subject,body_text,attachments_json,source) VALUES (?,?,?,?,?,?,?,?)")
+                .bind(&id).bind(input.contact_id).bind(input.account_id).bind(input.recipient).bind(input.subject.trim()).bind(input.body)
+                .bind(encoded).bind(source.as_str()).execute(&mut *tx).await?.rows_affected()
+        };
+        if affected != 1 {
+            return Err(Failure::Code("mail_read_only"));
+        }
+        audit(
+            &mut tx,
+            source,
+            "email_draft",
+            &id,
+            if updating { "edit" } else { "create" },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
+    async fn request_approval(&self, id: &str, source: Source) -> Result<Reply> {
+        let mut tx = self.pool.begin().await?;
+        let state: String = sqlx::query_scalar("SELECT state FROM email_drafts WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Failure::Code("mail_not_found"))?;
+        match state.as_str() {
+            "draft" => {
+                sqlx::query("UPDATE email_drafts SET state='pending_approval',updated_at=unixepoch() WHERE id=?")
+                    .bind(id).execute(&mut *tx).await?;
+                audit(&mut tx, source, "email_draft", id, "request_approval").await?;
+            }
+            "pending_approval" | "approved" => {}
+            _ => return Err(Failure::Code("mail_read_only")),
+        }
+        tx.commit().await?;
+        Ok(Reply::Saved { id: id.to_owned() })
+    }
+}
+
+fn agent_actor() -> crate::crm::Actor<'static> {
+    crate::crm::Actor {
+        source: Source::Agent,
+        id: "mcp",
+        agent_run_id: None,
+    }
+}
+
+fn response(result: Result<Reply>) -> Response {
+    match result {
+        Ok(data) => Response::Mail {
+            data: Box::new(data),
+        },
+        Err(error) => Response::Error {
+            code: error.code().into(),
+            detail: None,
+        },
+    }
+}
+
+fn new_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+async fn audit(
+    db: &mut SqliteConnection,
+    source: Source,
+    entity: &str,
+    id: &str,
+    action: &str,
+) -> Result<()> {
+    let actor = match source {
+        Source::Manual => "desktop-user",
+        Source::Agent => "mcp",
+    };
+    sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation) VALUES (?,?,?,?,?,?)")
+        .bind(new_id()).bind(actor).bind(source.as_str()).bind(entity).bind(id).bind(action)
+        .execute(db).await?;
+    Ok(())
+}
+
+fn check_text(value: &str, max: usize) -> Result<()> {
+    if value.trim().is_empty() || value.len() > max || value.chars().any(char::is_control) {
+        return Err(Failure::Code("invalid_mail_field"));
+    }
+    Ok(())
+}
+
+fn email_address(value: &str) -> Result<String> {
+    check_text(value, 254)?;
+    let address: lettre::Address = value
+        .trim()
+        .parse()
+        .map_err(|_| Failure::Code("invalid_mail_address"))?;
+    Ok(address.to_string())
+}
+
+fn hostname(value: &str) -> Result<String> {
+    check_text(value, 253)?;
+    match url::Host::parse(value.trim()) {
+        Ok(url::Host::Domain(host))
+            if host
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'.')
+                && host.contains('.') =>
+        {
+            Ok(host.trim_end_matches('.').to_ascii_lowercase())
+        }
+        _ => Err(Failure::Code("invalid_smtp_host_or_domain")),
+    }
+}
+
+fn protect_password(password: &str) -> Result<Vec<u8>> {
+    if password.is_empty() || password.len() > 4096 || password.contains('\0') {
+        return Err(Failure::Code("invalid_mail_password"));
+    }
+    credentials::protect(password).map_err(|_| Failure::Code("credential_unavailable"))
+}
+
+fn draft_row(row: SqliteRow) -> mail::DraftRow {
+    mail::DraftRow {
+        id: row.get("id"),
+        contact_id: row.get("contact_id"),
+        account_id: row.get("account_id"),
+        recipient: row.get("recipient"),
+        subject: row.get("subject"),
+        state: row.get("state"),
+        revision: row.get("revision"),
+        source: row.get("source"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn attachments(row: &SqliteRow) -> Result<Vec<mail::Attachment>> {
+    serde_json::from_str(row.get("attachments_json"))
+        .map_err(|_| Failure::Code("invalid_attachments"))
+}
+
+fn attachment_bytes(attachment: &mail::Attachment) -> Result<Vec<u8>> {
+    STANDARD
+        .decode(&attachment.content_base64)
+        .map_err(|_| Failure::Code("invalid_attachments"))
+}
+
+fn attachment_info(attachment: &mail::Attachment) -> Result<mail::AttachmentInfo> {
+    let bytes = attachment_bytes(attachment)?;
+    Ok(mail::AttachmentInfo {
+        filename: attachment.filename.clone(),
+        size: bytes.len(),
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    })
+}
+
+fn validate_attachments(attachments: &[mail::Attachment]) -> Result<()> {
+    let mut total = 0;
+    if attachments.len() > 4 {
+        return Err(Failure::Code("attachment_limit"));
+    }
+    for attachment in attachments {
+        check_text(&attachment.filename, 180)?;
+        if attachment.filename.contains(['/', '\\']) {
+            return Err(Failure::Code("invalid_attachments"));
+        }
+        total += attachment_bytes(attachment)?.len();
+        if total > 384 * 1024 {
+            return Err(Failure::Code("attachment_limit"));
+        }
+    }
+    Ok(())
+}
+
+async fn snapshot(db: &mut SqliteConnection, id: &str) -> Result<(Snapshot, i64, String)> {
+    let row = sqlx::query("SELECT d.*,a.email_address FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?")
+        .bind(id).fetch_optional(db).await?.ok_or(Failure::Code("mail_not_found"))?;
+    Ok((
+        Snapshot {
+            contact_id: row.get("contact_id"),
+            account_id: row.get("account_id"),
+            sender: row.get("email_address"),
+            recipient: row.get("recipient"),
+            subject: row.get("subject"),
+            body: row.get("body_text"),
+            attachments: attachments(&row)?,
+        },
+        row.get("revision"),
+        row.get("state"),
+    ))
+}
+
+async fn check_recipient(db: &mut SqliteConnection, contact: &str, recipient: &str) -> Result<()> {
+    let normalized = recipient.to_ascii_lowercase();
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+        SELECT 1 FROM contacts c JOIN contact_methods m ON m.contact_id=c.id
+        WHERE c.id=? AND c.archived_at IS NULL AND m.kind='email' AND m.normalized=?
+    )",
+    )
+    .bind(contact)
+    .bind(&normalized)
+    .fetch_one(&mut *db)
+    .await?;
+    if !exists {
+        return Err(Failure::Code("recipient_not_on_contact"));
+    }
+    Ok(())
+}
+
+async fn check_suppression(db: &mut SqliteConnection, recipient: &str) -> Result<()> {
+    let normalized = recipient.to_ascii_lowercase();
+    let domain = normalized
+        .split_once('@')
+        .map(|(_, domain)| domain)
+        .ok_or(Failure::Code("invalid_mail_address"))?;
+    let suppressed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM suppression_list WHERE normalized IN (?,?))",
+    )
+    .bind(&normalized)
+    .bind(domain)
+    .fetch_one(db)
+    .await?;
+    if suppressed {
+        return Err(Failure::Code("recipient_suppressed"));
+    }
+    Ok(())
+}
+
+async fn account(db: &mut SqliteConnection, id: &str) -> Result<AccountRow> {
+    sqlx::query_as(
+        "SELECT a.email_address,a.smtp_host,a.smtp_port,a.smtp_security,a.smtp_username,s.protected
+        FROM email_accounts a JOIN local_secrets s ON s.id=a.secret_ref WHERE a.id=?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(Failure::Code("mail_not_found"))
+}

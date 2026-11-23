@@ -9,6 +9,8 @@ pub const STAGES: &[&str] = &[
     "replied",
     "requirements",
     "quote_sample",
+    "sample_in_progress",
+    "lost",
     "negotiation",
     "won",
     "paused",
@@ -200,5 +202,18 @@ pub fn activity(input: &mut ActivityInput) -> Result<()> {
     choice(&input.event_type, "event_type", ACTIVITY_TYPES)?;
     text(&mut input.summary, "summary", 500, true)?;
     text(&mut input.details, "details", 4000, false)?;
+    text(&mut input.channel, "channel", 240, false)?;
+    text(
+        &mut input.followup_category,
+        "followup_category",
+        240,
+        false,
+    )?;
+    text(
+        &mut input.customer_feedback,
+        "customer_feedback",
+        4000,
+        false,
+    )?;
     timestamp(input.occurred_at, "occurred_at")
 }

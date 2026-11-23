@@ -183,6 +183,7 @@ mod tests {
                         occurred_at: 1_760_000_000,
                         summary: "Verified communication".into(),
                         details: String::new(),
+                        ..Default::default()
                     },
                 },
                 agent,

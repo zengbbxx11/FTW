@@ -1,6 +1,6 @@
 # FTW 外贸智能工作台
 
-FTW 是面向 Windows 10/11 x64 的本地外贸工作台。当前 M1 支持客户资料、联系渠道、产品兴趣、候选客户审核和客户跟进。可在「系统状态」查看 Core、迁移版本和数据目录。
+FTW 是面向 Windows 10/11 x64 的本地外贸工作台。当前版本支持 CRM 客户表格、阶段看板、跟进和候选客户，也支持 SMTP 邮件草稿、FTW 人工审批和通过 MCP 启用的代发任务。可在「系统状态」查看 Core、迁移版本和数据目录。
 
 ## 开发运行
 
@@ -33,19 +33,20 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\test.ps1
 脚本安装锁定的 npm 依赖，执行 ESLint、TypeScript、Vite、Rust 格式、测试和构建。已安装 Clippy 时，在命令末尾追加 `-Clippy`。
 
 ```powershell
-cargo build --release --locked -p ftw-core
+cargo build --release --locked -p ftw-core -p ftw-mcp
 Push-Location .\apps\desktop
 npm.cmd run tauri -- build --no-bundle -- --locked
 Pop-Location
 ```
 
-默认输出 `target\release\workbench.exe` 与 `target\release\ftw-core.exe`。将两者放在同一个目录，运行 `workbench.exe`。需要便携存储时，在同目录创建空的 `portable.flag`。没有标志时，Core 使用 `%LOCALAPPDATA%\FTW`。关闭手动启动的 Core，并等按需 Core 退出后再迁移目录。
+默认输出 `target\release\workbench.exe`、`ftw-core.exe` 和 `ftw-mcp.exe`。将三个 EXE 放在同一个目录，运行 `workbench.exe`。需要便携存储时，在同目录创建空的 `portable.flag`。没有标志时，Core 使用 `%LOCALAPPDATA%\FTW`。关闭手动启动的 Core，并等按需 Core 退出后再迁移目录。
 
 ## 阶段与文档
 
-升级 M0 数据前先结束旧版 Core。新版迁移以前在数据根目录的 `backups` 中生成 SQLite 一致性快照。邮件审批、收件关联、MCP 和可发布 ZIP 分别在 M2 至 M5 交付。
+升级 M0 数据前先结束旧版 Core。新版迁移以前在数据根目录的 `backups` 中生成 SQLite 一致性快照。邮件代发 MCP 已随 SMTP 功能交付。IMAP 收件关联、其余 MCP 工具及可发布 ZIP 按后续里程碑交付。
 
 - [Core 与存储设计](docs/ARCHITECTURE.md)
+- [邮件代发与 Codex、WorkBuddy 接入](docs/MCP_MAIL.md)
 - [CRM 接口与 JSON Schema](docs/CRM_API.md)
 - [变更记录](docs/CHANGELOG.md)
 - [V1 产品与技术基线](FTW_产品与技术规格书_V1.md)

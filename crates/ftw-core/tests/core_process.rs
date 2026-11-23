@@ -68,7 +68,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     let mut first = CoreProcess::start(root);
     let health = first.ready(root).await;
     assert_eq!(health.process_id, first.0.id());
-    assert_eq!(health.schema_version, 2);
+    assert_eq!(health.schema_version, 3);
     assert!(matches!(health.storage_mode, StorageMode::Development));
     assert!(health.data_root.contains("FTW 验收 "));
 
@@ -104,7 +104,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     database.close().await.unwrap();
 
     let mut restarted = CoreProcess::start(root);
-    assert_eq!(restarted.ready(root).await.schema_version, 2);
+    assert_eq!(restarted.ready(root).await.schema_version, 3);
     drop(restarted);
 
     let mut database = open_database(&data).await;
@@ -340,6 +340,7 @@ async fn crm_contacts_timeline_search_and_archive_survive_restart() {
                     occurred_at: 1_760_000_000,
                     summary: "讨论样品".into(),
                     details: "确认采购意向".into(),
+                    ..Default::default()
                 },
             },
         )
@@ -356,6 +357,7 @@ async fn crm_contacts_timeline_search_and_archive_survive_restart() {
                     occurred_at: 1_760_000_100,
                     summary: "更新样品跟进".into(),
                     details: "保留历史记录".into(),
+                    ..Default::default()
                 },
             },
         )
@@ -557,7 +559,7 @@ async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
     original.close().await.unwrap();
 
     let mut core = CoreProcess::start(root);
-    assert_eq!(core.ready(root).await.schema_version, 2);
+    assert_eq!(core.ready(root).await.schema_version, 3);
     let snapshot = fs::read_dir(root.join("backups"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateInput, dateLabel, fromDateInput, methodKinds, request, sourceLabel, stages,
   type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage } from './api'
@@ -6,12 +6,17 @@ import { ConfirmButton, Duplicates, Empty, Field, Pagination, Problem } from './
 import { Timeline } from './Timeline'
 
 const defaultQuery: ContactQuery = {
-  keyword: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
+  keyword: '', quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
 }
 
-export function ContactList({ open, create }: { open: (id: string) => void; create: () => void }) {
+export function ContactList({ compose, create }: { compose: (contact: Contact) => void; create: () => void }) {
   const [query, setQuery] = useState(defaultQuery)
   const [search, setSearch] = useState('')
+  const [view, setView] = useState('all')
+  const [selected, setSelected] = useState<string | null>(null)
+  const drawer = useRef<HTMLDialogElement>(null)
+  const open = (id: string) => { setSelected(id); drawer.current?.showModal() }
+  const close = () => drawer.current?.close()
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(current => current.keyword === search
       ? current : { ...current, keyword: search, offset: 0 }), 240)
@@ -21,10 +26,18 @@ export function ContactList({ open, create }: { open: (id: string) => void; crea
     setQuery(old => ({ ...old, [key]: value, offset: key === 'offset' ? Number(value) : 0 }))
   const result = useQuery({
     queryKey: ['contacts', query],
+    enabled: view !== 'board',
     queryFn: () => request({ action: 'list_contacts', query }, 'contacts'),
   })
   return <>
     <div className="page-heading"><h1>客户管理</h1><button className="button primary" onClick={create}>新增客户</button></div>
+    <div className="customer-views" aria-label="客户视图">
+      {([['all','全部客户'], ['priority','重点客户'], ['sample','样品客户'], ['board','阶段看板']] as const).map(([key,label]) =>
+        <button key={key} className="button" aria-pressed={view === key} onClick={() => {
+          setView(key)
+          update('quick_view', key === 'priority' || key === 'sample' ? key : '')
+        }}>{label}</button>)}
+    </div>
     <div className="filters">
       <Field label="搜索客户"><input placeholder="姓名、公司、邮箱或产品" value={search} onChange={e => setSearch(e.target.value)} /></Field>
       <Field label="客户阶段"><select value={query.stage} onChange={e => update('stage', e.target.value)}>
@@ -45,23 +58,55 @@ export function ContactList({ open, create }: { open: (id: string) => void; crea
         </div>
       </details>
     </div>
+    {view === 'board' ? <ContactBoard query={query} open={open} /> : <>
     {result.isPending && <Empty>正在读取客户…</Empty>}
     {result.isError && <Problem error={result.error} />}
     {result.data && <>
       {result.data.rows.length === 0 ? <Empty>{search || query.stage ? '没有符合筛选条件的客户。' : '当前没有客户记录。'}</Empty>
         : <div className="table-wrap"><table><thead><tr>
-          <th>客户</th><th>国家或地区</th><th>阶段</th><th>等级</th><th>最近联系</th><th>记录来源</th>
+          <th>客户</th><th>国家或地区</th><th>阶段</th><th>样品进度</th><th>等级</th><th>最近联系</th><th>记录来源</th>
         </tr></thead><tbody>{result.data.rows.map(row => (
           <tr key={row.id}>
             <td><button className="text-button" onClick={() => open(row.id)}>{row.display_name}</button>
               {(row.company_name || row.email) && <small>{[row.company_name, row.email].filter(Boolean).join(' · ')}</small>}</td>
-            <td>{row.country_region || '—'}</td><td>{stages[row.stage]}</td><td>{row.customer_level || '—'}</td>
+            <td>{row.country_region || '—'}</td><td><span className="stage-tag">{stages[row.stage]}</span></td><td>{row.sample_status || '—'}</td><td>{row.customer_level || '—'}</td>
             <td>{dateLabel(row.last_contact_at)}</td><td>{sourceLabel(row.source)}{row.archived_at !== null && ' · 已归档'}</td>
           </tr>
         ))}</tbody></table></div>}
       <Pagination offset={query.offset} more={result.data.has_more} change={offset => update('offset', offset)} />
     </>}
+    </>}
+    <dialog className="contact-drawer" ref={drawer} onClose={() => setSelected(null)} aria-label="客户详情">
+      {selected && <ContactDetail key={selected} id={selected} back={close} compose={compose} drawer />}
+    </dialog>
   </>
+}
+
+function ContactBoard({ query, open }: { query: ContactQuery; open: (id: string) => void }) {
+  return <div className="stage-board" aria-label="客户阶段看板">
+    {(Object.entries(stages) as [Stage, string][]).filter(([stage]) => !query.stage || stage === query.stage)
+      .map(([stage, label]) => <BoardColumn key={stage} query={query} stage={stage} label={label} open={open} />)}
+  </div>
+}
+
+function BoardColumn({ query, stage, label, open }: {
+  query: ContactQuery; stage: Stage; label: string; open: (id: string) => void
+}) {
+  const [offset, setOffset] = useState(0)
+  const filters = { ...query, stage, offset }
+  const result = useQuery({ queryKey: ['contacts', filters],
+    queryFn: () => request({ action: 'list_contacts', query: filters }, 'contacts') })
+  return <section className="stage-column">
+    <h2>{label}</h2>
+    {result.isError && <Problem error={result.error} />}
+    {result.isPending && <small>正在读取…</small>}
+    {result.data?.rows.length === 0 && <small>暂无客户</small>}
+    {result.data?.rows.map(row => <button className="stage-card" key={row.id} onClick={() => open(row.id)}>
+      <strong>{row.display_name}</strong>
+      <small>{[row.company_name, row.country_region, row.sample_status].filter(Boolean).join(' · ')}</small>
+    </button>)}
+    {result.data && <Pagination offset={offset} more={result.data.has_more} change={setOffset} />}
+  </section>
 }
 
 const blank: ContactInput = {
@@ -165,7 +210,9 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
   </form>
 }
 
-export function ContactDetail({ id, back }: { id: string; back: () => void }) {
+export function ContactDetail({ id, back, compose, drawer }: {
+  id: string; back: () => void; compose: (contact: Contact) => void; drawer?: boolean
+}) {
   const [editing, setEditing] = useState(false)
   const cache = useQueryClient()
   const query = useQuery({ queryKey: ['contact', id], queryFn: () => request({ action: 'get_contact', id }, 'contact') })
@@ -175,7 +222,7 @@ export function ContactDetail({ id, back }: { id: string; back: () => void }) {
       cache.invalidateQueries({ queryKey: ['contacts'] }), cache.invalidateQueries({ queryKey: ['contact', id] }),
     ]),
   })
-  if (!query.data) return <><button className="button" onClick={back}>返回客户列表</button>
+  if (!query.data) return <><button className="button" onClick={back}>{drawer ? '关闭详情' : '返回客户列表'}</button>
     {query.isError ? <Problem error={query.error} /> : <Empty>正在读取客户…</Empty>}</>
   const record = query.data.record
   const { input } = record
@@ -186,7 +233,8 @@ export function ContactDetail({ id, back }: { id: string; back: () => void }) {
     <div className="page-heading">
       <div><h1>{input.display_name}</h1><p>{[input.company_name, input.country_region, stages[input.stage], sourceLabel(record.source), archived ? '已归档' : ''].filter(Boolean).join(' · ')}</p></div>
       <div className="row-actions">
-        {!archived && <button className="button primary" onClick={() => setEditing(true)}>编辑客户</button>}
+        {!archived && <button className="button" onClick={() => setEditing(true)}>编辑客户</button>}
+        {!archived && input.methods.some(method => method.kind === 'email') && <button className="button primary" onClick={() => compose(record)}>写邮件</button>}
         <ConfirmButton label={archived ? '恢复这个客户？' : '归档这个客户？已有跟进仍可查看。'}
           disabled={archive.isPending} onConfirm={() => archive.mutate(!archived)}>{archived ? '恢复客户' : '归档客户'}</ConfirmButton>
       </div>

@@ -1,4 +1,4 @@
-use crate::{crm, storage, CoreError};
+use crate::{crm, mail::MailService, storage, CoreError};
 use ftw_ipc::{
     display_path, read_frame, write_frame, Health, Operation, PipeEndpoint, Profile, Request,
     Response, PROTOCOL_VERSION,
@@ -63,7 +63,11 @@ async fn run(profile: &Profile, log: &mut File, idle_exit: bool) -> Result<(), C
     log_event(log, &format!("ready schema_version={schema}"))
         .map_err(|error| CoreError::Io("log_unavailable", error))?;
 
-    let result = run_requests(&mut pipe, &database, profile, idle_exit).await;
+    let mail = MailService::new(database.clone()).await?;
+    let worker = mail.start_worker();
+    let result = run_requests(&mut pipe, &database, &mail, profile, idle_exit).await;
+    worker.abort();
+    let _ = worker.await;
     drop(pipe);
     database.close().await;
     result?;
@@ -73,6 +77,7 @@ async fn run(profile: &Profile, log: &mut File, idle_exit: bool) -> Result<(), C
 async fn run_requests(
     pipe: &mut NamedPipeServer,
     database: &SqlitePool,
+    mail: &MailService,
     profile: &Profile,
     idle_exit: bool,
 ) -> Result<(), CoreError> {
@@ -86,7 +91,7 @@ async fn run_requests(
                 signal.map_err(|error| CoreError::Io("shutdown_unavailable", error))?;
                 return Ok(());
             },
-            () = idle, if idle_exit => return Ok(()),
+            () = idle, if idle_exit => { if !mail.approval_in_progress() { return Ok(()); } continue; },
             client = pipe.connect() => client.map_err(|error| CoreError::Io("pipe_unavailable", error))?,
         }
 
@@ -95,7 +100,7 @@ async fn run_requests(
                 signal.map_err(|error| CoreError::Io("shutdown_unavailable", error))?;
                 return Ok(());
             },
-            _ = tokio::time::timeout(REQUEST_LIMIT, respond(pipe, database, profile)) => {}
+            _ = tokio::time::timeout(REQUEST_LIMIT, respond(pipe, database, mail, profile)) => {}
         }
 
         match pipe.disconnect() {
@@ -109,6 +114,7 @@ async fn run_requests(
 async fn respond(
     pipe: &mut NamedPipeServer,
     database: &SqlitePool,
+    mail: &MailService,
     profile: &Profile,
 ) -> io::Result<()> {
     let response = match read_frame::<Request>(pipe).await {
@@ -126,6 +132,8 @@ async fn respond(
                 Err(_) => error_response("database_unavailable"),
             },
             Operation::Crm(command) => crm::dispatch(database, *command, crm::Actor::DESKTOP).await,
+            Operation::Mail(command) => mail.desktop(*command).await,
+            Operation::Agent(command) => mail.agent(*command).await,
         },
         Ok(_) => error_response("unsupported_protocol_version"),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
