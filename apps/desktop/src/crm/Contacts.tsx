@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateInput, dateLabel, fromDateInput, methodKinds, request, sourceLabel, stages,
-  type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage } from './api'
+  type Contact, type ContactInput, type ContactQuery, type Duplicate, type Interest, type Method, type MethodKind, type Stage, type StateOption } from './api'
 import { ConfirmButton, Duplicates, Empty, Field, Pagination, Problem } from './components'
 import { Timeline } from './Timeline'
 
@@ -9,7 +9,8 @@ const defaultQuery: ContactQuery = {
   keyword: '', quick_view: '', country: '', stage: '', level: '', customer_type: '', source: '', archive: 'active', sort: 'updated', offset: 0,
 }
 
-export function ContactList({ compose, history, create }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void }) {
+export function ContactList({ compose, history, create, importCsv }: { compose: (contact: Contact) => void; history: (id: string) => void; create: () => void; importCsv: () => void }) {
+  const catalog = useStateCatalog()
   const [query, setQuery] = useState(defaultQuery)
   const [search, setSearch] = useState('')
   const [view, setView] = useState('all')
@@ -35,7 +36,7 @@ export function ContactList({ compose, history, create }: { compose: (contact: C
       {([['all','全部客户'], ['priority','重点客户'], ['sample','样品客户'], ['board','阶段看板']] as const).map(([key,label]) =>
         <button key={key} className="button" aria-pressed={view === key} onClick={() => {
           setView(key)
-          update('quick_view', key === 'priority' || key === 'sample' ? key : '')
+          if (key !== 'board') update('quick_view', key === 'priority' || key === 'sample' ? key : '')
         }}>{label}</button>)}
     </div>
     <div className="filters">
@@ -52,7 +53,8 @@ export function ContactList({ compose, history, create }: { compose: (contact: C
       <details className="more-filters"><summary>更多筛选</summary>
         <div className="form-grid">
           <Field label="国家或地区"><input value={query.country} onChange={e => update('country', e.target.value)} /></Field>
-          <Field label="客户等级"><input value={query.level} onChange={e => update('level', e.target.value)} /></Field>
+          <Field label="客户等级"><StateFilter field="customer_level" catalog={catalog} value={query.level} change={value => update('level', value)} /></Field>
+          <Field label="样品进度"><StateFilter field="sample_status" catalog={catalog} value={query.sample_status ?? ''} change={value => update('sample_status', value)} /></Field>
           <Field label="客户类型"><input value={query.customer_type} onChange={e => update('customer_type', e.target.value)} /></Field>
           <Field label="客户来源"><input value={query.source} onChange={e => update('source', e.target.value)} /></Field>
         </div>
@@ -62,14 +64,18 @@ export function ContactList({ compose, history, create }: { compose: (contact: C
     {result.isPending && <Empty>正在读取客户…</Empty>}
     {result.isError && <Problem error={result.error} />}
     {result.data && <>
-      {result.data.rows.length === 0 ? <Empty>{search || query.stage ? '没有符合筛选条件的客户。' : '当前没有客户记录。'}</Empty>
+      {result.data.rows.length === 0 ? <Empty>{isFiltered(query) ? <>
+        <p>没有符合筛选条件的客户。</p><button className="button" onClick={() => { setSearch(''); setView('all'); setQuery(defaultQuery) }}>清除筛选</button>
+      </> : <><p>当前没有客户记录。</p><div className="row-actions">
+        <button className="button primary" onClick={create}>新增客户</button><button className="button" onClick={importCsv}>导入客户 CSV</button>
+      </div></>}</Empty>
         : <div className="table-wrap"><table><thead><tr>
           <th>客户</th><th>国家或地区</th><th>阶段</th><th>样品进度</th><th>等级</th><th>最近联系</th><th>记录来源</th>
         </tr></thead><tbody>{result.data.rows.map(row => (
           <tr key={row.id}>
             <td><button className="text-button" onClick={() => open(row.id)}>{row.display_name}</button>
               {(row.company_name || row.email) && <small>{[row.company_name, row.email].filter(Boolean).join(' · ')}</small>}</td>
-            <td>{row.country_region || '—'}</td><td><span className="stage-tag">{stages[row.stage]}</span></td><td>{row.sample_status || '—'}</td><td>{row.customer_level || '—'}</td>
+            <td>{row.country_region || '—'}</td><td><span className="stage-tag">{stages[row.stage]}</span></td><td>{stateLabel(catalog, 'sample_status', row.sample_status)}</td><td>{stateLabel(catalog, 'customer_level', row.customer_level)}</td>
             <td>{dateLabel(row.last_contact_at)}</td><td>{sourceLabel(row.source)}{row.archived_at !== null && ' · 已归档'}</td>
           </tr>
         ))}</tbody></table></div>}
@@ -91,7 +97,7 @@ export function ContactList({ compose, history, create }: { compose: (contact: C
 function ContactBoard({ query, open }: { query: ContactQuery; open: (id: string) => void }) {
   return <div className="stage-board" aria-label="客户阶段看板">
     {(Object.entries(stages) as [Stage, string][]).filter(([stage]) => !query.stage || stage === query.stage)
-      .map(([stage, label]) => <BoardColumn key={stage} query={query} stage={stage} label={label} open={open} />)}
+      .map(([stage, label]) => <BoardColumn key={JSON.stringify({ ...query, stage, offset: 0 })} query={query} stage={stage} label={label} open={open} />)}
   </div>
 }
 
@@ -130,12 +136,15 @@ const textFields = [
 
 export function ContactEditor({ record, saved, cancel }: { record?: Contact; saved: (id: string) => void; cancel: () => void }) {
   const [input, setInput] = useState(record?.input ?? blank)
+  const [base, setBase] = useState(() => record && { revision: record.record_revision, epoch: record.data_epoch })
+  const changed = record && base && (record.record_revision !== base.revision || record.data_epoch !== base.epoch)
+  const catalog = useStateCatalog()
   const [duplicate, setDuplicate] = useState<Duplicate[]>([])
   const cache = useQueryClient()
   const mutation = useMutation({
-    mutationFn: (allow: boolean) => request({
-      action: 'save_contact', id: record?.id ?? null, input, allow_duplicate: allow,
-    }, 'saved', 'duplicates'),
+    mutationFn: (allow: boolean) => request(record && base
+      ? { action: 'save_contact_checked', id: record.id, input, allow_duplicate: allow, expected_revision: base.revision, expected_epoch: base.epoch }
+      : { action: 'save_contact', id: null, input, allow_duplicate: allow }, 'saved', 'duplicates'),
     onSuccess: async result => {
       if (result.kind === 'duplicates') { setDuplicate(result.matches); return }
       await Promise.all([
@@ -159,6 +168,14 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
 
   return <form onSubmit={event => { event.preventDefault(); mutation.mutate(false) }}>
     <div className="page-heading"><h1>{record ? '编辑客户' : '新增客户'}</h1><button className="button" type="button" onClick={cancel}>取消</button></div>
+    {changed && <div className="alert warning" role="status">客户资料已更新，当前输入仍保留。
+      <ConfirmButton label="放弃本次编辑并读取最新的客户资料？" onConfirm={() => {
+        setInput(record.input)
+        setBase({ revision: record.record_revision, epoch: record.data_epoch })
+        setDuplicate([])
+        mutation.reset()
+      }}>重新载入客户资料</ConfirmButton>
+    </div>}
     <fieldset disabled={mutation.isPending}>
       <section className="panel">
         <h2>客户资料</h2>
@@ -167,11 +184,14 @@ export function ContactEditor({ record, saved, cancel }: { record?: Contact; sav
           <Field label="客户阶段"><select value={input.stage} onChange={e => update('stage', e.target.value as Stage)}>
             {Object.entries(stages).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select></Field>
-          {textFields.map(([key, label]) => <Field key={key} label={label}><input type={key === 'website_url' ? 'url' : 'text'}
-            value={input[key]} onChange={e => update(key, e.target.value)} /></Field>)}
-          <Field label="首次联系时间（留空时取跟进时间）"><input type="datetime-local" value={dateInput(input.first_contact_at)}
+          {textFields.map(([key, label]) => <Field key={key} label={label}>
+            {catalog.some(option => option.field === key)
+              ? <StateSelect field={key} catalog={catalog} value={input[key]} change={value => update(key, value)} />
+              : <input type={key === 'website_url' ? 'url' : 'text'} value={input[key]} onChange={e => update(key, e.target.value)} />}
+          </Field>)}
+          <Field label="人工记录的首次联系时间"><input type="datetime-local" value={dateInput(input.first_contact_at)}
             onChange={e => update('first_contact_at', fromDateInput(e.target.value))} /></Field>
-          <Field label="最近联系时间（留空时取跟进时间）"><input type="datetime-local" value={dateInput(input.last_contact_at)}
+          <Field label="人工记录的最近联系时间"><input type="datetime-local" value={dateInput(input.last_contact_at)}
             onChange={e => update('last_contact_at', fromDateInput(e.target.value))} /></Field>
           <Field label="主要需求"><textarea rows={3} value={input.main_need} onChange={e => update('main_need', e.target.value)} /></Field>
           <Field label="备注"><textarea rows={3} value={input.notes} onChange={e => update('notes', e.target.value)} /></Field>
@@ -220,6 +240,7 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
   id: string; back: () => void; compose: (contact: Contact) => void; history: (id: string) => void; drawer?: boolean
 }) {
   const [editing, setEditing] = useState(false)
+  const catalog = useStateCatalog()
   const cache = useQueryClient()
   const query = useQuery({ queryKey: ['contact', id], queryFn: () => request({ action: 'get_contact', id }, 'contact') })
   const archive = useMutation({
@@ -249,9 +270,11 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
     {archive.isError && <Problem error={archive.error} />}
     <section className="panel"><h2>客户资料</h2>
       <dl className="profile-grid">
-        {textFields.map(([key, label]) => input[key] && <div key={key}><dt>{label}</dt><dd>{input[key]}</dd></div>)}
-        <div><dt>首次联系</dt><dd>{dateLabel(input.first_contact_at ?? record.observed_first_contact_at)}</dd></div>
-        <div><dt>最近联系</dt><dd>{dateLabel(input.last_contact_at ?? record.observed_last_contact_at)}</dd></div>
+        {textFields.map(([key, label]) => input[key] && <div key={key}><dt>{label}</dt><dd>{stateLabel(catalog, key, input[key])}</dd></div>)}
+        <div><dt>首次联系</dt><dd>{dateLabel(record.effective_first_contact_at)}</dd></div>
+        <div><dt>最近联系</dt><dd>{dateLabel(record.effective_last_contact_at)}</dd></div>
+        <div><dt>最近会话来信</dt><dd>{dateLabel(record.latest_thread_reply_at)}</dd></div>
+        <div><dt>资料更新</dt><dd>{dateLabel(record.updated_at)}</dd></div>
         {input.main_need && <div><dt>主要需求</dt><dd>{input.main_need}</dd></div>}
         {input.notes && <div><dt>备注</dt><dd>{input.notes}</dd></div>}
       </dl>
@@ -269,4 +292,45 @@ export function ContactDetail({ id, back, compose, history, drawer }: {
     </div>
     <Timeline contact={record} />
   </>
+}
+
+function useStateCatalog() {
+  return useQuery({ queryKey: ['crm-states'], queryFn: () => request({ action: 'state_catalog' }, 'state_catalog'), staleTime: Infinity }).data?.options ?? []
+}
+
+function findState(catalog: StateOption[], field: string, value: string) {
+  const normalized = value.trim().toLowerCase()
+  const code = field === 'customer_level' && normalized.startsWith('a |') ? 'a' : normalized
+  return catalog.find(option => option.field === field &&
+    (option.code.toLowerCase() === code || option.aliases.includes(code)))
+}
+
+function stateLabel(catalog: StateOption[], field: string, value: string) {
+  return findState(catalog, field, value)?.label ?? (value || '—')
+}
+
+function StateSelect({ field, catalog, value, change }: {
+  field: string; catalog: StateOption[]; value: string; change: (value: string) => void
+}) {
+  const option = findState(catalog, field, value)
+  return <select value={option?.code ?? value} onChange={e => change(e.target.value)}>
+    <option value="">未设置</option>
+    {value && !option && <option value={value}>历史值 · {value}</option>}
+    {catalog.filter(item => item.field === field).map(item => <option key={item.code} value={item.code}>{item.label}</option>)}
+  </select>
+}
+
+function StateFilter({ field, catalog, value, change }: {
+  field: string; catalog: StateOption[]; value: string; change: (value: string) => void
+}) {
+  return <>
+    <input list={field + '-filter'} value={value} onChange={e => change(e.target.value)} />
+    <datalist id={field + '-filter'}>{catalog.filter(item => item.field === field).map(item =>
+      <option key={item.code} value={item.label}>{item.label}</option>)}</datalist>
+  </>
+}
+
+function isFiltered(query: ContactQuery) {
+  return Boolean(query.keyword || query.quick_view || query.country || query.stage || query.level ||
+    query.customer_type || query.source || query.sample_status || query.archive !== 'active')
 }

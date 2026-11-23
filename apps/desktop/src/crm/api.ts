@@ -69,6 +69,12 @@ export type ContactRow = Pick<ContactInput, 'display_name' | 'company_name' | 'c
 
 export type Contact = {
   id: string
+  record_revision: number
+  data_epoch: string
+  effective_first_contact_at: number | null
+  effective_last_contact_at: number | null
+  latest_thread_reply_at: number | null
+  updated_at: number
   input: ContactInput
   archived_at: number | null
   source: string
@@ -82,6 +88,7 @@ export type ContactQuery = {
   country: string
   stage: string
   level: string
+  sample_status?: string
   customer_type: string
   source: string
   archive: 'active' | 'archived' | 'all'
@@ -113,6 +120,7 @@ export type LeadRow = Pick<LeadInput, 'display_name' | 'company_name' | 'country
   Pick<Lead, 'id' | 'review_status' | 'source'>
 
 export type ActivityInput = {
+  counts_as_contact?: boolean | null
   contact_id: string
   event_type: ActivityType
   occurred_at: number
@@ -126,7 +134,10 @@ export type ActivityInput = {
 export type Activity = ActivityInput & { id: string; contact_name: string; source: string }
 export type Duplicate = { id: string; entity: 'contact' | 'lead'; display_name: string; reason: string }
 
+export type StateOption = { field: string; code: string; label: string; aliases: string[] }
+
 type Result =
+  | { kind: 'state_catalog'; options: StateOption[] }
   | { kind: 'contacts'; rows: ContactRow[]; has_more: boolean }
   | { kind: 'contact'; record: Contact }
   | { kind: 'leads'; rows: LeadRow[]; has_more: boolean }
@@ -136,6 +147,8 @@ type Result =
   | { kind: 'duplicates'; matches: Duplicate[] }
 
 type Command =
+  | { action: 'state_catalog' }
+  | { action: 'save_contact_checked'; id: string; input: ContactInput; allow_duplicate: boolean; expected_revision: number; expected_epoch: string }
   | { action: 'list_contacts'; query: ContactQuery }
   | { action: 'get_contact' | 'get_lead'; id: string }
   | { action: 'save_contact'; id: string | null; input: ContactInput; allow_duplicate: boolean }
@@ -186,6 +199,7 @@ export function errorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = String(error.code)
     const detail = 'detail' in error ? String(error.detail) : ''
+    if (code === 'crm_revision_conflict') return '这位客户已由其他操作更新。本次修改仍在表单中，请核对最新资料后再保存。'
     if (code === 'crm_invalid_field') {
       return '请检查：' + (fieldLabels[detail] ?? detail)
     }

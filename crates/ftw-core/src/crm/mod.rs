@@ -36,6 +36,8 @@ pub(crate) enum Error {
     NotFound,
     #[error("record_is_read_only")]
     ReadOnly,
+    #[error("record_revision_conflict")]
+    Conflict(i64),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -52,6 +54,7 @@ pub async fn dispatch(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> 
                 Error::Invalid(field) => ("crm_invalid_field", Some(field.to_owned())),
                 Error::NotFound => ("crm_not_found", None),
                 Error::ReadOnly => ("crm_read_only", None),
+                Error::Conflict(revision) => ("crm_revision_conflict", Some(revision.to_string())),
                 Error::Database(_) => ("database_unavailable", None),
             };
             Response::Error {
@@ -66,6 +69,21 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
     match command {
         Command::ListContacts { query } => contacts::list(pool, query).await,
         Command::GetContact { id } => contacts::get(pool, &id).await,
+        Command::StateCatalog => contacts::state_catalog(pool).await,
+        Command::SaveContactChecked {
+            id,
+            input,
+            allow_duplicate,
+            expected_revision,
+            expected_epoch,
+        } => {
+            let mut tx = pool.begin().await?;
+            contacts::check_revision(&mut tx, &id, expected_revision, expected_epoch.as_deref())
+                .await?;
+            let result = contacts::save(&mut tx, Some(id), *input, allow_duplicate, actor).await?;
+            tx.commit().await?;
+            Ok(result)
+        }
         Command::SaveContact {
             id,
             input,
@@ -178,6 +196,7 @@ mod tests {
                 Command::SaveActivity {
                     id: None,
                     input: ActivityInput {
+                        counts_as_contact: None,
                         contact_id: id.clone(),
                         event_type: event.into(),
                         occurred_at: 1_760_000_000,

@@ -46,14 +46,15 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 
 | 工具 | 输入 |
 | --- | --- |
-| `list_customers` | 可选 `keyword`、`country`、`stage`、`level`、`offset` |
+| `list_customers` | 可选 `keyword`、`country`、`stage`、`level`、`sample_status`、`quick_view`、`offset` |
 | `get_customer` | `contact_id` |
+| `get_customer_state_catalog` | 空对象。返回稳定状态代码、标签与历史别名 |
 | `get_customer_timeline` | `contact_id`，可选 `event_type`、`offset` |
 | `list_lead_candidates` | 可选 `status`、`offset` |
 | `create_lead_candidate` | `request_id`、`display_name`，可附公司、国家、邮箱、网站、调查和来源信息 |
 | `create_customer` | `request_id`、`display_name`，可附公司、国家、邮箱、网站、来源和备注 |
-| `update_customer` | `request_id`、`contact_id`，可更新阶段、等级、语言、需求、样品状态及备注 |
-| `add_customer_activity` | `request_id`、`contact_id`、`event_type`、`occurred_at`（UTC Unix 秒）、`summary`，可附正文及渠道 |
+| `update_customer` | `request_id`、`contact_id`，可传 `expected_revision` 和 `expected_epoch` 保护并发。可更新阶段、等级、语言、需求、样品状态及备注 |
+| `add_customer_activity` | `request_id`、`contact_id`、`event_type`、`occurred_at`（UTC Unix 秒）、`summary`，可附正文、渠道及 `counts_as_contact` |
 | `list_email_accounts` | 空对象 |
 | `get_pending_approvals` | 可选 `offset` |
 | `list_inbox` | 可选 `contact_id`、`offset` |
@@ -66,5 +67,7 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 | `send_approved_email` | `draft_id` |
 
 重试写入时使用相同的 `request_id` 和参数。Core 会返回已记录的结果，参数改变时需要新的请求 ID。若 Core 返回 `agent_request_uncertain`，先查看客户资料或草稿确认执行结果。
+
+审批列表和草稿详情以 Core 时间给出 `approval_expired`，详情同时返回最近一次原生审核结果。Agent 获得这些状态用于交接和查询，发送权限仍由 Core 按原审批流程验证。
 
 工具输入 JSON Schema 由 rmcp 从 Rust 参数类型生成，可通过 `tools/list` 读取。返回内容是 JSON 文本，发件返回 `job_id` 与队列状态。业务失败使用工具错误，包含稳定的 Core 错误码。

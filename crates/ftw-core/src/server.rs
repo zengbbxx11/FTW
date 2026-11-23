@@ -131,6 +131,10 @@ async fn respond(
                 },
                 Err(_) => error_response("database_unavailable"),
             },
+            Operation::Changes => match storage::changes(database).await {
+                Ok(versions) => Response::Changes { versions },
+                Err(_) => error_response("database_unavailable"),
+            },
             Operation::Crm(command) => crm::dispatch(database, *command, crm::Actor::DESKTOP).await,
             Operation::Mail(command) => mail.desktop(*command).await,
             Operation::Agent(command) => mail.agent(*command).await,

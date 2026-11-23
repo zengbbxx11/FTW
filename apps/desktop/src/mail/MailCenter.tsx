@@ -22,7 +22,6 @@ export function MailCenter({ initialContact, inboxContact, initialInbox, pickCon
   const drafts = useQuery({
     queryKey: ['mail-drafts', offset], enabled: !compose && view.kind === 'drafts',
     queryFn: () => mailCall({ action: 'list_drafts', contact_id: null, offset }, 'drafts'),
-    refetchInterval: !compose && view.kind === 'drafts' ? 4500 : false,
   })
   return <>
     <div className="page-heading"><h1>邮件中心</h1>
@@ -48,7 +47,7 @@ export function MailCenter({ initialContact, inboxContact, initialInbox, pickCon
           : <><div className="table-wrap"><table><thead><tr><th>主题</th><th>收件邮箱</th><th>状态</th><th>来源</th></tr></thead>
             <tbody>{drafts.data.rows.map(row => <tr key={row.id}>
               <td><button className="text-button" onClick={() => openDraft(row.id)}>{row.subject}</button></td>
-              <td>{row.recipient}</td><td>{states[row.state]}</td><td>{sourceLabel(row.source)}</td>
+              <td>{row.recipient}</td><td>{row.approval_expired ? '批准已过期' : states[row.state]}</td><td>{sourceLabel(row.source)}</td>
             </tr>)}</tbody></table></div><Pagination offset={offset} more={drafts.data.has_more} change={setOffset} /></>)}
       </>}
   </>
@@ -236,11 +235,10 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
   id: string; editing: boolean; edit: () => void; back: () => void; saved: (id: string) => void; openContact: (id: string) => void
 }) {
   const cache = useQueryClient()
-  const [prompt, setPrompt] = useState(false)
   const [history, setHistory] = useState(false)
   const draft = useQuery({
     queryKey: ['mail-draft', id], queryFn: () => mailCall({ action: 'get_draft', id }, 'draft'),
-    refetchInterval: editing ? false : 1800,
+    refetchInterval: query => query.state.data?.record.approval_attempt?.state === 'waiting' ? 2000 : false,
   })
   const record = draft.data?.kind === 'draft' ? draft.data.record : undefined
   const contact = useQuery({
@@ -253,8 +251,7 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
       if (action === 'open_approval') return mailCall({ action, id }, 'approval_opened')
       return mailCall({ action, id }, 'queued')
     },
-    onSuccess: async result => {
-      if (result.kind === 'approval_opened') setPrompt(true)
+    onSuccess: async () => {
       await Promise.all([cache.invalidateQueries({ queryKey: ['mail-drafts'] }), cache.invalidateQueries({ queryKey: ['mail-draft', id] })])
     },
   })
@@ -264,24 +261,29 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
   if (editing) return contact.isError ? <ErrorNotice error={contact.error} /> : contact.data ?
     <DraftForm contact={contact.data.record} existing={record} saved={saved} close={() => saved(id)} /> : <Empty>正在读取客户…</Empty>
 
-  const expired = record.expires_at !== null && Date.now() / 1000 >= record.expires_at
+  const expired = record.approval_expired
+  const attempt = record.approval_attempt
+  const waiting = attempt?.state === 'waiting'
   return <section className="panel">
     <button className="text-button back-link" onClick={back}>返回邮件草稿</button>
     <div className="section-heading">
-      <div><h2>{record.subject}</h2><p className="muted">{states[record.state]}{record.has_reply ? ' · 已有回复' : ''} · 修订 {record.revision} · {sourceLabel(record.source)}</p></div>
+      <div><h2>{record.subject}</h2><p className="muted">{expired ? '批准已过期' : states[record.state]}{record.has_reply ? ' · 已有回复' : ''} · 修订 {record.revision} · {sourceLabel(record.source)}</p></div>
       <div className="row-actions">
         <button className="button" onClick={() => openContact(record.contact_id)}>打开客户</button>
         {record.thread_id && <button className="button" onClick={() => setHistory(true)}>邮件往来</button>}
         {['draft', 'pending_approval', 'approved'].includes(record.state) && <button className="button" onClick={edit}>编辑草稿</button>}
         {record.state === 'draft' && <button className="button primary" disabled={transition.isPending} onClick={() => transition.mutate('request_approval')}>提交审核</button>}
         {(record.state === 'pending_approval' || (record.state === 'approved' && expired)) &&
-          <button className="button primary" disabled={transition.isPending} onClick={() => transition.mutate('open_approval')}>人工批准</button>}
+          <button className="button primary" disabled={transition.isPending || waiting} onClick={() => transition.mutate('open_approval')}>{expired ? '重新审核' : '人工批准'}</button>}
         {record.state === 'approved' && !expired &&
           <ConfirmButton label="将该批准版本加入发件队列？" disabled={transition.isPending}
             onConfirm={() => transition.mutate('send_approved')}>发送已批准版本</ConfirmButton>}
       </div>
     </div>
-    {prompt && record.state === 'pending_approval' && <p className="alert warning">请在 FTW 的 Windows 审批窗口确认。取消后可重新发起审批。</p>}
+    {waiting && <p role="status" className="alert warning">等待你在 FTW 的 Windows 审批窗口确认。</p>}
+    {attempt?.state === 'cancelled' && attempt.revision === record.revision && <p role="status">已取消此次审批。</p>}
+    {attempt?.state === 'approved' && attempt.revision === record.revision && record.state === 'approved' && !expired && <p role="status">当前修订已批准，可以提交发件。</p>}
+    {attempt?.outcome && (attempt.state === 'failed' || attempt.state === 'interrupted') && <ErrorNotice error={attempt.outcome} />}
     {transition.isError && <ErrorNotice error={transition.error} />}
     <dl className="profile-grid">
       <div><dt>发件人</dt><dd>{record.sender}</dd></div>

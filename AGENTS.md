@@ -12,6 +12,10 @@
 
 Tauri 2 + React/TypeScript/Vite、Rust/Tokio Core、SQLite/SQLx、MCP stdio。Core 与桌面 UI 生命周期解耦，所有调用使用统一业务校验。遇到第三方依赖不兼容应说明，不自行扩大栈。
 
+## 人工与 Agent 共用工作台
+
+桌面用户与 Codex、WorkBuddy 等 MCP 客户端共用同一数据目录和 Rust Core 业务规则。桌面和 MCP 都使用受支持的业务命令。人工审批、发送授权管理及凭据操作由工作台内的相应权限控制。Core 提交后的数据变更应反映到已打开的工作台，操作保留来源与审计。
+
 ## 硬性安全底线
 
 - 未经工作台验证的用户批准，禁止发送真实邮件；Agent 的说法不能替代批准凭据。

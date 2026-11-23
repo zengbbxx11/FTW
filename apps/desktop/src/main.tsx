@@ -8,6 +8,7 @@ import { Timeline } from './crm/Timeline'
 import type { Contact } from './crm/api'
 import { MailCenter } from './mail/MailCenter'
 import { Dashboard, DataTools } from './data/DataTools'
+import { CoreChanges } from './data/CoreChanges'
 import './styles.css'
 
 type Health = {
@@ -122,7 +123,8 @@ function SystemStatus() {
 }
 
 type Page =
-  | { kind: 'contacts' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' | 'dashboard' | 'data' }
+  | { kind: 'contacts' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' | 'dashboard' }
+  | { kind: 'data'; initialTab?: 'csv' }
   | { kind: 'contact' | 'lead'; id: string }
   | { kind: 'mail'; contact?: Contact; inboxContact?: string; inboxOnly?: boolean }
 
@@ -151,8 +153,8 @@ function App() {
     </header>
     <main className="workspace">
       {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true })} />}
-      {page.kind === 'data' && <DataTools />}
-      {page.kind === 'contacts' && <ContactList compose={compose} history={history} create={() => setPage({ kind: 'new-contact' })} />}
+      {page.kind === 'data' && <DataTools key={page.initialTab ?? 'backup'} initialTab={page.initialTab} />}
+      {page.kind === 'contacts' && <ContactList compose={compose} history={history} importCsv={() => setPage({ kind: 'data', initialTab: 'csv' })} create={() => setPage({ kind: 'new-contact' })} />}
       {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} compose={compose} history={history} />}
       {page.kind === 'new-contact' && <ContactEditor saved={openContact} cancel={contacts} />}
       {page.kind === 'leads' && <LeadList open={openLead} create={() => setPage({ kind: 'new-lead' })} />}
@@ -170,5 +172,5 @@ const queryClient = new QueryClient({
 })
 
 createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider client={queryClient}><App /></QueryClientProvider>,
+  <QueryClientProvider client={queryClient}><CoreChanges /><App /></QueryClientProvider>,
 )

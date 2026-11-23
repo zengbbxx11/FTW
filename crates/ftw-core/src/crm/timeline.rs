@@ -35,6 +35,7 @@ pub async fn list(
             channel: row.get("channel"),
             followup_category: row.get("followup_category"),
             customer_feedback: row.get("customer_feedback"),
+            counts_as_contact: row.get("counts_as_contact"),
             source: row.get("source"),
         })
         .fetch_all(pool)
@@ -73,17 +74,17 @@ pub async fn save(
         }
     }
     sqlx::query(
-        "INSERT INTO activities(id,contact_id,event_type,occurred_at,summary,details,source,actor_id,agent_run_id,channel,followup_category,customer_feedback)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        "INSERT INTO activities(id,contact_id,event_type,occurred_at,summary,details,source,actor_id,agent_run_id,channel,followup_category,customer_feedback,counts_as_contact)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(id) DO UPDATE SET event_type=excluded.event_type,occurred_at=excluded.occurred_at,
            summary=excluded.summary, details=excluded.details,channel=excluded.channel, followup_category=excluded.followup_category,
-           customer_feedback=excluded.customer_feedback, updated_at=unixepoch()",
+           customer_feedback=excluded.customer_feedback, counts_as_contact=COALESCE(excluded.counts_as_contact,activities.counts_as_contact), updated_at=unixepoch()",
     ).bind(&id).bind(input.contact_id).bind(input.event_type).bind(input.occurred_at)
         .bind(input.summary).bind(input.details).bind(actor.source.as_str()).bind(actor.id)
         .bind(actor.agent_run_id)
     .bind(input.channel)
     .bind(input.followup_category)
-    .bind(input.customer_feedback).execute(&mut *tx).await?;
+    .bind(input.customer_feedback).bind(input.counts_as_contact).execute(&mut *tx).await?;
     audit(
         &mut tx,
         actor,

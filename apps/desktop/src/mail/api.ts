@@ -14,10 +14,11 @@ export const states = {
 
 export type DraftRow = {
   id: string; contact_id: string; account_id: string; recipient: string; subject: string
-  state: keyof typeof states; revision: number; source: string; updated_at: number
+  state: keyof typeof states; revision: number; source: string; updated_at: number; approval_expired: boolean
 }
 export type Draft = DraftRow & {
   sender: string; body: string; attachments: { filename: string; size: number; sha256: string }[]
+  approval_attempt: { id: string; revision: number; state: 'waiting' | 'approved' | 'cancelled' | 'failed' | 'interrupted'; outcome: string | null } | null
   expires_at: number | null; outcome: string | null; thread_id: string | null; has_reply: boolean
 }
 
@@ -38,7 +39,7 @@ type MailResult =
   | { kind: 'drafts'; rows: DraftRow[]; has_more: boolean }
   | { kind: 'draft'; record: Draft }
   | { kind: 'saved'; id: string }
-  | { kind: 'approval_opened'; id: string }
+  | { kind: 'approval_opened'; id: string; attempt_id: string }
   | { kind: 'queued'; id: string; job_id: string; state: string }
   | { kind: 'connection_verified' }
 
@@ -73,6 +74,8 @@ const mailErrorLabels: Record<string, string> = {
   smtp_connection_failed: 'SMTP 连接或认证失败，请核对服务器、端口、加密方式和授权码。',
   mail_not_found: '草稿或邮箱账户不存在。',
   mail_read_only: '当前邮件状态不允许修改。',
+  approval_window_failed: 'Windows 审批窗口未能正常完成，可重新发起审批。',
+  approval_interrupted: '审批过程被中断，可重新发起审批。',
   approval_required: '需在 FTW 工作台人工批准这封草稿。',
   approval_already_open: '已有一个邮件审批对话框正在等待确认。',
   approval_expired: '批准已过期，请重新审核。',

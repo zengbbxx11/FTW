@@ -48,7 +48,7 @@ async function exercise(protocol) {
     const tools = listing.result.tools
     assert.deepEqual(tools.map(tool => tool.name).sort(), [
       'add_customer_activity', 'create_customer', 'create_email_draft', 'create_lead_candidate',
-      'get_customer', 'get_customer_timeline', 'get_email_draft', 'get_email_thread',
+      'get_customer', 'get_customer_state_catalog', 'get_customer_timeline', 'get_email_draft', 'get_email_thread',
       'get_pending_approvals', 'list_customers', 'list_email_accounts', 'list_email_drafts',
       'list_inbox', 'list_lead_candidates', 'request_email_approval', 'send_approved_email',
       'sync_mailbox', 'update_customer',
@@ -69,6 +69,9 @@ async function exercise(protocol) {
     assert.ok(conflict.error || conflict.result?.isError)
     const contact = await call('get_customer', { contact_id: saved.id })
     assert.equal(contact.record.source, 'agent')
+    assert.equal(contact.record.record_revision, 1)
+    const stateCatalog = await call('get_customer_state_catalog')
+    assert.ok(stateCatalog.options.some(item => item.field === 'customer_level' && item.code === 'A' && item.aliases.includes('重点客户')))
     const lead = await call('create_lead_candidate', {
       request_id: 'lead-' + protocol, display_name: 'MCP candidate ' + protocol,
       source_urls: ['https://example.test/candidate'], research_notes: 'Fixture research',
@@ -76,9 +79,18 @@ async function exercise(protocol) {
     assert.ok((await call('list_lead_candidates')).rows.some(row => row.id === lead.id))
     const patch = await call('update_customer', {
       request_id: 'patch-' + protocol, contact_id: saved.id, stage: 'won',
+      expected_revision: contact.record.record_revision, expected_epoch: contact.record.data_epoch,
+      customer_level: '重点客户', sample_status: '样品运输中',
     })
     assert.equal(patch.id, saved.id)
     assert.equal((await call('get_customer', { contact_id: saved.id })).record.input.stage, 'won')
+    const priority = await call('list_customers', { quick_view: 'priority', level: 'A', sample_status: 'in_transit' })
+    assert.ok(priority.rows.some(row => row.id === saved.id))
+    const stale = await send('tools/call', { name: 'update_customer', arguments: {
+      request_id: 'stale-' + protocol, contact_id: saved.id, stage: 'contacted', expected_revision: contact.record.record_revision,
+    } })
+    assert.ok(stale.result?.isError, JSON.stringify(stale))
+    assert.match(stale.result.content[0].text, /crm_revision_conflict/)
     assert.deepEqual((await call('get_customer_timeline', { contact_id: saved.id })).rows, [])
     const activity = {
       request_id: 'activity-' + protocol, contact_id: saved.id, event_type: 'note',
@@ -111,8 +123,8 @@ try {
   try {
     const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 3000 })
     const health = JSON.parse(stdout)
-    assert.equal(health.schemaVersion, 5)
     process.kill(health.processId)
+    assert.equal(health.schemaVersion, 6)
   } catch (error) {
     if (error.code !== 1 && error.code !== 'ESRCH') throw error
   }

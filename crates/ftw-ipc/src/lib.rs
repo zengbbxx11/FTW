@@ -29,6 +29,7 @@ pub struct Request<T = Operation> {
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     Health,
+    Changes,
     Crm(Box<crm::Command>),
     Mail(Box<mail::Command>),
     Agent(Box<mail::AgentCommand>),
@@ -49,10 +50,19 @@ pub struct Health {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ChangeVersions {
+    pub epoch: String,
+    pub domains: std::collections::BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
     Ready {
         health: Health,
+    },
+    Changes {
+        versions: ChangeVersions,
     },
     Crm {
         data: Box<crm::Result>,

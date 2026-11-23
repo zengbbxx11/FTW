@@ -14,6 +14,7 @@ pub struct ContactPatch {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    StateCatalog,
     Timeline {
         id: String,
         offset: u32,
@@ -34,6 +35,8 @@ pub enum Command {
     UpdateCustomer {
         request_id: String,
         id: String,
+        expected_revision: Option<i64>,
+        expected_epoch: Option<String>,
         patch: Box<ContactPatch>,
     },
     AddActivity {

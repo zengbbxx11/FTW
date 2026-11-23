@@ -48,7 +48,7 @@ function ErrorBox({ error }: { error: unknown }) {
 }
 
 function useAccounts() {
-  return useQuery({ queryKey: ['imap-accounts'], queryFn: () => call({ action: 'accounts' }, 'accounts'), refetchInterval: 2600 })
+  return useQuery({ queryKey: ['imap-accounts'], queryFn: () => call({ action: 'accounts' }, 'accounts') })
 }
 
 export function ImapSettings() {
@@ -110,7 +110,6 @@ export function InboxView({ contactId, openContact }: { contactId?: string; open
   const rows = useQuery({
     queryKey: ['inbox', accountId, contactId, unmatched, offset],
     queryFn: () => call({ action: 'list', account_id: accountId || null, contact_id: contactId ?? null, unmatched, offset }, 'rows'),
-    refetchInterval: 3500,
   })
   const sync = useMutation({
     mutationFn: () => call({ action: 'sync', account_id: accountId }, 'sync_started'),

@@ -46,7 +46,7 @@ function ErrorBox({ error }: { error: unknown }) {
 }
 
 export function Dashboard({ mail, inbox }: { mail: () => void; inbox: () => void }) {
-  const query = useQuery({ queryKey: ['dashboard'], queryFn: () => send({ action: 'dashboard' }, 'dashboard'), refetchInterval: 5000 })
+  const query = useQuery({ queryKey: ['dashboard'], queryFn: () => send({ action: 'dashboard' }, 'dashboard') })
   return <>
     <div className="page-heading"><h1>工作台</h1></div>
     {query.isPending && <Empty>正在读取工作台…</Empty>}
@@ -69,8 +69,8 @@ export function Dashboard({ mail, inbox }: { mail: () => void; inbox: () => void
   </>
 }
 
-export function DataTools() {
-  const [tab, setTab] = useState<'backup' | 'csv' | 'audit'>('backup')
+export function DataTools({ initialTab = 'backup' }: { initialTab?: 'backup' | 'csv' | 'audit' }) {
+  const [tab, setTab] = useState(initialTab)
   return <>
     <div className="page-heading"><h1>数据与审计</h1></div>
     <div className="customer-views">

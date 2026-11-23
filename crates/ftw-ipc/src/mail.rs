@@ -139,6 +139,8 @@ pub struct Account {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DraftRow {
+    #[serde(default)]
+    pub approval_expired: bool,
     pub id: String,
     pub contact_id: String,
     pub account_id: String,
@@ -158,7 +160,16 @@ pub struct AttachmentInfo {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ApprovalAttempt {
+    pub id: String,
+    pub revision: i64,
+    pub state: String,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Draft {
+    pub approval_attempt: Option<ApprovalAttempt>,
     #[serde(flatten)]
     pub row: DraftRow,
     pub sender: String,
@@ -188,6 +199,8 @@ pub enum Result {
     },
     ApprovalOpened {
         id: String,
+        #[serde(default)]
+        attempt_id: String,
     },
     Queued {
         id: String,

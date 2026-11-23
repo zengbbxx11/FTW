@@ -56,7 +56,7 @@ type Result<T> = std::result::Result<T, &'static str>;
 
 async fn dashboard(pool: &SqlitePool) -> Result<Reply> {
     let pending =
-        sqlx::query_scalar("SELECT COUNT(*) FROM email_drafts WHERE state='pending_approval'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM mail_drafts_review WHERE state='pending_approval' OR approval_expired")
             .fetch_one(pool)
             .await
             .map_err(|_| "database_unavailable")?;

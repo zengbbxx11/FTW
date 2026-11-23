@@ -112,6 +112,8 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
                 UPDATE email_drafts SET state='pending_approval' WHERE state='approved';
                 UPDATE email_drafts SET state='delivery_unknown' WHERE state IN ('queued','sending');
                 UPDATE email_outbox_jobs SET state='delivery_unknown',outcome='restored_without_resend' WHERE state IN ('queued','sending');
+                UPDATE app_change_epoch SET epoch=lower(hex(randomblob(16)));
+                UPDATE email_approval_attempts SET state='interrupted',outcome='approval_interrupted',finished_at=unixepoch() WHERE state='waiting';
                 UPDATE imap_sync_state SET outcome='interrupted' WHERE outcome='running';")
                 .execute(&mut staging).await?;
             sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation)

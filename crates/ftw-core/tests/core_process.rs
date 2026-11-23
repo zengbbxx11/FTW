@@ -68,7 +68,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     let mut first = CoreProcess::start(root);
     let health = first.ready(root).await;
     assert_eq!(health.process_id, first.0.id());
-    assert_eq!(health.schema_version, 5);
+    assert_eq!(health.schema_version, 6);
     assert!(matches!(health.storage_mode, StorageMode::Development));
     assert!(health.data_root.contains("FTW 验收 "));
 
@@ -104,7 +104,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     database.close().await.unwrap();
 
     let mut restarted = CoreProcess::start(root);
-    assert_eq!(restarted.ready(root).await.schema_version, 5);
+    assert_eq!(restarted.ready(root).await.schema_version, 6);
     drop(restarted);
 
     let mut database = open_database(&data).await;
@@ -335,6 +335,7 @@ async fn crm_contacts_timeline_search_and_archive_survive_restart() {
             crm::Command::SaveActivity {
                 id: None,
                 input: crm::ActivityInput {
+                    counts_as_contact: None,
                     contact_id: id.clone(),
                     event_type: "call".into(),
                     occurred_at: 1_760_000_000,
@@ -352,6 +353,7 @@ async fn crm_contacts_timeline_search_and_archive_survive_restart() {
             crm::Command::SaveActivity {
                 id: Some(activity_id.clone()),
                 input: crm::ActivityInput {
+                    counts_as_contact: None,
                     contact_id: id.clone(),
                     event_type: "call".into(),
                     occurred_at: 1_760_000_100,
@@ -559,7 +561,7 @@ async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
     original.close().await.unwrap();
 
     let mut core = CoreProcess::start(root);
-    assert_eq!(core.ready(root).await.schema_version, 5);
+    assert_eq!(core.ready(root).await.schema_version, 6);
     let snapshot = fs::read_dir(root.join("backups"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -590,4 +592,136 @@ async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
         ("keep this", 1, "ok")
     );
     backup.close().await.unwrap();
+}
+
+async fn revisions(pipe: &PipeEndpoint) -> ftw_ipc::ChangeVersions {
+    let Response::Changes { versions } = pipe.request(&Operation::Changes).await.unwrap() else {
+        panic!("expected Core change versions")
+    };
+    versions
+}
+
+#[tokio::test]
+async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
+    let dir = tempdir().unwrap();
+    let mut core = CoreProcess::start(dir.path());
+    core.ready(dir.path()).await;
+    let pipe = PipeEndpoint::for_data_directory(&dir.path().join("data")).unwrap();
+    let initial = revisions(&pipe).await;
+    let mut input = contact("Shared CRM fixture", "shared@example.test");
+    input.first_contact_at = Some(1_700_000_000);
+    input.last_contact_at = Some(1_720_000_000);
+    input.customer_level = "A | 展会".into();
+    input.sample_status = "未寄样".into();
+    let Response::Crm { data } = pipe
+        .request(&Operation::AgentCrm(Box::new(
+            ftw_ipc::agent::Command::CreateCustomer {
+                request_id: "r1-create".into(),
+                input,
+            },
+        )))
+        .await
+        .unwrap()
+    else {
+        panic!("Agent create");
+    };
+    let id = saved(*data);
+    let version = revisions(&pipe).await;
+    assert_eq!(version.epoch, initial.epoch);
+    assert!(version.domains["contacts"] > initial.domains["contacts"]);
+    assert_eq!(version.domains["mail"], initial.domains["mail"]);
+    let crm::Result::Contact { record: before } =
+        crm_ok(&pipe, crm::Command::GetContact { id: id.clone() }).await
+    else {
+        panic!("customer snapshot");
+    };
+    assert_eq!(before.input.sample_status, "未寄样");
+
+    let query = crm::ContactQuery {
+        quick_view: "sample".into(),
+        ..Default::default()
+    };
+    assert!(
+        matches!(crm_ok(&pipe, crm::Command::ListContacts { query }).await,
+        crm::Result::Contacts { rows, .. } if rows.is_empty())
+    );
+    let response = pipe
+        .request(&Operation::AgentCrm(Box::new(
+            ftw_ipc::agent::Command::UpdateCustomer {
+                request_id: "r1-update".into(),
+                id: id.clone(),
+                expected_revision: Some(before.record_revision),
+                expected_epoch: Some(before.data_epoch.clone()),
+                patch: Box::new(ftw_ipc::agent::ContactPatch {
+                    sample_status: Some("样品运输中".into()),
+                    ..Default::default()
+                }),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, Response::Crm { data } if matches!(*data, crm::Result::Saved { .. }))
+    );
+    let response = crm_call(
+        &pipe,
+        crm::Command::SaveContactChecked {
+            id: id.clone(),
+            input: Box::new(before.input),
+            allow_duplicate: false,
+            expected_revision: before.record_revision,
+            expected_epoch: Some(before.data_epoch),
+        },
+    )
+    .await;
+    assert!(matches!(response, Response::Error { code, .. } if code == "crm_revision_conflict"));
+    assert!(revisions(&pipe).await.domains["contacts"] > version.domains["contacts"]);
+
+    for (event_type, occurred_at, counts_as_contact) in [
+        ("call", 1_730_000_000, None),
+        ("note", 1_750_000_000, None),
+        ("note", 1_740_000_000, Some(true)),
+    ] {
+        saved(
+            crm_ok(
+                &pipe,
+                crm::Command::SaveActivity {
+                    id: None,
+                    input: crm::ActivityInput {
+                        contact_id: id.clone(),
+                        event_type: event_type.into(),
+                        occurred_at,
+                        counts_as_contact,
+                        summary: "Fixture".into(),
+                        ..Default::default()
+                    },
+                },
+            )
+            .await,
+        );
+    }
+    let after_activity = revisions(&pipe).await;
+    assert!(after_activity.domains["activity"] > version.domains["activity"]);
+    let crm::Result::Contact { record } =
+        crm_ok(&pipe, crm::Command::GetContact { id: id.clone() }).await
+    else {
+        panic!("customer snapshot");
+    };
+    assert_eq!(record.effective_first_contact_at, Some(1_700_000_000));
+    assert_eq!(record.effective_last_contact_at, Some(1_740_000_000));
+    assert_eq!(record.input.last_contact_at, Some(1_720_000_000));
+    assert_eq!(record.input.customer_level, "A | 展会");
+
+    for quick_view in ["priority", "sample"] {
+        let query = crm::ContactQuery {
+            quick_view: quick_view.into(),
+            level: "A".into(),
+            sample_status: "in_transit".into(),
+            ..Default::default()
+        };
+        assert!(
+            matches!(crm_ok(&pipe, crm::Command::ListContacts { query }).await,
+            crm::Result::Contacts { rows, .. } if rows.len() == 1 && rows[0].last_contact_at == record.effective_last_contact_at)
+        );
+    }
 }

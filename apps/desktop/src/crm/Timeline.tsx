@@ -63,6 +63,7 @@ function ActivityEditor({ activity, contactId, close }: {
     summary: activity?.summary ?? '', details: activity?.details ?? '',
     channel: activity?.channel ?? '', followup_category: activity?.followup_category ?? '',
     customer_feedback: activity?.customer_feedback ?? '',
+    counts_as_contact: activity?.counts_as_contact ?? null,
   })
   const cache = useQueryClient()
   const mutation = useMutation({
@@ -78,6 +79,9 @@ function ActivityEditor({ activity, contactId, close }: {
   return <form className="inline-form" onSubmit={event => { event.preventDefault(); mutation.mutate() }}>
     <fieldset disabled={mutation.isPending}>
       <div className="form-grid">
+        <Field label="计入客户联系日期"><select value={input.counts_as_contact == null ? '' : String(input.counts_as_contact)} onChange={e => setInput(current => ({ ...current, counts_as_contact: e.target.value === '' ? null : e.target.value === 'true' }))}>
+          {activity?.counts_as_contact == null && <option value="">按跟进类型判断</option>}<option value="true">是</option><option value="false">否</option>
+        </select></Field>
         <Field label="沟通方式"><select value={input.event_type} onChange={e => setInput(old => ({ ...old, event_type: e.target.value as ActivityType }))}>
           {editableActivityTypes.map(type => <option value={type} key={type}>{activityTypes[type]}</option>)}
         </select></Field>

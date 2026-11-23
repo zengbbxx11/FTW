@@ -1,6 +1,7 @@
 fn main() {
     let manifest = tauri_build::AppManifest::new().commands(&[
         "core_health",
+        "core_changes",
         "crm_request",
         "mail_request",
         "inbox_request",

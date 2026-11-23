@@ -38,6 +38,8 @@ struct Search {
     country: String,
     stage: String,
     level: String,
+    sample_status: String,
+    quick_view: String,
     offset: u32,
 }
 
@@ -142,6 +144,8 @@ struct CustomerCreate {
 struct CustomerUpdate {
     request_id: String,
     contact_id: String,
+    expected_revision: Option<i64>,
+    expected_epoch: Option<String>,
     stage: Option<String>,
     customer_level: Option<String>,
     primary_language: Option<String>,
@@ -153,6 +157,10 @@ struct CustomerUpdate {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ActivityAdd {
+    #[schemars(
+        description = "Whether this event records real contact. Phone, meeting, chat and sample events default to true; notes default to false."
+    )]
+    counts_as_contact: Option<bool>,
     request_id: String,
     contact_id: String,
     event_type: String,
@@ -193,6 +201,14 @@ struct Ftw {
 
 #[tool_router(router = tool_router)]
 impl Ftw {
+    #[tool(
+        description = "List the built-in customer status codes, labels and accepted legacy aliases."
+    )]
+    async fn get_customer_state_catalog(&self) -> Result<String, String> {
+        self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::StateCatalog)))
+            .await
+    }
+
     #[tool(description = "List a contact's recorded follow-ups and associated email events.")]
     async fn get_customer_timeline(
         &self,
@@ -299,6 +315,8 @@ impl Ftw {
         self.call_operation(Operation::AgentCrm(Box::new(AgentCrm::UpdateCustomer {
             request_id: data.request_id,
             id: data.contact_id,
+            expected_revision: data.expected_revision,
+            expected_epoch: data.expected_epoch,
             patch: Box::new(patch),
         })))
         .await
@@ -312,6 +330,7 @@ impl Ftw {
         Parameters(data): Parameters<ActivityAdd>,
     ) -> Result<String, String> {
         let input = ActivityInput {
+            counts_as_contact: data.counts_as_contact,
             contact_id: data.contact_id,
             event_type: data.event_type,
             occurred_at: data.occurred_at,
@@ -392,6 +411,8 @@ impl Ftw {
             country: search.country,
             stage: search.stage,
             level: search.level,
+            sample_status: search.sample_status,
+            quick_view: search.quick_view,
             offset: search.offset,
             ..Default::default()
         });
@@ -578,7 +599,8 @@ fn to_tool_error(code: &str) -> String {
     match code {
         "approval_required" => "approval_required: the user must approve this draft in FTW Workbench.".into(),
         "approval_expired" | "approval_snapshot_changed" => format!("{code}: ask the user to review the current draft in FTW Workbench."),
-        "invalid_request" => "This FTW Core does not support the mail connector. Replace all FTW executables together.".into(),
+        "crm_revision_conflict" => "crm_revision_conflict: read the latest customer record before changing it.".into(),
+        "invalid_request" => "This FTW Core does not support the requested operation. Replace all FTW executables together.".into(),
         _ => code.to_owned(),
     }
 }

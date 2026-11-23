@@ -33,6 +33,7 @@ async fn preview_import_duplicate_filter_export_and_restore() {
     let exported = std::fs::read_to_string(path).unwrap();
     assert!(exported.contains("one@example.test") && !exported.contains("重复客户"));
 
+    let epoch = crate::storage::changes(&pool).await.unwrap().epoch;
     let copy = backup::create(&pool, dir.path(), "manual").await.unwrap();
     sqlx::query("UPDATE contacts SET display_name='changed'")
         .execute(&pool)
@@ -41,6 +42,7 @@ async fn preview_import_duplicate_filter_export_and_restore() {
     let filename = copy.file_name().unwrap().to_str().unwrap();
     let safety = backup::restore(&pool, dir.path(), filename).await.unwrap();
     assert!(safety.contains("before-restore"));
+    assert_ne!(crate::storage::changes(&pool).await.unwrap().epoch, epoch);
     let restored: (String, String) = sqlx::query_as("SELECT display_name,stage FROM contacts")
         .fetch_one(&pool)
         .await

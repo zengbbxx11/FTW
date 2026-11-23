@@ -99,6 +99,7 @@ async fn run() -> Result<(), CoreError> {
         Response::Crm { .. }
         | Response::Mail { .. }
         | Response::Inbox { .. }
+        | Response::Changes { .. }
         | Response::Data { .. } => Err(CoreError::Health("unexpected response".into())),
     }
 }

@@ -13,6 +13,7 @@ try {
     Invoke-Checked npm.cmd @('run', 'lint')
     Invoke-Checked npm.cmd @('run', 'build')
     Set-Location -LiteralPath $root
+    Invoke-Checked node @('--test', (Join-Path $PSScriptRoot 'test-change-keys.mjs'))
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('test', '--locked', '--workspace')
     Invoke-Checked cargo @('build', '--locked', '--workspace')

@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 
 pub async fn crm_call(pool: &SqlitePool, command: Command) -> Response {
     match command {
+        Command::StateCatalog => run(pool, crm::Command::StateCatalog, None).await,
         Command::Timeline {
             id,
             offset,
@@ -72,13 +73,33 @@ pub async fn crm_call(pool: &SqlitePool, command: Command) -> Response {
         Command::UpdateCustomer {
             request_id,
             id,
+            expected_revision,
+            expected_epoch,
             patch,
         } => {
-            let claim = claim(pool, "update_customer", &request_id, &(&id, &patch)).await;
+            let claim = if expected_revision.is_none() && expected_epoch.is_none() {
+                claim(pool, "update_customer", &request_id, &(&id, &patch)).await
+            } else {
+                claim(
+                    pool,
+                    "update_customer",
+                    &request_id,
+                    &(&id, &patch, expected_revision, &expected_epoch),
+                )
+                .await
+            };
             if let Err(reply) = claim {
                 return reply;
             }
-            let response = update(pool, id, *patch, &request_id).await;
+            let response = update(
+                pool,
+                id,
+                *patch,
+                &request_id,
+                expected_revision,
+                expected_epoch,
+            )
+            .await;
             finish(pool, "update_customer", &request_id, response).await
         }
         Command::AddActivity { request_id, input } => {
@@ -110,7 +131,14 @@ async fn run(pool: &SqlitePool, cmd: crm::Command, request_id: Option<&str>) -> 
     .await
 }
 
-async fn update(pool: &SqlitePool, id: String, patch: ContactPatch, request_id: &str) -> Response {
+async fn update(
+    pool: &SqlitePool,
+    id: String,
+    patch: ContactPatch,
+    request_id: &str,
+    expected_revision: Option<i64>,
+    expected_epoch: Option<String>,
+) -> Response {
     let reply = run(
         pool,
         crm::Command::GetContact { id: id.clone() },
@@ -123,6 +151,8 @@ async fn update(pool: &SqlitePool, id: String, patch: ContactPatch, request_id: 
     let crm::Result::Contact { record } = *data else {
         return error("agent_invalid_response");
     };
+    let revision = expected_revision.unwrap_or(record.record_revision);
+    let epoch = expected_epoch.or(Some(record.data_epoch));
     let mut input = record.input;
 
     for (field, value) in [
@@ -141,8 +171,10 @@ async fn update(pool: &SqlitePool, id: String, patch: ContactPatch, request_id: 
     // warnings should not block changes to status or notes.
     run(
         pool,
-        crm::Command::SaveContact {
-            id: Some(id),
+        crm::Command::SaveContactChecked {
+            id,
+            expected_revision: revision,
+            expected_epoch: epoch,
             input: Box::new(input),
             allow_duplicate: true,
         },

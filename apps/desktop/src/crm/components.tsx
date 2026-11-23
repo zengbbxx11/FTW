@@ -10,7 +10,7 @@ export function Problem({ error }: { error: unknown }) {
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="empty">{children}</p>
+  return <div className="empty">{children}</div>
 }
 
 export function Pagination({ offset, more, change, pageSize = PAGE_SIZE }: { offset: number; more: boolean; change: (page: number) => void; pageSize?: number }) {

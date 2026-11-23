@@ -4,7 +4,7 @@ use super::{
 };
 use ftw_ipc::crm::Source;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    MessageBoxW, IDNO, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
 };
 
 impl MailService {
@@ -23,24 +23,57 @@ impl MailService {
         check_suppression(&mut db, &reviewed.recipient).await?;
         let digest = reviewed.digest()?;
         let description = prompt_text(&reviewed, revision)?;
+        let attempt_id = new_id();
+        sqlx::query("INSERT INTO email_approval_attempts(id,draft_id,revision,state) VALUES (?,?,?,'waiting')")
+            .bind(&attempt_id).bind(&id).bind(revision).execute(&mut *db).await?;
         drop(db);
 
         let service = self.clone();
         let requested = id.clone();
+        let attempt = attempt_id.clone();
         tokio::spawn(async move {
             let _guard = guard;
-            // The Windows dialog produces the decision inside Core. IPC carries only the draft ID.
-            if tokio::task::spawn_blocking(move || confirm(&description))
+            let decision = tokio::task::spawn_blocking(move || confirm(&description))
                 .await
-                .unwrap_or(false)
-            {
-                let _ = service.record_approval(&requested, revision, &digest).await;
-            }
+                .unwrap_or(Confirmation::WindowFailure);
+            service
+                .complete_attempt(&requested, revision, &digest, &attempt, decision)
+                .await;
         });
-        Ok(Reply::ApprovalOpened { id })
+        Ok(Reply::ApprovalOpened { id, attempt_id })
     }
 
-    async fn record_approval(&self, id: &str, revision: i64, digest: &str) -> Result<()> {
+    async fn complete_attempt(
+        &self,
+        id: &str,
+        revision: i64,
+        digest: &str,
+        attempt: &str,
+        decision: Confirmation,
+    ) {
+        let (state, reason) = match decision {
+            Confirmation::Accepted => match self
+                .record_approval(id, revision, digest, Some(attempt))
+                .await
+            {
+                Ok(()) => return,
+                Err(error) => ("failed", Some(error.code())),
+            },
+            Confirmation::Cancelled => ("cancelled", None),
+            Confirmation::WindowFailure => ("failed", Some("approval_window_failed")),
+        };
+        if let Err(error) = finish_attempt(&self.pool, attempt, state, reason).await {
+            eprintln!("FTW could not persist approval result: {}", error.code());
+        }
+    }
+
+    async fn record_approval(
+        &self,
+        id: &str,
+        revision: i64,
+        digest: &str,
+        attempt: Option<&str>,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let (current, current_revision, state) = snapshot(&mut tx, id).await?;
         if current_revision != revision
@@ -61,6 +94,9 @@ impl MailService {
             .execute(&mut *tx)
             .await?;
         audit(&mut tx, Source::Manual, "email_draft", id, "approve").await?;
+        if let Some(attempt) = attempt {
+            finish_attempt(&mut *tx, attempt, "approved", None).await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -130,7 +166,24 @@ fn prompt_text(draft: &Snapshot, revision: i64) -> Result<String> {
     ))
 }
 
-fn confirm(description: &str) -> bool {
+async fn finish_attempt<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    id: &str,
+    state: &str,
+    outcome: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE email_approval_attempts SET state=?,outcome=?,finished_at=unixepoch() WHERE id=? AND state='waiting'")
+        .bind(state).bind(outcome).bind(id).execute(db).await?;
+    Ok(())
+}
+
+enum Confirmation {
+    Accepted,
+    Cancelled,
+    WindowFailure,
+}
+
+fn confirm(description: &str) -> Confirmation {
     let title: Vec<_> = "FTW 工作台 · 人工邮件审批"
         .encode_utf16()
         .chain(Some(0))
@@ -145,7 +198,11 @@ fn confirm(description: &str) -> bool {
             MB_YESNO | MB_DEFBUTTON2 | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
         )
     };
-    choice == IDYES
+    match choice {
+        IDYES => Confirmation::Accepted,
+        IDNO => Confirmation::Cancelled,
+        _ => Confirmation::WindowFailure,
+    }
 }
 
 #[cfg(test)]
@@ -248,7 +305,7 @@ mod tests {
         ));
         let (old_revision, old_digest) = submit_review(&service, &draft).await;
         service
-            .record_approval(&draft, old_revision, &old_digest)
+            .record_approval(&draft, old_revision, &old_digest, None)
             .await
             .unwrap();
         service
@@ -270,12 +327,12 @@ mod tests {
         let (revision, digest) = submit_review(&service, &draft).await;
         assert!(matches!(
             service
-                .record_approval(&draft, old_revision, &old_digest)
+                .record_approval(&draft, old_revision, &old_digest, None)
                 .await,
             Err(Failure::Code("approval_snapshot_changed"))
         ));
         service
-            .record_approval(&draft, revision, &digest)
+            .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
         let queued = service.enqueue(&draft, Source::Agent).await.unwrap();
@@ -319,7 +376,7 @@ mod tests {
         let draft = new_draft(&service, contact).await;
         let (revision, digest) = submit_review(&service, &draft).await;
         service
-            .record_approval(&draft, revision, &digest)
+            .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
         service.enqueue(&draft, Source::Agent).await.unwrap();
@@ -352,7 +409,7 @@ mod tests {
         let draft = new_draft(&service, contact).await;
         let (revision, digest) = submit_review(&service, &draft).await;
         service
-            .record_approval(&draft, revision, &digest)
+            .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
         service.enqueue(&draft, Source::Agent).await.unwrap();
@@ -382,7 +439,7 @@ mod tests {
         let first = new_draft(&service, contact.clone()).await;
         let (revision, digest) = submit_review(&service, &first).await;
         service
-            .record_approval(&first, revision, &digest)
+            .record_approval(&first, revision, &digest, None)
             .await
             .unwrap();
         service.enqueue(&first, Source::Agent).await.unwrap();
@@ -396,7 +453,7 @@ mod tests {
         let second = new_draft(&service, contact).await;
         let (revision, digest) = submit_review(&service, &second).await;
         service
-            .record_approval(&second, revision, &digest)
+            .record_approval(&second, revision, &digest, None)
             .await
             .unwrap();
         service.enqueue(&second, Source::Agent).await.unwrap();
@@ -422,7 +479,7 @@ mod tests {
         for draft in [&approved, &queued] {
             let (revision, digest) = submit_review(&service, draft).await;
             service
-                .record_approval(draft, revision, &digest)
+                .record_approval(draft, revision, &digest, None)
                 .await
                 .unwrap();
         }
@@ -456,6 +513,61 @@ mod tests {
             job,
             ("delivery_unknown".into(), "restored_without_resend".into())
         );
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn review_receipts_distinguish_cancelled_failure_approved_and_expired() {
+        let (_dir, service, contact) = setup().await;
+        let draft = new_draft(&service, contact).await;
+        let (revision, digest) = submit_review(&service, &draft).await;
+        for (key, decision, expected) in [
+            ("cancel", Confirmation::Cancelled, "cancelled"),
+            ("window-failed", Confirmation::WindowFailure, "failed"),
+            ("changed", Confirmation::Accepted, "failed"),
+            ("approved", Confirmation::Accepted, "approved"),
+        ] {
+            sqlx::query("INSERT INTO email_approval_attempts(id,draft_id,revision,state) VALUES(?,?,?,'waiting')")
+                .bind(key).bind(&draft).bind(revision).execute(&service.pool).await.unwrap();
+            let checked_digest = if key == "changed" {
+                "obsolete"
+            } else {
+                &digest
+            };
+            service
+                .complete_attempt(&draft, revision, checked_digest, key, decision)
+                .await;
+            let Reply::Draft { record } = service.get(&draft).await.unwrap() else {
+                panic!("draft receipt")
+            };
+            let receipt = record.approval_attempt.unwrap();
+            assert_eq!(receipt.id, key);
+            assert_eq!(receipt.state, expected);
+            if key == "changed" {
+                assert_eq!(
+                    receipt.outcome.as_deref(),
+                    Some("approval_snapshot_changed")
+                );
+            }
+        }
+        let before = crate::storage::changes(&service.pool).await.unwrap();
+        assert_eq!(before.domains["mail_expiration"], 0);
+        sqlx::query("UPDATE email_approvals SET expires_at=0 WHERE draft_id=?")
+            .bind(&draft)
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        let after = crate::storage::changes(&service.pool).await.unwrap();
+        assert_eq!(after.domains["mail_expiration"], 1);
+        let Reply::Drafts { rows, .. } = service.pending(0).await.unwrap() else {
+            panic!("pending approvals")
+        };
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].approval_expired);
+        assert!(matches!(
+            service.enqueue(&draft, Source::Agent).await,
+            Err(Failure::Code("approval_expired"))
+        ));
         service.pool.close().await;
     }
 

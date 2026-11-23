@@ -46,3 +46,24 @@ pub async fn schema_version(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
         .fetch_one(pool)
         .await
 }
+
+pub async fn changes(pool: &SqlitePool) -> Result<ftw_ipc::ChangeVersions, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let epoch = sqlx::query_scalar("SELECT epoch FROM app_change_epoch WHERE singleton=1")
+        .fetch_one(&mut *tx)
+        .await?;
+    let mut domains: std::collections::BTreeMap<String, i64> =
+        sqlx::query_as("SELECT domain,revision FROM app_change_counters")
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .collect();
+    let expired = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM mail_drafts_review WHERE state='approved' AND approval_expired",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    domains.insert("mail_expiration".to_owned(), expired);
+    tx.commit().await?;
+    Ok(ftw_ipc::ChangeVersions { epoch, domains })
+}

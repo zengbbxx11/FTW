@@ -82,6 +82,8 @@ pub struct LeadInput {
 #[serde(deny_unknown_fields)]
 #[derive(Default)]
 pub struct ActivityInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts_as_contact: Option<bool>,
     pub contact_id: String,
     pub event_type: String,
     pub occurred_at: i64,
@@ -103,6 +105,7 @@ pub struct ContactQuery {
     pub country: String,
     pub stage: String,
     pub level: String,
+    pub sample_status: String,
     pub customer_type: String,
     pub source: String,
     pub archive: ArchiveFilter,
@@ -136,6 +139,14 @@ pub enum Command {
     },
     GetContact {
         id: String,
+    },
+    StateCatalog,
+    SaveContactChecked {
+        id: String,
+        input: Box<ContactInput>,
+        allow_duplicate: bool,
+        expected_revision: i64,
+        expected_epoch: Option<String>,
     },
     SaveContact {
         id: Option<String>,
@@ -180,6 +191,9 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    StateCatalog {
+        options: Vec<StateOption>,
+    },
     Contacts {
         rows: Vec<ContactRow>,
         has_more: bool,
@@ -208,6 +222,14 @@ pub enum Result {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct StateOption {
+    pub field: String,
+    pub code: String,
+    pub label: String,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ContactRow {
     pub id: String,
     pub display_name: String,
@@ -225,6 +247,17 @@ pub struct ContactRow {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct Contact {
     pub id: String,
+    #[serde(default)]
+    pub record_revision: i64,
+    #[serde(default)]
+    pub data_epoch: String,
+    #[serde(default)]
+    pub effective_first_contact_at: Option<i64>,
+    #[serde(default)]
+    pub effective_last_contact_at: Option<i64>,
+    #[serde(default)]
+    pub updated_at: i64,
+    pub latest_thread_reply_at: Option<i64>,
     pub input: ContactInput,
     pub archived_at: Option<i64>,
     pub source: String,
@@ -254,6 +287,7 @@ pub struct Lead {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct Activity {
+    pub counts_as_contact: Option<bool>,
     pub id: String,
     pub contact_id: String,
     pub contact_name: String,

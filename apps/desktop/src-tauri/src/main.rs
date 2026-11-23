@@ -50,6 +50,14 @@ async fn core_health(access: State<'_, CoreAccess>) -> Result<Health, Issue> {
 }
 
 #[tauri::command]
+async fn core_changes(access: State<'_, CoreAccess>) -> Result<ftw_ipc::ChangeVersions, Issue> {
+    match call_core(&access, &Operation::Changes).await? {
+        Response::Changes { versions } => Ok(versions),
+        _ => Err(Issue::new("core_protocol", "Unexpected change response")),
+    }
+}
+
+#[tauri::command]
 async fn crm_request(
     access: State<'_, CoreAccess>,
     command: crm::Command,
@@ -217,6 +225,7 @@ fn main() -> ExitCode {
         .manage(CoreAccess::default())
         .invoke_handler(tauri::generate_handler![
             core_health,
+            core_changes,
             crm_request,
             mail_request,
             inbox_request,

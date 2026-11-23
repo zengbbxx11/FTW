@@ -13,7 +13,9 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 | 操作 | 参数 | 成功返回 |
 | --- | --- | --- |
 | `list_contacts` | `query` 支持 `keyword`、`quick_view`、`country`、`stage`、`level`、`customer_type`、`source`、`archive`、`sort`、`offset` | `contacts` |
-| `get_contact` | `id` | `contact`，包含资料、渠道和产品兴趣 |
+| `get_contact` | `id` | `contact`，含资料、渠道、兴趣、计算的联系日期、`record_revision` 与 `data_epoch` |
+| `state_catalog` | 无 | `state_catalog`，含稳定代码、标签和兼容别名 |
+| `save_contact_checked` | `id`、`input`、`allow_duplicate`、`expected_revision`、可选 `expected_epoch` | `saved` 或 `duplicates`，旧版本时返回 `crm_revision_conflict` |
 | `save_contact` | `id`（新建为空）、`input`、`allow_duplicate` | `saved` 或 `duplicates` |
 | `set_archived` | `id`、`archived` | `saved` |
 | `list_leads` | `offset`、`review_status` | `leads` |
@@ -33,6 +35,8 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 `quick_view` 支持 `priority` 与 `sample`。跟进可保存独立的 `channel`、`followup_category` 与 `customer_feedback`。这些字段缺省时保存为空文本，旧跟进在迁移后继续可读。
 
 客户 CSV 的桌面入口为「数据与审计 → 客户 CSV」。预览在事务中校验并回滚，正式导入重新检验，跳过冲突或无效行。CSV 导出含 UTF-8 BOM，导出到数据根目录的 `exports`。
+
+`level`、`sample_status`、`customer_type` 和 `source` 的筛选接收稳定代码和可识别别名。历史文本保留在记录中。重点和活跃样品预设使用统一规则。表格和详情的联系日期由 Core 组合真实沟通与人工日期，纯便签默认不参与。人工及 Agent 可用 `counts_as_contact` 标记业务事件。
 
 ## JSON Schema
 

@@ -85,6 +85,7 @@ pub struct MailService {
 impl MailService {
     pub async fn new(pool: SqlitePool) -> std::result::Result<Self, sqlx::Error> {
         let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE email_approval_attempts SET state='interrupted',outcome='approval_interrupted',finished_at=unixepoch() WHERE state='waiting'").execute(&mut *tx).await?;
         sqlx::query("UPDATE email_drafts SET state='delivery_unknown', updated_at=unixepoch() WHERE state='sending'")
             .execute(&mut *tx).await?;
         sqlx::query("UPDATE email_outbox_jobs SET state='delivery_unknown', outcome='interrupted_during_submission' WHERE state='sending'")
@@ -353,7 +354,7 @@ impl MailService {
     }
 
     async fn drafts(&self, contact: Option<String>, offset: u32) -> Result<Reply> {
-        let mut rows = sqlx::query("SELECT * FROM email_drafts WHERE (? IS NULL OR contact_id=?) ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?")
+        let mut rows = sqlx::query("SELECT * FROM mail_drafts_review WHERE (? IS NULL OR contact_id=?) ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?")
             .bind(contact.as_deref()).bind(contact.as_deref()).bind(i64::from(offset)).map(draft_row)
             .fetch_all(&self.pool).await?;
         let has_more = rows.len() > 20;
@@ -363,7 +364,7 @@ impl MailService {
 
     async fn pending(&self, offset: u32) -> Result<Reply> {
         let mut rows = sqlx::query(
-            "SELECT * FROM email_drafts WHERE state='pending_approval'
+            "SELECT * FROM mail_drafts_review WHERE state='pending_approval' OR approval_expired
             ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?",
         )
         .bind(i64::from(offset))
@@ -380,14 +381,25 @@ impl MailService {
             "SELECT d.*,a.email_address,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
              (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome,
              (SELECT 'sent:' || e.id FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id) thread_id,
-             EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.kind='message') has_reply
-             FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
+             EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.kind IN ('message','large_message')) has_reply
+             FROM mail_drafts_review d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
         ).bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_not_found"))?;
         let attachments = attachments(&row)?
             .iter()
             .map(attachment_info)
             .collect::<Result<Vec<_>>>()?;
+        let approval_attempt = sqlx::query("SELECT id,revision,state,outcome FROM email_approval_attempts WHERE draft_id=? ORDER BY rowid DESC LIMIT 1")
+            .bind(id).map(|r: SqliteRow| mail::ApprovalAttempt { id:r.get("id"), revision:r.get("revision"), state:r.get("state"), outcome:r.get("outcome") })
+            .fetch_optional(&self.pool).await?;
+        let approval_attempt = approval_attempt.map(|mut attempt| {
+            if attempt.state == "waiting" && !self.approval_in_progress() {
+                attempt.state = "interrupted".into();
+                attempt.outcome = Some("approval_interrupted".into());
+            }
+            attempt
+        });
         let record = mail::Draft {
+            approval_attempt,
             sender: row.get("email_address"),
             body: row.get("body_text"),
             attachments,
@@ -554,6 +566,7 @@ fn protect_password(password: &str) -> Result<Vec<u8>> {
 
 fn draft_row(row: SqliteRow) -> mail::DraftRow {
     mail::DraftRow {
+        approval_expired: row.get("approval_expired"),
         id: row.get("id"),
         contact_id: row.get("contact_id"),
         account_id: row.get("account_id"),

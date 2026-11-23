@@ -10,37 +10,37 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
     validation::text(&mut filters.keyword, "keyword", 300, false)?;
     let mut query = QueryBuilder::new(
         "SELECT c.id, c.display_name, c.company_name, c.country_region, c.stage, c.customer_level, c.sample_status,
-         c.archived_at, c.source, COALESCE(c.last_contact_at, (SELECT MAX(occurred_at)
-            FROM activities WHERE contact_id = c.id)) AS effective_last,
+         c.archived_at, c.source, dates.effective_last,
          (SELECT value FROM contact_methods WHERE contact_id = c.id AND kind = 'email'
             ORDER BY is_primary DESC, position LIMIT 1) AS email
-         FROM contacts c WHERE 1 = 1",
+         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id WHERE 1 = 1",
     );
     match filters.archive {
         ArchiveFilter::Active => {
-            query.push(" AND archived_at IS NULL");
+            query.push(" AND c.archived_at IS NULL");
         }
         ArchiveFilter::Archived => {
-            query.push(" AND archived_at IS NOT NULL");
+            query.push(" AND c.archived_at IS NOT NULL");
         }
         ArchiveFilter::All => {}
     }
     match filters.quick_view.as_str() {
         "" => {}
         "priority" => {
-            query.push(" AND (c.customer_level='A' COLLATE NOCASE OR c.customer_level='重点客户' OR c.customer_level LIKE 'A |%')");
+            query
+                .push(" AND ")
+                .push(state_sql("customer_level"))
+                .push("='A'");
         }
         "sample" => {
-            query.push(" AND (c.stage='sample_in_progress' OR c.sample_status NOT IN ('','未涉及','无样品'))");
+            query.push(" AND (").push(state_sql("sample_status"))
+                .push(" IN ('planned','in_progress','in_transit','evaluating') OR (c.sample_status='' AND c.stage='sample_in_progress'))");
         }
         _ => return Err(Error::Invalid("quick_view")),
     }
     for (column, value) in [
         ("country_region", filters.country),
         ("stage", filters.stage),
-        ("customer_level", filters.level),
-        ("customer_type", filters.customer_type),
-        ("customer_source", filters.source),
     ] {
         if !value.trim().is_empty() {
             query
@@ -48,6 +48,22 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
                 .push(column)
                 .push(" = ")
                 .push_bind(value.trim().to_owned())
+                .push(" COLLATE NOCASE");
+        }
+    }
+    for (field, value) in [
+        ("customer_level", filters.level),
+        ("customer_type", filters.customer_type),
+        ("customer_source", filters.source),
+        ("sample_status", filters.sample_status),
+    ] {
+        if !value.trim().is_empty() {
+            let value = canonical_state(pool, field, &value).await?;
+            query
+                .push(" AND ")
+                .push(state_sql(field))
+                .push(" = ")
+                .push_bind(value)
                 .push(" COLLATE NOCASE");
         }
     }
@@ -101,9 +117,11 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery) -> Result<Reply>
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
     let mut tx = pool.begin().await?;
     let row = sqlx::query(
-        "SELECT c.*, (SELECT MIN(occurred_at) FROM activities WHERE contact_id=c.id) observed_first,
-                     (SELECT MAX(occurred_at) FROM activities WHERE contact_id=c.id) observed_last
-         FROM contacts c WHERE id=?",
+        "SELECT c.*,dates.observed_first,dates.observed_last,dates.effective_first,dates.effective_last,
+                (SELECT epoch FROM app_change_epoch WHERE singleton=1) data_epoch,
+                (SELECT MAX(i.received_at) FROM inbox_messages i WHERE i.contact_id=c.id
+                    AND i.kind IN ('message','large_message') AND i.thread_id LIKE 'sent:%') latest_thread_reply_at
+         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id WHERE c.id=?",
     ).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
 
     let methods = sqlx::query("SELECT * FROM contact_methods WHERE contact_id=? ORDER BY position")
@@ -136,6 +154,12 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
             id: row.get("id"),
             archived_at: row.get("archived_at"),
             source: row.get("source"),
+            record_revision: row.get("record_revision"),
+            data_epoch: row.get("data_epoch"),
+            effective_first_contact_at: row.get("effective_first"),
+            effective_last_contact_at: row.get("effective_last"),
+            updated_at: row.get("updated_at"),
+            latest_thread_reply_at: row.get("latest_thread_reply_at"),
             observed_first_contact_at: row.get("observed_first"),
             observed_last_contact_at: row.get("observed_last"),
             input: ContactInput {
@@ -221,7 +245,8 @@ pub async fn save(
           main_need=excluded.main_need, sample_status=excluded.sample_status, bulk_order_status=excluded.bulk_order_status,
           first_contact_at=excluded.first_contact_at,last_contact_at=excluded.last_contact_at,
           website_url=excluded.website_url,website_domain=excluded.website_domain,
-          alibaba_buyer_id=excluded.alibaba_buyer_id,notes=excluded.notes,updated_by=excluded.updated_by,updated_at=unixepoch()
+          alibaba_buyer_id=excluded.alibaba_buyer_id,notes=excluded.notes,updated_by=excluded.updated_by,updated_at=unixepoch(),
+          record_revision=contacts.record_revision+1
          RETURNING rowid",
     )
     .bind(&id).bind(&input.display_name).bind(&input.company_name).bind(&input.country_region)
@@ -348,7 +373,7 @@ pub async fn archive(
         .await?
         .ok_or(Error::NotFound)?;
     if current.is_some() != archived {
-        sqlx::query("UPDATE contacts SET archived_at=CASE WHEN ? THEN unixepoch() END, updated_at=unixepoch(), updated_by=? WHERE id=?")
+        sqlx::query("UPDATE contacts SET archived_at=CASE WHEN ? THEN unixepoch() END, updated_at=unixepoch(), updated_by=?, record_revision=record_revision+1 WHERE id=?")
             .bind(archived).bind(actor.id).bind(&id).execute(&mut *tx).await?;
         audit(
             &mut tx,
@@ -361,4 +386,61 @@ pub async fn archive(
     }
     tx.commit().await?;
     Ok(Reply::Saved { id })
+}
+
+// Callers provide only field names defined in this module. User values are bound separately.
+fn state_sql(field: &str) -> String {
+    let legacy = if field == "customer_level" {
+        "CASE WHEN upper(substr(trim(c.customer_level),1,3))='A |' THEN 'A' ELSE c.customer_level END".to_owned()
+    } else {
+        format!("c.{field}")
+    };
+    format!("COALESCE((SELECT code FROM crm_state_aliases WHERE field='{field}' AND alias=trim(c.{field})), {legacy})")
+}
+
+async fn canonical_state(pool: &SqlitePool, field: &str, value: &str) -> Result<String> {
+    let value = value.trim();
+    let alias: Option<String> =
+        sqlx::query_scalar("SELECT code FROM crm_state_aliases WHERE field=? AND alias=?")
+            .bind(field)
+            .bind(value)
+            .fetch_optional(pool)
+            .await?;
+    if let Some(code) = alias {
+        Ok(code)
+    } else if field == "customer_level"
+        && value
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("A |"))
+    {
+        Ok("A".into())
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+pub async fn state_catalog(pool: &SqlitePool) -> Result<Reply> {
+    let options = sqlx::query("SELECT o.field,o.code,o.label,(SELECT json_group_array(a.alias)
+           FROM crm_state_aliases a WHERE a.field=o.field AND a.code=o.code) aliases FROM crm_state_options o ORDER BY o.field,o.position")
+        .try_map(|row: SqliteRow| Ok(ftw_ipc::crm::StateOption {
+            field: row.get("field"), code: row.get("code"), label: row.get("label"),
+            aliases: serde_json::from_str(row.get("aliases")).map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+        }))
+        .fetch_all(pool).await?;
+    Ok(Reply::StateCatalog { options })
+}
+
+pub async fn check_revision(
+    db: &mut SqliteConnection,
+    id: &str,
+    expected: i64,
+    expected_epoch: Option<&str>,
+) -> Result<()> {
+    let (current, epoch): (i64, String) = sqlx::query_as("SELECT record_revision,(SELECT epoch FROM app_change_epoch WHERE singleton=1) FROM contacts WHERE id=?")
+        .bind(id).fetch_optional(db).await?.ok_or(Error::NotFound)?;
+    if current == expected && expected_epoch.is_none_or(|expected| expected == epoch) {
+        Ok(())
+    } else {
+        Err(Error::Conflict(current))
+    }
 }
