@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Field } from '../crm/components'
 import { chooseMailAssets, mailCall, mailError, type Account, type AgentMailPolicy, type MailCommand, type RegisteredAgent } from './api'
@@ -9,19 +9,19 @@ const purposes = {
 }
 
 type SettingsCommand = Extract<MailCommand, {
-  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access' | 'cancel_mail_policy_review'
+  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access'
 }>
 
 export function AgentMail() {
   const [name, setName] = useState('')
   const [registering, setRegistering] = useState(false)
   const [registrationError, setRegistrationError] = useState('')
+  const [policyNotice, setPolicyNotice] = useState('')
   const [tokens, setTokens] = useState<Record<string, string>>({})
   const cache = useQueryClient()
   const settings = useQuery({
     queryKey: ['agent-mail-settings'],
     queryFn: () => mailCall({ action: 'agent_mail_settings' }, 'agent_mail_settings'),
-    refetchInterval: query => query.state.data?.review?.state === 'waiting' ? 750 : false,
   })
   const accounts = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
   const assets = useQuery({ queryKey: ['mail-assets'], queryFn: () => mailCall({ action: 'list_assets' }, 'assets') })
@@ -31,17 +31,15 @@ export function AgentMail() {
   })
   const change = useMutation({
     mutationFn: (command: SettingsCommand) => mailCall(command, 'saved'),
+    onMutate: () => setPolicyNotice(''),
     onSuccess: async (_, command) => {
       if (command.action === 'revoke_mail_agent') dismissToken(command.id)
+      if (command.action === 'set_agent_mail_policy') setPolicyNotice('发送权限已保存并生效。')
       await Promise.all([cache.invalidateQueries({ queryKey: ['agent-mail-settings'] }),
         cache.invalidateQueries({ queryKey: ['mail-assets'] })])
     },
   })
   const current = settings.data
-  const review = current?.review
-  useEffect(() => {
-    if (review?.state === 'saved') void cache.invalidateQueries({ queryKey: ['mail-assets'] })
-  }, [cache, review?.id, review?.state])
 
   async function register(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -71,13 +69,6 @@ export function AgentMail() {
   return <div className="agent-settings">
     {(settings.isError || change.isError || accounts.isError) &&
       <p className="alert error" role="alert">{mailError(settings.error ?? change.error ?? accounts.error)}</p>}
-    {review && <div className={'alert ' + (review.state === 'failed' ? 'error' : 'warning')} role="status">
-      {review.state === 'waiting' ? <div className="row-actions">
-        <span>等待 Windows 核验。请在系统窗口输入 Windows 登录密码，或取消本次请求。</span>
-        <button className="button" type="button" disabled={change.isPending}
-          onClick={() => change.mutate({ action: 'cancel_mail_policy_review', id: review.id })}>取消核验请求</button>
-      </div> : review.state === 'saved' ? '授权已确认。' : mailError(review.outcome ?? 'agent_policy_cancelled')}
-    </div>}
     <div className="agent-settings-layout">
       <section className="panel">
         <h2>Agent 登记</h2>
@@ -95,9 +86,9 @@ export function AgentMail() {
           {tokens[agent.id] && !agent.revoked && <AgentToken token={tokens[agent.id]} dismiss={() => dismissToken(agent.id)} />}
         </li>)}</ul> : <p className="muted">尚未登记 Agent。</p>}
       </section>
-      {current && <PolicyEditor key={current.policy.revision} policy={current.policy} accounts={accounts.data?.rows ?? []}
+      {current && accounts.data && <PolicyEditor key={current.policy.revision} policy={current.policy} accounts={accounts.data.rows}
         agents={current.agents.filter(agent => !agent.revoked)}
-        available={current.automatic_available} busy={change.isPending}
+        available={current.automatic_available} busy={change.isPending} notice={policyNotice}
         save={(policy, agent_ids) => change.mutate({ action: 'set_agent_mail_policy', policy, agent_ids })} />}
     </div>
     <section className="panel">
@@ -108,7 +99,7 @@ export function AgentMail() {
         <strong>{asset.filename}</strong><span>{Math.ceil(asset.size / 1024)} KiB</span>
         <button className="button" disabled={change.isPending}
           onClick={() => change.mutate({ action: 'set_asset_access', id: asset.id, allowed: !asset.agent_allowed })}>
-          {asset.agent_allowed ? '撤销 Agent 使用权' : '核验并授权使用'}
+          {asset.agent_allowed ? '撤销 Agent 使用权' : '授权 Agent 使用'}
         </button>
       </li>)}</ul> : <p className="muted">尚无本地附件。</p>}
     </section>
@@ -127,20 +118,26 @@ function AgentToken({ token, dismiss }: { token: string; dismiss: () => void }) 
   </div>
 }
 
-function PolicyEditor({ policy, accounts, agents, available, busy, save }: {
-  policy: AgentMailPolicy; accounts: Account[]; agents: RegisteredAgent[]; available: boolean; busy: boolean; save: (policy: AgentMailPolicy, ids: string[]) => void
+function PolicyEditor({ policy, accounts, agents, available, busy, notice, save }: {
+  policy: AgentMailPolicy; accounts: Account[]; agents: RegisteredAgent[]; available: boolean; busy: boolean; notice: string; save: (policy: AgentMailPolicy, ids: string[]) => void
 }) {
-  const [value, setValue] = useState(policy)
-  const [ids, setIds] = useState(() => agents.filter(agent => agent.automatic).map(agent => agent.id))
-  const selected = ids.filter(id => agents.some(agent => agent.id === id))
-  const incomplete = value.mode === 'automatic' && (!selected.length || !value.accounts.length || !value.purposes.length)
-  function toggle(key: 'accounts' | 'purposes', entry: string) {
-    setValue(previous => ({ ...previous, [key]: previous[key].includes(entry)
-      ? previous[key].filter(item => item !== entry) : [...previous[key], entry] }))
+  const firstSetup = policy.revision === 1 && policy.mode === 'manual' && available
+  const [value, setValue] = useState<AgentMailPolicy>(() => firstSetup ? {
+    ...policy, mode: 'automatic', purposes: Object.keys(purposes), task_limit: 20, daily_limit: 30, interval_seconds: 60,
+  } : policy)
+  const [ids, setIds] = useState<string[] | null>(() => firstSetup ? null : agents.filter(agent => agent.automatic).map(agent => agent.id))
+  const [accountIds, setAccountIds] = useState<string[] | null>(() => firstSetup ? null : policy.accounts)
+  const selected = (ids ?? agents.map(agent => agent.id)).filter(id => agents.some(agent => agent.id === id))
+  const selectedAccounts = (accountIds ?? accounts.map(account => account.id)).filter(id => accounts.some(account => account.id === id))
+  const incomplete = value.mode === 'automatic' && (!selected.length || !selectedAccounts.length || !value.purposes.length)
+  function togglePurpose(entry: string) {
+    setValue(previous => ({ ...previous, purposes: previous.purposes.includes(entry)
+      ? previous.purposes.filter(item => item !== entry) : [...previous.purposes, entry] }))
   }
-  return <form className="panel" onSubmit={event => { event.preventDefault(); if (!incomplete) save(value, selected) }}>
+  return <form className="panel" onSubmit={event => { event.preventDefault(); if (!incomplete) save({ ...value, accounts: selectedAccounts }, selected) }}>
     <h2>发送模式</h2>
-    <p className="muted">开启自动发信或扩大权限时需要 Windows 核验。关闭自动发信和缩减权限即时生效。</p>
+    <p className="muted">当前生效：{policy.mode === 'automatic' ? '持续授权自动发送' : policy.mode === 'manual' ? '人工逐封审批' : '禁止 Agent 发送'}。点击保存后，新设置立即生效。</p>
+    {notice && <p role="status">{notice}</p>}
     <fieldset disabled={busy}>
       <div className="agent-mode-options" role="group" aria-label="Agent 发信模式">
         {([
@@ -162,11 +159,12 @@ function PolicyEditor({ policy, accounts, agents, available, busy, save }: {
         {!agents.length && <p className="muted">请先登记要授权的 Agent。</p>}
         <h3>允许使用的发件邮箱</h3>
         <div className="row-actions">{accounts.map(account => <label key={account.id}>
-          <input type="checkbox" checked={value.accounts.includes(account.id)} onChange={() => toggle('accounts',account.id)} />{account.email}
+          <input type="checkbox" checked={selectedAccounts.includes(account.id)} onChange={event =>
+            setAccountIds(event.target.checked ? [...selectedAccounts, account.id] : selectedAccounts.filter(id => id !== account.id))} />{account.email}
         </label>)}</div>
         <h3>允许的邮件用途</h3>
         <div className="row-actions">{Object.entries(purposes).map(([code,label]) => <label key={code}>
-          <input type="checkbox" checked={value.purposes.includes(code)} onChange={() => toggle('purposes',code)} />{label}
+          <input type="checkbox" checked={value.purposes.includes(code)} onChange={() => togglePurpose(code)} />{label}
         </label>)}</div>
         <div className="form-grid">{([
           ['task_limit','每任务上限',1,20], ['daily_limit','每邮箱近 24 小时上限',1,30], ['interval_seconds','最短发送间隔（秒）',60,3600],

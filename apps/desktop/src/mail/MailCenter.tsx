@@ -4,7 +4,7 @@ import { dateLabel, request, sourceLabel, type Contact } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
 import { AgentMail } from './AgentMail'
 import { ImapSettings, InboxView, MailThread } from './Inbox'
-import { chooseMailAssets, mailCall, mailError, states, type Asset, type Draft, type DraftInput, type MailCommand } from './api'
+import { chooseMailAssets, mailCall, mailError, states, type Account, type Asset, type Draft, type DraftInput, type MailCommand } from './api'
 
 type View = { kind: 'drafts' | 'accounts' | 'inbox' | 'imap' | 'agent' } | { kind: 'draft' | 'edit'; id: string }
 
@@ -64,16 +64,20 @@ function Accounts() {
   const [port, setPort] = useState(465)
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState('')
+  const [editingAccount, setEditingAccount] = useState('')
   const [preferences, setPreferences] = useState('')
   const action = useMutation({
     mutationFn: async (command: MailCommand) => mailCall(command, command.action === 'test_account' ? 'connection_verified' : 'saved'),
     onMutate: () => setNotice(''),
     onSuccess: async (result, command) => {
       if (command.action === 'replace_password') setEditing('')
+      if (command.action === 'update_account' || command.action === 'delete_account') setEditingAccount('')
       if (command.action === 'set_account_preferences') setPreferences('')
-      setNotice(result.kind === 'connection_verified' ? 'SMTP 连接和认证通过。' :
-        command.action === 'set_suppression' ? command.blocked ? '已加入拒发名单。' : '移出拒发名单需完成 Windows 核验。可在 Agent 发信权限中查看结果。' : '邮箱账户设置已保存。')
-      await cache.invalidateQueries({ queryKey: ['mail-accounts'] })
+      setNotice(command.action === 'delete_account' ? '邮箱账户已删除，历史邮件和草稿记录已保留。' :
+        command.action === 'update_account' ? '发件账户设置已保存。' : result.kind === 'connection_verified' ? 'SMTP 连接和认证通过。' :
+        command.action === 'set_suppression' ? command.blocked ? '已加入拒发名单。' : '已移出拒发名单。' : '邮箱账户设置已保存。')
+      await Promise.all(['mail-accounts', 'imap-accounts', 'mail-drafts', 'mail-draft', 'agent-mail-settings']
+        .map(key => cache.invalidateQueries({ queryKey: [key] })))
     },
   })
   const create = (event: FormEvent<HTMLFormElement>) => {
@@ -94,6 +98,9 @@ function Accounts() {
         <ul className="record-list">{rows.data.rows.map(account => <li key={account.id}>
           <strong>{account.name}</strong><span>{account.email}</span><small>{account.host}:{account.port}</small>
           <button className="button" disabled={action.isPending} onClick={() => action.mutate({ action: 'test_account', id: account.id })}>测试 SMTP</button>
+          <button className="button" disabled={action.isPending} onClick={() => setEditingAccount(account.id)}>编辑账户</button>
+          <ConfirmButton label="删除这个账户？邮箱将停止收发，历史邮件与草稿会保留。" disabled={action.isPending}
+            onConfirm={() => action.mutate({ action: 'delete_account', id: account.id })}>删除账户</ConfirmButton>
           <button className="button" disabled={action.isPending} onClick={() => setEditing(account.id)}>更新授权码</button>
           <button className="button" disabled={action.isPending} onClick={() => setPreferences(account.id)}>发送上限与签名</button>
           {preferences === account.id && <form className="form-grid" onSubmit={event => {
@@ -117,6 +124,8 @@ function Accounts() {
             <button className="button" disabled={action.isPending}>保存授权码</button>
             <button type="button" className="button" onClick={() => setEditing('')}>取消</button>
           </form>}
+          {editingAccount === account.id && <AccountEditor account={account} busy={action.isPending}
+            save={input => action.mutate({ action: 'update_account', input })} cancel={() => setEditingAccount('')} />}
         </li>)}</ul>)}
       {notice && <p role="status" className="muted">{notice}</p>}
       {action.isError && <ErrorNotice error={action.error} />}
@@ -153,6 +162,41 @@ function Accounts() {
   </>
 }
 
+function AccountEditor({ account, busy, save, cancel }: {
+  account: Account; busy: boolean; save: (input: Extract<MailCommand, { action: 'update_account' }>['input']) => void; cancel: () => void
+}) {
+  const [security, setSecurity] = useState<'tls' | 'starttls'>(account.security ?? 'tls')
+  const [port, setPort] = useState(account.port ?? 465)
+  return <form className="inline-form" onSubmit={event => {
+    event.preventDefault()
+    const form = event.currentTarget
+    const data = new FormData(form)
+    const value = (key: string) => String(data.get(key) ?? '')
+    const password = value('password')
+    save({ id: account.id, name: value('name'), email: value('email'), host: value('host'),
+      port, security, username: value('username'), password: password || null })
+    const entry = form.elements.namedItem('password')
+    if (entry instanceof HTMLInputElement) entry.value = ''
+  }}>
+    <div className="form-grid">
+      <Field label="账户名称"><input name="name" defaultValue={account.name} required /></Field>
+      <Field label="发件邮箱"><input name="email" type="email" defaultValue={account.email} required /></Field>
+      <Field label="SMTP 主机"><input name="host" defaultValue={account.host} required /></Field>
+      <Field label="加密方式"><select value={security} onChange={event => {
+        const value = event.target.value as 'tls' | 'starttls'
+        setSecurity(value)
+        setPort(value === 'tls' ? 465 : 587)
+      }}><option value="tls">TLS</option><option value="starttls">STARTTLS（强制）</option></select></Field>
+      <Field label="端口"><input type="number" min="1" max="65535" value={port || ''} onChange={event => setPort(event.target.valueAsNumber)} required /></Field>
+      <Field label="登录名"><input name="username" defaultValue={account.username ?? account.email} required /></Field>
+      <Field label="新授权码或密码（留空保留原值）"><input name="password" type="password" autoComplete="new-password" /></Field>
+    </div>
+    <p className="muted">更换发件邮箱地址后，请重新配置收件设置，并重新选择 Agent 对该邮箱的发信授权。</p>
+    <div className="form-footer"><button type="button" className="button" onClick={cancel}>取消</button>
+      <button className="button primary" disabled={busy}>保存修改</button></div>
+  </form>
+}
+
 function DraftForm({ contact, existing, saved, close }: {
   contact: Contact; existing?: Draft; saved: (id: string) => void; close: () => void
 }) {
@@ -168,7 +212,7 @@ function DraftForm({ contact, existing, saved, close }: {
   const cache = useQueryClient()
   const accounts = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
   const senderRows = accounts.data?.kind === 'accounts' ? accounts.data.rows : []
-  const sender = account || senderRows[0]?.id || ''
+  const sender = account ? (senderRows.some(row => row.id === account) ? account : '') : senderRows[0]?.id || ''
   const currentRecipient = emails.find(item => item.value.toLowerCase() === recipient.toLowerCase())?.value ?? recipient
   const save = useMutation({
     mutationFn: () => {
@@ -267,15 +311,17 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
         <button className="button" onClick={() => openContact(record.contact_id)}>打开客户</button>
         {record.thread_id && <button className="button" onClick={() => setHistory(true)}>邮件往来</button>}
         {['draft', 'pending_approval', 'approved'].includes(record.state) && <button className="button" onClick={edit}>编辑草稿</button>}
-        {record.state === 'draft' && <button className="button primary" disabled={transition.isPending} onClick={() => transition.mutate('request_approval')}>提交审核</button>}
-        {(record.state === 'pending_approval' || (record.state === 'approved' && expired)) &&
+        {record.account_active && record.state === 'draft' && <button className="button primary" disabled={transition.isPending} onClick={() => transition.mutate('request_approval')}>提交审核</button>}
+        {record.account_active && (record.state === 'pending_approval' || (record.state === 'approved' && expired)) &&
           <button className="button primary" disabled={transition.isPending || waiting} onClick={() => transition.mutate('open_approval')}>{expired ? '重新审核' : '人工批准'}</button>}
-        {record.state === 'approved' && !expired &&
+        {record.account_active && record.state === 'approved' && !expired &&
           <ConfirmButton label="将该批准版本加入发件队列？" disabled={transition.isPending}
             onConfirm={() => transition.mutate('send_approved')}>发送已批准版本</ConfirmButton>}
       </div>
     </div>
     {waiting && <p role="status" className="alert warning">等待你在 FTW 的 Windows 审批窗口确认。</p>}
+    {!record.account_active && ['draft', 'pending_approval', 'approved'].includes(record.state) &&
+      <p role="status" className="alert warning">发件账户已删除。请编辑草稿并选择其他发件账户。</p>}
     {attempt?.state === 'cancelled' && attempt.revision === record.revision && <p role="status">已取消此次审批。</p>}
     {attempt?.state === 'approved' && attempt.revision === record.revision && record.state === 'approved' && !expired && <p role="status">当前修订已批准，可以提交发件。</p>}
     {attempt?.outcome && (attempt.state === 'failed' || attempt.state === 'interrupted') && <ErrorNotice error={attempt.outcome} />}

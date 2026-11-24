@@ -34,6 +34,19 @@ pub struct DraftInput {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AccountUpdate {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub host: String,
+    pub port: u16,
+    pub security: String,
+    pub username: String,
+    pub password: Option<Secret>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentMailPolicy {
     pub revision: i64,
     pub mode: String,
@@ -101,6 +114,12 @@ pub enum Command {
         security: String,
         username: String,
         password: Secret,
+    },
+    UpdateAccount {
+        input: AccountUpdate,
+    },
+    DeleteAccount {
+        id: String,
     },
     ReplacePassword {
         id: String,
@@ -209,6 +228,8 @@ pub struct Account {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub daily_limit: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -267,6 +288,7 @@ pub struct ApprovalAttempt {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Draft {
     pub approval_attempt: Option<ApprovalAttempt>,
+    pub account_active: bool,
     #[serde(flatten)]
     pub row: DraftRow,
     pub sender: String,

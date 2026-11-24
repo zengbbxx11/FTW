@@ -132,7 +132,7 @@ try {
     const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 3000 })
     const health = JSON.parse(stdout)
     process.kill(health.processId)
-    assert.equal(health.schemaVersion, 13)
+    assert.equal(health.schemaVersion, 14)
   } catch (error) {
     if (error.code !== 1 && error.code !== 'ESRCH') throw error
   }

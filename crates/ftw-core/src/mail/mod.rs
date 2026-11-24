@@ -1,3 +1,4 @@
+mod accounts;
 mod approval;
 pub(crate) mod attachments;
 mod authorized;
@@ -7,7 +8,6 @@ pub(crate) use inbox::NEEDS_REVIEW as INBOX_NEEDS_REVIEW;
 mod ledger;
 mod policy;
 mod smtp;
-mod user_verification;
 mod worker;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -287,7 +287,7 @@ impl MailService {
         }
     }
 
-    async fn desktop_call(&self, command: Command, owner: isize) -> Result<Reply> {
+    async fn desktop_call(&self, command: Command, _owner: isize) -> Result<Reply> {
         match command {
             Command::ImportAssets { paths } => self.import_assets(paths).await,
             Command::ListAssets => self.list_assets(false).await,
@@ -301,14 +301,14 @@ impl MailService {
             }
             Command::SetAssetAccess { id, allowed } => {
                 if allowed {
-                    self.authorize_asset(id, owner).await
+                    self.authorize_asset(id).await
                 } else {
                     self.disable_asset_access(id).await
                 }
             }
             Command::AgentMailSettings => self.policy_settings().await,
             Command::SetAgentMailPolicy { policy, agent_ids } => {
-                self.change_policy(policy, agent_ids, owner).await
+                self.change_policy(policy, agent_ids).await
             }
             Command::CancelMailPolicyReview { id } => self.cancel_policy_review(id).await,
             Command::RegisterMailAgent { name, token } => self.register_agent(name, &token.0).await,
@@ -345,10 +345,12 @@ impl MailService {
                 tx.commit().await?;
                 Ok(Reply::Saved { id })
             }
+            Command::UpdateAccount { input } => self.update_account(input).await,
+            Command::DeleteAccount { id } => self.delete_account(id).await,
             Command::ReplacePassword { id, password } => {
                 let protected = protect_password(&password.0)?;
                 let mut tx = self.pool.begin().await?;
-                let change = sqlx::query("UPDATE local_secrets SET protected=? WHERE id=(SELECT secret_ref FROM email_accounts WHERE id=?)")
+                let change = sqlx::query("UPDATE local_secrets SET protected=? WHERE id=(SELECT secret_ref FROM email_accounts WHERE id=? AND archived_at IS NULL)")
                     .bind(protected).bind(&id).execute(&mut *tx).await?;
                 if change.rows_affected() != 1 {
                     return Err(Failure::Code("mail_not_found"));
@@ -377,7 +379,7 @@ impl MailService {
                 }
                 let mut tx = self.pool.begin().await?;
                 let result =
-                    sqlx::query("UPDATE email_accounts SET daily_limit=?,signature=? WHERE id=?")
+                    sqlx::query("UPDATE email_accounts SET daily_limit=?,signature=? WHERE id=? AND archived_at IS NULL")
                         .bind(i64::from(daily_limit))
                         .bind(signature.trim())
                         .bind(&id)
@@ -422,7 +424,7 @@ impl MailService {
                     hostname(&target)?
                 };
                 if !blocked {
-                    return self.unblock_address(normalized, owner).await;
+                    return self.unblock_address(normalized).await;
                 }
                 let mut tx = self.pool.begin().await?;
                 sqlx::query("INSERT OR IGNORE INTO suppression_list(normalized) VALUES (?)")
@@ -437,12 +439,13 @@ impl MailService {
     }
 
     async fn accounts(&self, desktop: bool) -> Result<Reply> {
-        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security,daily_limit,signature FROM email_accounts ORDER BY display_name,id")
+        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,daily_limit,signature FROM email_accounts WHERE archived_at IS NULL ORDER BY display_name,id")
             .map(|r: SqliteRow| mail::Account {
                 id: r.get("id"), name: r.get("display_name"), email: r.get("email_address"),
                 host: desktop.then(|| r.get("smtp_host")),
                 port: desktop.then(|| r.get::<i64,_>("smtp_port") as u16),
                 security: desktop.then(|| r.get("smtp_security")),
+                username: desktop.then(|| r.get("smtp_username")),
                 daily_limit: desktop.then(|| r.get::<i64,_>("daily_limit") as u16),
                 signature: desktop.then(|| r.get("signature")),
             }).fetch_all(&self.pool).await?;
@@ -474,7 +477,7 @@ impl MailService {
 
     async fn get(&self, id: &str) -> Result<Reply> {
         let row = sqlx::query(
-            "SELECT d.*,a.email_address,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
+            "SELECT d.*,COALESCE((SELECT e.from_address FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id),a.email_address) email_address,a.archived_at IS NULL account_active,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
              (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome,
              (SELECT 'sent:' || e.id FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id) thread_id,
              EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.message_role='correspondence' AND i.match_state IN ('thread','manual')) has_reply
@@ -505,6 +508,7 @@ impl MailService {
         });
         let record = mail::Draft {
             approval_attempt,
+            account_active: row.get("account_active"),
             sender: row.get("email_address"),
             body: row.get("body_text"),
             attachments,
@@ -540,11 +544,12 @@ impl MailService {
         let id = id.unwrap_or_else(new_id);
         let mut tx = self.pool.begin().await?;
         check_recipient(&mut tx, &input.contact_id, &input.recipient).await?;
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=?)")
-                .bind(&input.account_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=? AND archived_at IS NULL)",
+        )
+        .bind(&input.account_id)
+        .fetch_one(&mut *tx)
+        .await?;
         if !exists {
             return Err(Failure::Code("mail_not_found"));
         }
@@ -588,7 +593,7 @@ impl MailService {
 
     async fn request_approval(&self, id: &str, source: Source) -> Result<Reply> {
         let mut tx = self.pool.begin().await?;
-        let state: String = sqlx::query_scalar("SELECT state FROM email_drafts WHERE id=?")
+        let state: String = sqlx::query_scalar("SELECT d.state FROM email_drafts d JOIN email_accounts a ON a.id=d.account_id WHERE d.id=? AND a.archived_at IS NULL")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
@@ -754,7 +759,7 @@ fn validate_attachments(attachments: &[mail::Attachment]) -> Result<()> {
 }
 
 async fn snapshot(db: &mut SqliteConnection, id: &str) -> Result<(Snapshot, i64, String)> {
-    let row = sqlx::query("SELECT d.*,a.email_address FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?")
+    let row = sqlx::query("SELECT d.*,a.email_address FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=? AND a.archived_at IS NULL")
         .bind(id).fetch_optional(&mut *db).await?.ok_or(Failure::Code("mail_not_found"))?;
     Ok((
         Snapshot {
@@ -812,7 +817,7 @@ async fn check_suppression(db: &mut SqliteConnection, recipient: &str) -> Result
 async fn account(db: &mut SqliteConnection, id: &str) -> Result<AccountRow> {
     sqlx::query_as(
         "SELECT a.email_address,a.smtp_host,a.smtp_port,a.smtp_security,a.smtp_username,s.protected,a.daily_limit
-        FROM email_accounts a JOIN local_secrets s ON s.id=a.secret_ref WHERE a.id=?",
+        FROM email_accounts a JOIN local_secrets s ON s.id=a.secret_ref WHERE a.id=? AND a.archived_at IS NULL",
     )
     .bind(id)
     .fetch_optional(db)

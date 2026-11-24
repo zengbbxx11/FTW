@@ -1,4 +1,4 @@
-use super::{audit, check_text, new_id, user_verification, Failure, MailService, Reply, Result};
+use super::{audit, check_text, new_id, Failure, MailService, Reply, Result};
 use ftw_ipc::{
     crm::Source,
     mail::{AgentMailPolicy, PolicyReview, RegisteredAgent},
@@ -13,19 +13,6 @@ pub const PURPOSES: &[&str] = &[
     "sample_communication",
     "other_business",
 ];
-
-pub(super) enum Change {
-    Policy {
-        policy: AgentMailPolicy,
-        agents: Vec<String>,
-    },
-    Unblock {
-        target: String,
-    },
-    AllowAsset {
-        id: String,
-    },
-}
 
 impl MailService {
     pub(super) async fn policy_settings(&self) -> Result<Reply> {
@@ -107,7 +94,6 @@ impl MailService {
         &self,
         policy: AgentMailPolicy,
         selected: Option<Vec<String>>,
-        owner: isize,
     ) -> Result<Reply> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let old = current(&mut tx).await?;
@@ -124,53 +110,8 @@ impl MailService {
             current_grants.clone()
         };
         validate_grants(&policy, &desired, &registered)?;
-        let requires_review = policy.mode == "automatic"
-            && (old.mode != "automatic"
-                || policy.daily_limit > old.daily_limit
-                || policy.task_limit > old.task_limit
-                || policy.interval_seconds < old.interval_seconds
-                || policy
-                    .accounts
-                    .iter()
-                    .any(|account| !old.accounts.contains(account))
-                || policy
-                    .purposes
-                    .iter()
-                    .any(|purpose| !old.purposes.contains(purpose))
-                || desired.iter().any(|agent| !current_grants.contains(agent)));
-        if requires_review {
-            if self.ledger.is_none() {
-                return Err(Failure::Code("agent_send_history_unavailable"));
-            }
-            let accounts: Vec<String> = sqlx::query_scalar("SELECT email_address FROM email_accounts WHERE id IN (SELECT value FROM json_each(?)) ORDER BY email_address")
-                .bind(encode(&policy.accounts)?).fetch_all(&mut *tx).await?;
-            let names: Vec<_> = registered
-                .iter()
-                .filter(|agent| desired.contains(&agent.id))
-                .map(|agent| agent.name.as_str())
-                .collect();
-            let summary = format!(
-                "授权 Agent 自动发信：{}。
-发件邮箱：{}。
-每任务 {} 封，每 24 小时 {} 封，间隔 {} 秒。
-请使用 Windows 登录账户的密码核验。",
-                names.join("、"),
-                accounts.join("、"),
-                policy.task_limit,
-                policy.daily_limit,
-                policy.interval_seconds
-            );
-            tx.rollback().await?;
-            return self
-                .start_policy_change(
-                    Change::Policy {
-                        policy,
-                        agents: desired,
-                    },
-                    summary,
-                    owner,
-                )
-                .await;
+        if policy.mode == "automatic" && self.ledger.is_none() {
+            return Err(Failure::Code("agent_send_history_unavailable"));
         }
         apply_policy(&mut tx, &policy, &desired).await?;
         tx.commit().await?;
@@ -179,118 +120,36 @@ impl MailService {
         })
     }
 
-    pub(super) async fn authorize_asset(&self, id: String, owner: isize) -> Result<Reply> {
-        let filename: String = sqlx::query_scalar("SELECT filename FROM mail_assets WHERE id=?")
+    pub(super) async fn authorize_asset(&self, id: String) -> Result<Reply> {
+        let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query("UPDATE mail_assets SET agent_allowed=1 WHERE id=?")
             .bind(&id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(Failure::Code("attachment_not_available"))?;
-        self.start_policy_change(
-            Change::AllowAsset { id },
-            format!("允许已登记的 FTW Agent 使用附件「{filename}」。"),
-            owner,
-        )
-        .await
-    }
-
-    pub(super) async fn unblock_address(&self, target: String, owner: isize) -> Result<Reply> {
-        let summary = format!("将「{target}」移出邮件拒发名单。");
-        self.start_policy_change(Change::Unblock { target }, summary, owner)
-            .await
-    }
-
-    async fn start_policy_change(
-        &self,
-        change: Change,
-        summary: String,
-        owner: isize,
-    ) -> Result<Reply> {
-        let guard = self
-            .prompt
-            .clone()
-            .try_lock_owned()
-            .map_err(|_| Failure::Code("approval_already_open"))?;
-        let id = new_id();
-        sqlx::query("INSERT INTO mail_agent_reviews(id,state) VALUES (?,'waiting')")
-            .bind(&id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        let service = self.clone();
-        let review = id.clone();
-        tokio::spawn(async move {
-            let _guard = guard;
-            let verified =
-                tokio::task::spawn_blocking(move || user_verification::verify(&summary, owner))
-                    .await
-                    .unwrap_or(Err("agent_policy_verification_failed"));
-            let result = match verified {
-                Ok(()) => service.commit_policy_change(&review, change).await,
-                Err(reason) => Err(Failure::Code(reason)),
-            };
-            if let Err(error) = result {
-                let state = if error.code() == "agent_policy_cancelled" {
-                    "cancelled"
-                } else {
-                    "failed"
-                };
-                if sqlx::query("UPDATE mail_agent_reviews SET state=?,outcome=? WHERE id=? AND state='waiting'")
-                    .bind(state).bind(error.code()).bind(&review).execute(&service.pool).await.is_err()
-                {
-                    eprintln!("FTW could not persist the mail policy review outcome");
-                }
-            }
-        });
+        if changed.rows_affected() != 1 {
+            return Err(Failure::Code("attachment_not_available"));
+        }
+        audit(
+            &mut tx,
+            Source::Manual,
+            "mail_asset",
+            &id,
+            "allow_agent_access",
+        )
+        .await?;
+        tx.commit().await?;
         Ok(Reply::Saved { id })
     }
 
-    async fn commit_policy_change(&self, review: &str, change: Change) -> Result<()> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let consumed = sqlx::query("UPDATE mail_agent_reviews SET state='saved' WHERE id=? AND state='waiting' AND changed_at>unixepoch()-300")
-            .bind(review).execute(&mut *tx).await?;
-        if consumed.rows_affected() != 1 {
-            return Err(Failure::Code("agent_policy_review_expired"));
-        }
-        match change {
-            Change::Policy {
-                policy,
-                agents: desired,
-            } => {
-                let old = current(&mut tx).await?;
-                validate(&mut tx, &policy, old.revision).await?;
-                validate_grants(&policy, &desired, &agents(&mut tx).await?)?;
-                apply_policy(&mut tx, &policy, &desired).await?;
-            }
-            Change::AllowAsset { id } => {
-                sqlx::query("UPDATE mail_assets SET agent_allowed=1 WHERE id=?")
-                    .bind(&id)
-                    .execute(&mut *tx)
-                    .await?;
-                audit(
-                    &mut tx,
-                    Source::Manual,
-                    "mail_agent_settings",
-                    &id,
-                    "allow_agent_attachment",
-                )
-                .await?;
-            }
-            Change::Unblock { target } => {
-                sqlx::query("DELETE FROM suppression_list WHERE normalized=?")
-                    .bind(&target)
-                    .execute(&mut *tx)
-                    .await?;
-                audit(
-                    &mut tx,
-                    Source::Manual,
-                    "mail_agent_settings",
-                    &target,
-                    "unblock",
-                )
-                .await?;
-            }
-        }
+    pub(super) async fn unblock_address(&self, target: String) -> Result<Reply> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM suppression_list WHERE normalized=?")
+            .bind(&target)
+            .execute(&mut *tx)
+            .await?;
+        audit(&mut tx, Source::Manual, "suppression", &target, "unblock").await?;
         tx.commit().await?;
-        Ok(())
+        Ok(Reply::Saved { id: target })
     }
 }
 
@@ -357,6 +216,12 @@ async fn apply_policy(
     .await
 }
 
+pub(super) async fn remove_account(db: &mut SqliteConnection, id: &str) -> Result<()> {
+    sqlx::query("UPDATE mail_agent_policy SET accounts_json=(SELECT json_group_array(value) FROM json_each(accounts_json) WHERE value<>?),revision=revision+1 WHERE id=1 AND EXISTS(SELECT 1 FROM json_each(accounts_json) WHERE value=?)")
+        .bind(id).bind(id).execute(db).await?;
+    Ok(())
+}
+
 pub(super) fn digest(token: &str) -> Result<Vec<u8>> {
     if token.len() != 64 || !token.bytes().all(|ch| ch.is_ascii_hexdigit()) {
         return Err(Failure::Code("mail_agent_unregistered"));
@@ -403,10 +268,12 @@ async fn validate(
         return Err(Failure::Code("agent_policy_invalid"));
     }
     for id in &policy.accounts {
-        if !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=?)")
-            .bind(id)
-            .fetch_one(&mut *db)
-            .await?
+        if !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=? AND archived_at IS NULL)",
+        )
+        .bind(id)
+        .fetch_one(&mut *db)
+        .await?
         {
             return Err(Failure::Code("agent_policy_invalid"));
         }

@@ -107,11 +107,12 @@ impl MailService {
         }
         let protected = protect_password(&password.0)?;
         let mut tx = self.pool.begin().await?;
-        let registered: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=?)")
-                .bind(&id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=? AND archived_at IS NULL)",
+        )
+        .bind(&id)
+        .fetch_one(&mut *tx)
+        .await?;
         if !registered {
             return Err(Failure::Code("mail_not_found"));
         }
@@ -153,7 +154,7 @@ impl MailService {
     async fn imap_accounts(&self) -> Result<Reply> {
         let rows = sqlx::query("SELECT a.id,a.display_name,a.email_address,i.host,i.port,i.username,s.last_sync,s.outcome
           FROM email_accounts a LEFT JOIN imap_accounts i ON i.account_id=a.id
-          LEFT JOIN imap_sync_state s ON s.account_id=a.id AND s.folder='INBOX' ORDER BY a.display_name,a.id")
+          LEFT JOIN imap_sync_state s ON s.account_id=a.id AND s.folder='INBOX' WHERE a.archived_at IS NULL ORDER BY a.display_name,a.id")
             .map(|r: sqlx::sqlite::SqliteRow| inbox::Account {
                 account_id: r.get("id"), display_name: r.get("display_name"), email_address: r.get("email_address"),
                 host: r.get("host"), port: r.get::<Option<i64>, _>("port").map(|v| v as u16),
@@ -163,7 +164,7 @@ impl MailService {
     }
 
     async fn settings(&self, id: &str) -> Result<Settings> {
-        sqlx::query_as("SELECT i.host,i.port,i.username,s.protected FROM imap_accounts i JOIN local_secrets s ON s.id=i.secret_ref WHERE i.account_id=?")
+        sqlx::query_as("SELECT i.host,i.port,i.username,s.protected FROM imap_accounts i JOIN local_secrets s ON s.id=i.secret_ref JOIN email_accounts a ON a.id=i.account_id WHERE i.account_id=? AND a.archived_at IS NULL")
             .bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("imap_not_configured"))
     }
 

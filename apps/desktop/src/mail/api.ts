@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 
-export type Account = { id: string; name: string; email: string; host?: string; port?: number; security?: 'tls' | 'starttls'; daily_limit?: number; signature?: string }
+export type Account = { id: string; name: string; email: string; host?: string; port?: number; security?: 'tls' | 'starttls'; username?: string; daily_limit?: number; signature?: string }
 export type Asset = { id: string; filename: string; sha256: string; size: number; content_type: string; agent_allowed: boolean }
 export function chooseMailAssets() { return invoke<Asset[]>('choose_mail_assets') }
 
@@ -21,7 +21,7 @@ export type DraftRow = {
   purpose: string; job_id: string | null; task_id: string | null; agent_name: string | null
 }
 export type Draft = DraftRow & {
-  sender: string; body: string; attachments: { asset_id: string | null; filename: string; size: number; sha256: string }[]
+  account_active: boolean; sender: string; body: string; attachments: { asset_id: string | null; filename: string; size: number; sha256: string }[]
   approval_attempt: { id: string; revision: number; state: 'waiting' | 'approved' | 'cancelled' | 'failed' | 'interrupted'; outcome: string | null } | null
   expires_at: number | null; outcome: string | null; thread_id: string | null; has_reply: boolean
 }
@@ -50,6 +50,8 @@ export type MailCommand =
   | { action: 'revoke_mail_agent'; id: string }
   | { action: 'list_accounts' }
   | ({ action: 'save_account' } & AccountInput)
+  | { action: 'update_account'; input: Omit<AccountInput, 'password'> & { id: string; password: string | null } }
+  | { action: 'delete_account'; id: string }
   | { action: 'set_account_preferences'; id: string; daily_limit: number; signature: string }
   | { action: 'replace_password'; id: string; password: string }
   | { action: 'test_account' | 'get_draft' | 'request_approval' | 'open_approval' | 'send_approved'; id: string }
@@ -118,6 +120,9 @@ const mailErrorLabels: Record<string, string> = {
   credential_unavailable: 'Windows 无法保护或解锁凭据。换机后请重新保存授权码。',
   smtp_connection_failed: 'SMTP 连接或认证失败，请核对服务器、端口、加密方式和授权码。',
   mail_not_found: '草稿或邮箱账户不存在。',
+  mail_account_busy: '邮箱正在发送邮件，请稍后再修改或删除账户。',
+  mail_account_changed: '发件账户已变更，原发送任务已停止，请重新核对邮件。',
+  mail_account_removed: '发件账户已删除，原发送任务已停止。',
   mail_read_only: '当前邮件状态不允许修改。',
   approval_window_failed: 'Windows 审批窗口未能正常完成，可重新发起审批。',
   approval_interrupted: '审批过程被中断，可重新发起审批。',

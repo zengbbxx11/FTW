@@ -93,9 +93,11 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 
 ## Agent 发信权限
 
-从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式。登记和撤销身份即时生效。开启持续授权或扩大自动发送权限时，Core 在工作台的 Windows 原生窗口核验当前账户。收紧权限或关闭自动发送即时生效。采用能够经 Windows 密码验证的本机账户，核验失败时保留原设置。完成 R6 后可以主动选择持续授权，默认模式为人工审批。安全账本不可用时，工作台保留人工审批和禁止两种模式。
+从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式。登记和撤销身份即时生效。首次设置时界面预选持续授权、现有 Agent、邮箱、用途及最高限额，用户在工作台保存后生效，Core 记录操作并执行所选范围。已有权限设置不会因升级改变。安全账本不可用时，工作台保留人工审批和禁止两种模式。
 
-分别登记 Codex、WorkBuddy 或其他 Agent，每次登记领取一个独立令牌。可以先完成所有登记，再在发送模式中勾选允许自动发信的 Agent，一次核验保存。新登记身份仅持有令牌，未获授权时不能自动发信。用现有 stdio 配置运行 `ftw-mcp.exe`，将 FTW 一次性展示的令牌提供给该 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。Codex、WorkBuddy 或其他支持标准 MCP stdio 的客户端调用同一工具。令牌属于本机工作台，不要粘贴到 Agent 对话、项目配置、提交或日志中。Core 保存令牌摘要，撤销立即阻止其新的自动发送。
+「发件账户」支持编辑 SMTP 配置和删除账户。删除后停止该账户的收发并清除当前凭据，保留历史邮件和草稿。修改发件邮箱地址后需重新配置 IMAP 和选择该邮箱的 Agent 授权。
+
+分别登记 Codex、WorkBuddy 或其他 Agent，每次登记领取一个独立令牌。可以先完成所有登记，再在发送模式中勾选允许自动发信的 Agent 并保存。新登记身份仅持有令牌，未获授权时不能自动发信。用现有 stdio 配置运行 `ftw-mcp.exe`，将 FTW 一次性展示的令牌提供给该 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。Codex、WorkBuddy 或其他支持标准 MCP stdio 的客户端调用同一工具。令牌属于本机工作台，不要粘贴到 Agent 对话、项目配置、提交或日志中。Core 保存令牌摘要，撤销立即阻止其新的自动发送。
 
 `send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`，禁止模式下 Agent 仍可创建草稿和读邮件。
 
@@ -105,6 +107,6 @@ Core 按回复头和客户邮箱关联会话。待关联收件可以在工作台
 
 桌面写邮件支持 PDF、JPEG、PNG、WebP，最多四件，合计 10 MiB 原文件，实际收发上限仍受邮箱服务器限制。保存位置是数据目录下的 `mail-objects`。同名文件内容变化会产生新的校验值，批准和发送以草稿保存的文件为准。
 
-在「Agent 发信权限 → Agent 可用附件」导入并核验授权后，已登记 Agent 用 `list_email_assets` 查文件 ID，用 `attach_email_assets` 更新自己的草稿附件，再读回最新修订送审或授权入队。
+在「Agent 发信权限 → Agent 可用附件」导入并授权后，已登记 Agent 用 `list_email_assets` 查文件 ID，用 `attach_email_assets` 更新自己的草稿附件，再读回最新修订送审或授权入队。
 
 收件同步对超过 2 MiB 的邮件保存邮件头，桌面可在会话中按需下载最多 16 MiB 的完整邮件。Agent 可用 `fetch_inbox_message` 开始下载，并用 `read_inbox_body` 的分页偏移读取纯文本。附件可在桌面通过 Windows 另存窗口写入指定新文件。迁移前或手工备份复制 `backups/mail-objects` 与 `workbench-*.db`，恢复时 Core 校验引用的对象完整性。
