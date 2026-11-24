@@ -31,6 +31,10 @@ foreach ($binary in @('workbench.exe', 'ftw-core.exe', 'ftw-mcp.exe')) {
 }
 New-Item -ItemType File -Path (Join-Path $destination 'portable.flag') | Out-Null
 
+foreach ($guide in @('FTW-Agent-Quickstart.txt', 'FTW-Agent-Workflows.txt')) {
+    Copy-Item -LiteralPath (Join-Path $root "docs\$guide") -Destination $destination
+}
+
 $acceptance = Join-Path $destination 'acceptance'
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'acceptance') -Destination $acceptance -Recurse
 $cases = Get-Content -LiteralPath (Join-Path $root 'docs\ACCEPTANCE_TESTS.md') -Encoding UTF8 -Raw
@@ -43,6 +47,9 @@ FTW portable for Windows x64
 Extract the whole folder to a writable location and run workbench.exe.
 WebView2 Evergreen Runtime must be available on the machine.
 Keep the three executables and portable.flag together with the data directory.
+
+For Codex and WorkBuddy, open FTW-Agent-Quickstart.txt for setup and
+FTW-Agent-Workflows.txt for ready-to-copy tasks. Both guides are in Chinese.
 
 For acceptance checks, open acceptance\ACCEPTANCE_TESTS.md and run
 acceptance\Start-FTW-Acceptance.cmd. The launcher uses its own workspace.

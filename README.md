@@ -51,6 +51,7 @@ ZIP 内的 `acceptance` 目录包含手工验收清单、四条虚构客户的 C
 ## 文档
 
 - [Core 与存储设计](docs/ARCHITECTURE.md)
+- [Codex 和 WorkBuddy 中文接入说明](docs/FTW-Agent-Quickstart.txt) · [可复制的外贸任务模板](docs/FTW-Agent-Workflows.txt)
 - [邮件代发与 Codex、WorkBuddy 接入](docs/MCP_MAIL.md)
 - [CRM 接口与 JSON Schema](docs/CRM_API.md)
 - [Windows 验收用例与自动化测试入口](docs/ACCEPTANCE_TESTS.md)

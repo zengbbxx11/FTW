@@ -2,6 +2,8 @@
 
 工作台、Core 和 MCP 三个 EXE 放在同一目录。便携模式用同一个 `portable.flag` 和数据目录。MCP 适配器按需启动 Core，工作台可以在 Agent 查客户和写草稿时关闭。进行人工审核时需要打开工作台。
 
+第一次使用可先看便携包根目录的中文接入说明，再复制任务模板到 Codex 或 WorkBuddy。 [接入说明](FTW-Agent-Quickstart.txt) · [任务模板](FTW-Agent-Workflows.txt)
+
 ## Codex 与 WorkBuddy
 
 把下面的示例路径换成实际解压目录。Codex CLI 可用时，通过命令配置标准 stdio 服务。
