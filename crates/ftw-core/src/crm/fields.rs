@@ -50,7 +50,6 @@ async fn definitions(
     include_archived: bool,
 ) -> Result<Vec<Field>> {
     let show_private = matches!(actor.source, Source::Manual);
-    let include_archived = include_archived && show_private;
     let rows: Vec<FieldRow> = sqlx::query_as(
         "SELECT * FROM crm_fields
         WHERE (? OR NOT archived) AND (? OR agent_access<>'hidden') ORDER BY position,id",
@@ -98,17 +97,25 @@ async fn definitions(
 
 pub async fn list(pool: &SqlitePool, actor: Actor<'_>, include_archived: bool) -> Result<Reply> {
     let mut tx = pool.begin().await?;
-    let fields = definitions(&mut tx, actor, include_archived).await?;
+    let fields = definitions(
+        &mut tx,
+        actor,
+        include_archived && matches!(actor.source, Source::Manual),
+    )
+    .await?;
     tx.commit().await?;
     Ok(Reply::Fields { fields })
 }
 
-fn desktop(actor: Actor<'_>) -> Result<()> {
-    if matches!(actor.source, Source::Manual) {
-        Ok(())
-    } else {
-        Err(Error::ReadOnly)
-    }
+pub(crate) async fn list_archived_for_management(
+    pool: &SqlitePool,
+    actor: Actor<'_>,
+) -> Result<Reply> {
+    let mut tx = pool.begin().await?;
+    let mut fields = definitions(&mut tx, actor, true).await?;
+    fields.retain(|field| field.archived && field.agent_access == Access::Write);
+    tx.commit().await?;
+    Ok(Reply::Fields { fields })
 }
 
 fn color(value: &str) -> Result<()> {
@@ -148,7 +155,16 @@ async fn name_available(db: &mut SqliteConnection, id: &str, name: &str) -> Resu
 }
 
 pub async fn save(pool: &SqlitePool, actor: Actor<'_>, mut input: Definition) -> Result<Reply> {
-    desktop(actor)?;
+    let agent = matches!(actor.source, Source::Agent);
+    let creating = input.id.is_none();
+    let required_access = if creating {
+        Access::Hidden
+    } else {
+        Access::Write
+    };
+    if agent && input.agent_access != required_access {
+        return Err(Error::ReadOnly);
+    }
     validation::text(&mut input.name, "field_name", 96, true)?;
     color(&input.color)?;
     if input.options.len() > MAX_OPTIONS
@@ -182,9 +198,15 @@ pub async fn save(pool: &SqlitePool, actor: Actor<'_>, mut input: Definition) ->
         .map(serde_json::to_string)
         .transpose()
         .map_err(|_| Error::Invalid("field_value"))?;
-    let mut tx = pool.begin().await?;
-    let creating = input.id.is_none();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let id = input.id.unwrap_or_else(new_id);
+    if agent && !creating {
+        let editable: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM crm_fields WHERE id=? AND agent_access='write' AND NOT archived)")
+            .bind(&id).fetch_one(&mut *tx).await?;
+        if !editable {
+            return Err(Error::ReadOnly);
+        }
+    }
     name_available(&mut tx, &id, &input.name).await?;
     if creating {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM crm_fields")
@@ -249,11 +271,23 @@ pub async fn archive(
     revision: i64,
     archived: bool,
 ) -> Result<Reply> {
-    desktop(actor)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if matches!(actor.source, Source::Agent) {
+        let writable: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM crm_fields WHERE id=? AND agent_access='write')",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !writable {
+            return Err(Error::ReadOnly);
+        }
+    }
     let (_, was_archived, _) = field_header(&mut tx, id, revision).await?;
     if archived != was_archived {
-        if !archived {
+        if archived {
+            super::views::check_field_archive(&mut tx, id).await?;
+        } else {
             let name: String = sqlx::query_scalar("SELECT name FROM crm_fields WHERE id=?")
                 .bind(id)
                 .fetch_one(&mut *tx)
@@ -285,22 +319,30 @@ pub async fn move_field(
     revision: i64,
     direction: i8,
 ) -> Result<Reply> {
-    desktop(actor)?;
     let (comparison, order) = match direction {
         -1 => ("<", "DESC"),
         1 => (">", "ASC"),
         _ => return Err(Error::Invalid("field_direction")),
     };
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let desktop = matches!(actor.source, Source::Manual);
+    if !desktop {
+        let writable: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM crm_fields WHERE id=? AND NOT archived AND agent_access='write')")
+            .bind(id).fetch_one(&mut *tx).await?;
+        if !writable {
+            return Err(Error::ReadOnly);
+        }
+    }
     let (_, archived, position) = field_header(&mut tx, id, revision).await?;
     if archived {
         return Err(Error::ReadOnly);
     }
     let sql = format!(
-        "SELECT id,position FROM crm_fields WHERE NOT archived AND position{comparison}?
+        "SELECT id,position FROM crm_fields WHERE NOT archived AND (? OR agent_access='write') AND position{comparison}?
         ORDER BY position {order},id LIMIT 1"
     );
     if let Some((other, neighbor)) = sqlx::query_as::<_, (String, i64)>(&sql)
+        .bind(desktop)
         .bind(position)
         .fetch_optional(&mut *tx)
         .await?
@@ -332,14 +374,31 @@ pub async fn values(pool: &SqlitePool, actor: Actor<'_>, id: &str) -> Result<Rep
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(Error::NotFound)?;
+    let entries = value_entries(&mut tx, actor, id, false).await?;
+    tx.commit().await?;
+    Ok(Reply::FieldValues {
+        record: Values {
+            revision,
+            epoch,
+            entries,
+        },
+    })
+}
+
+async fn value_entries(
+    db: &mut SqliteConnection,
+    actor: Actor<'_>,
+    id: &str,
+    include_archived: bool,
+) -> Result<Vec<Entry>> {
     let show_private = matches!(actor.source, Source::Manual);
     let values: Vec<ValueRow> = sqlx::query_as("SELECT v.* FROM crm_field_values v JOIN crm_fields f ON f.id=v.field_id
-        WHERE v.contact_id=? AND NOT f.archived AND (? OR f.agent_access<>'hidden') ORDER BY f.position")
-        .bind(id).bind(show_private).fetch_all(&mut *tx).await?;
+        WHERE v.contact_id=? AND (? OR NOT f.archived) AND (? OR f.agent_access<>'hidden') ORDER BY f.position")
+        .bind(id).bind(include_archived).bind(show_private).fetch_all(&mut *db).await?;
     let choices: Vec<(String,String)> = sqlx::query_as("SELECT m.field_id,m.option_id FROM crm_field_multi_values m
         JOIN crm_fields f ON f.id=m.field_id JOIN crm_field_options o ON o.field_id=m.field_id AND o.id=m.option_id
-        WHERE m.contact_id=? AND NOT f.archived AND (? OR f.agent_access<>'hidden') ORDER BY o.position")
-        .bind(id).bind(show_private).fetch_all(&mut *tx).await?;
+        WHERE m.contact_id=? AND (? OR NOT f.archived) AND (? OR f.agent_access<>'hidden') ORDER BY o.position")
+        .bind(id).bind(include_archived).bind(show_private).fetch_all(&mut *db).await?;
     let mut multi: HashMap<String, Vec<String>> = HashMap::new();
     for (field, option) in choices {
         multi.entry(field).or_default().push(option);
@@ -361,18 +420,11 @@ pub async fn values(pool: &SqlitePool, actor: Actor<'_>, id: &str) -> Result<Rep
             value,
         });
     }
-    tx.commit().await?;
-    Ok(Reply::FieldValues {
-        record: Values {
-            revision,
-            epoch,
-            entries,
-        },
-    })
+    Ok(entries)
 }
 
 pub async fn patch(pool: &SqlitePool, actor: Actor<'_>, patch: ValuePatch) -> Result<Reply> {
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let id = patch.contact_id;
     contacts::check_revision(
         &mut tx,
@@ -390,7 +442,14 @@ pub async fn patch(pool: &SqlitePool, actor: Actor<'_>, patch: ValuePatch) -> Re
         return Err(Error::ReadOnly);
     }
     if !patch.entries.is_empty() {
-        apply(&mut tx, actor, &id, patch.entries).await?;
+        apply(
+            &mut tx,
+            actor,
+            &id,
+            patch.expected_revision + 1,
+            patch.entries,
+        )
+        .await?;
         sqlx::query("UPDATE contacts SET record_revision=record_revision+1,updated_at=unixepoch(),updated_by=? WHERE id=?")
             .bind(actor.id).bind(&id).execute(&mut *tx).await?;
     }
@@ -402,6 +461,7 @@ pub async fn apply(
     db: &mut SqliteConnection,
     actor: Actor<'_>,
     contact: &str,
+    revision: i64,
     entries: Vec<Entry>,
 ) -> Result<()> {
     if entries.is_empty() {
@@ -414,6 +474,11 @@ pub async fn apply(
         .await?
         .into_iter()
         .map(|field| (field.id.clone(), field))
+        .collect();
+    let mut previous: HashMap<_, _> = value_entries(db, actor, contact, false)
+        .await?
+        .into_iter()
+        .map(|entry| (entry.field_id, entry.value))
         .collect();
     let mut seen = HashSet::new();
     for mut entry in entries {
@@ -433,17 +498,85 @@ pub async fn apply(
                 .collect();
             normalize(field.kind, value, &options)?;
         }
-        store(db, contact, &field.id, field.kind.code(), entry.value).await?;
+        let mut before = previous.remove(&field.id).flatten();
+        if let Some(Value::MultiSelect(options)) = &mut before {
+            options.sort_unstable();
+        }
+        let before = serde_json::to_string(&before).map_err(|_| Error::Invalid("field_value"))?;
+        let after =
+            serde_json::to_string(&entry.value).map_err(|_| Error::Invalid("field_value"))?;
+        if before != after {
+            store(db, contact, &field.id, field.kind.code(), entry.value).await?;
+            record_change(db, actor, (contact, revision), &field.id, (&before, &after)).await?;
+        }
     }
     audit(db, actor, "contact", contact, "patch_custom_fields").await?;
     Ok(())
 }
 
-pub async fn apply_defaults(db: &mut SqliteConnection, contact: &str) -> Result<()> {
+pub async fn apply_defaults(
+    db: &mut SqliteConnection,
+    contact: &str,
+    actor: Actor<'_>,
+) -> Result<()> {
     let defaults: Vec<(String, String, String)> = sqlx::query_as("SELECT id,kind,default_json FROM crm_fields WHERE NOT archived AND default_json IS NOT NULL").fetch_all(&mut *db).await?;
     for (id, kind, encoded) in defaults {
+        record_change(db, actor, (contact, 1), &id, ("null", &encoded)).await?;
         store(db, contact, &id, &kind, default_value(Some(encoded))?).await?;
     }
+    Ok(())
+}
+
+pub(super) async fn record_merged_values(
+    db: &mut SqliteConnection,
+    actor: Actor<'_>,
+    contact: &str,
+    revision: i64,
+    fields: &[String],
+) -> Result<()> {
+    if fields.is_empty() {
+        return Ok(());
+    }
+    for entry in value_entries(db, Actor::DESKTOP, contact, true).await? {
+        if fields.contains(&entry.field_id) {
+            let value =
+                serde_json::to_string(&entry.value).map_err(|_| Error::Invalid("field_value"))?;
+            record_change(
+                db,
+                actor,
+                (contact, revision),
+                &entry.field_id,
+                ("null", &value),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn record_change(
+    db: &mut SqliteConnection,
+    actor: Actor<'_>,
+    (contact, revision): (&str, i64),
+    field_id: &str,
+    (before, after): (&str, &str),
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO contact_custom_history
+        (contact_id,revision,field_id,field_name,actor_id,source,task_id,before_json,after_json)
+        SELECT ?,?,id,name,?,?,?,?,? FROM crm_fields WHERE id=?
+        ON CONFLICT(contact_id,revision,field_id) DO UPDATE SET after_json=excluded.after_json",
+    )
+    .bind(contact)
+    .bind(revision)
+    .bind(actor.id)
+    .bind(actor.source.as_str())
+    .bind(actor.agent_run_id)
+    .bind(before)
+    .bind(after)
+    .bind(field_id)
+    .execute(db)
+    .await?;
     Ok(())
 }
 

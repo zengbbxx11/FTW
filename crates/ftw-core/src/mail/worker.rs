@@ -49,6 +49,7 @@ impl MailService {
             Err(Failure::Code(reason)) => {
                 finish(&mut tx, &job, "failed", reason).await?;
                 tx.commit().await?;
+                self.diagnostic_event("smtp_preflight", reason, Some(&job.id));
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -67,6 +68,7 @@ impl MailService {
             Err(error) => {
                 finish(&mut tx, &job, "failed", error.code()).await?;
                 tx.commit().await?;
+                self.diagnostic_event("smtp_prepare", error.code(), Some(&job.id));
                 return Ok(());
             }
         };
@@ -86,6 +88,7 @@ impl MailService {
                 Err(error) => {
                     finish(&mut tx, &job, "failed", error.code()).await?;
                     tx.commit().await?;
+                    self.diagnostic_event("smtp_send_policy", error.code(), Some(&job.id));
                     return Ok(());
                 }
             }
@@ -102,8 +105,9 @@ impl MailService {
             tokio::time::timeout(Duration::from_secs(40), smtp::send(&transport, message))
                 .await
                 .unwrap_or(("delivery_unknown", "smtp_result_unknown"));
-        self.record_send_result(&job, &draft, state, outcome)
-            .await?;
+        let recorded = self.record_send_result(&job, &draft, state, outcome).await;
+        self.diagnostic_event("smtp_submission", outcome, Some(&job.id));
+        recorded?;
         if let (Some(_), Some(ledger)) = (job.agent_id, &self.ledger) {
             match state {
                 "smtp_accepted" => ledger.settle(&job.id, "accepted").await?,
@@ -124,10 +128,11 @@ impl MailService {
         let mut tx = self.pool.begin().await?;
         if state == "smtp_accepted" {
             let message_id = new_id();
-            sqlx::query("INSERT INTO email_messages(id,contact_id,account_id,outbox_id,message_id_header,from_address,to_address,subject,body_text,submitted_at)
-                VALUES (?,?,?,?,?,?,?,?,?,unixepoch())")
+            sqlx::query("INSERT INTO email_messages(id,contact_id,account_id,outbox_id,message_id_header,from_address,to_address,subject,body_text,submitted_at,conversation_id)
+                VALUES (?,?,?,?,?,?,?,?,?,unixepoch(),?)")
                 .bind(&message_id).bind(&draft.contact_id).bind(&draft.account_id).bind(&job.id).bind(&job.message_id_header)
-                .bind(&draft.sender).bind(&draft.recipient).bind(&draft.subject).bind(&draft.body).execute(&mut *tx).await?;
+                .bind(&draft.sender).bind(&draft.recipient).bind(&draft.subject).bind(&draft.body)
+                .bind(draft.reply.as_ref().map(|reply| reply.thread_id.as_str())).execute(&mut *tx).await?;
             sqlx::query("INSERT INTO activities(id,contact_id,event_type,occurred_at,summary,details,related_message_id,source,actor_id)
                 VALUES (?,?,'email_sent',unixepoch(),?,'SMTP 服务器已接受。',?,'system','smtp-worker')")
                 .bind(new_id()).bind(&draft.contact_id).bind(&draft.subject).bind(message_id).execute(&mut *tx).await?;
@@ -168,6 +173,7 @@ async fn verify(db: &mut SqliteConnection, job: &Job) -> Result<(Snapshot, Accou
     if revision != job.revision || state != "queued" || draft.digest()? != job.content_sha256 {
         return Err(Failure::Code("approval_snapshot_changed"));
     }
+    super::templates::ensure_resolved(&draft.subject, &draft.body)?;
     check_recipient(db, &draft.contact_id, &draft.recipient).await?;
     check_suppression(db, &draft.recipient).await?;
     let account = account(db, &draft.account_id).await?;

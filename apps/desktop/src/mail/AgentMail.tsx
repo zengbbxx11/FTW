@@ -1,18 +1,14 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowRight, Ban, Bot, Check, CircleCheck, ClipboardCheck, FileUp, LockKeyhole, Mail, ShieldCheck } from 'lucide-react'
 import { Field } from '../crm/components'
-import { chooseMailAssets, mailCall, mailError, type Account, type AgentMailPolicy, type MailCommand, type RegisteredAgent } from './api'
-
-const purposes = {
-  first_outreach: '首次开发信', outreach_followup: '开发跟进',
-  quote_communication: '报价沟通', sample_communication: '样品沟通', other_business: '其他业务邮件',
-}
+import { chooseMailAssets, collaborationScopes, mailCall, mailError, mailPurposes as purposes, type Account, type AgentMailPolicy, type CollaborationScope, type MailCommand, type RegisteredAgent } from './api'
 
 type SettingsCommand = Extract<MailCommand, {
-  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access'
+  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access' | 'set_agent_collaboration' | 'set_registered_crm_required' | 'set_registered_mail_required'
 }>
 
-export function AgentMail() {
+export function AgentMail({ manageSuppression, showRecords }: { manageSuppression: () => void; showRecords: () => void }) {
   const [name, setName] = useState('')
   const [registering, setRegistering] = useState(false)
   const [registrationError, setRegistrationError] = useState('')
@@ -35,6 +31,9 @@ export function AgentMail() {
     onSuccess: async (_, command) => {
       if (command.action === 'revoke_mail_agent') dismissToken(command.id)
       if (command.action === 'set_agent_mail_policy') setPolicyNotice('发送权限已保存并生效。')
+      if (command.action === 'set_agent_collaboration') setPolicyNotice('Agent 协作权限已保存。')
+      if (command.action === 'set_registered_crm_required') setPolicyNotice('CRM 访问模式已保存。')
+      if (command.action === 'set_registered_mail_required') setPolicyNotice('邮件访问模式已保存。')
       await Promise.all([cache.invalidateQueries({ queryKey: ['agent-mail-settings'] }),
         cache.invalidateQueries({ queryKey: ['mail-assets'] })])
     },
@@ -69,13 +68,39 @@ export function AgentMail() {
   return <div className="agent-settings">
     {(settings.isError || change.isError || accounts.isError) &&
       <p className="alert error" role="alert">{mailError(settings.error ?? change.error ?? accounts.error)}</p>}
+    {policyNotice && <p className="agent-policy-notice" role="status"><CircleCheck aria-hidden="true" />{policyNotice}</p>}
     <div className="agent-settings-layout">
+      {current && accounts.data ? <PolicyEditor key={current.policy.revision} policy={current.policy} accounts={accounts.data.rows}
+        agents={current.agents.filter(agent => !agent.revoked)}
+        available={current.automatic_available} busy={change.isPending}
+        save={(policy, agent_ids) => change.mutate({ action: 'set_agent_mail_policy', policy, agent_ids })} />
+        : settings.isPending || accounts.isPending ? <section className="panel">正在读取发信权限…</section> : null}
+      <aside className="agent-rules" aria-label="发信规则与记录">
+        <section className="panel">
+          <h2><ShieldCheck aria-hidden="true" />Core 发信规则</h2>
+          <ul>{[
+            '逐封核对授权账户、用途、收件人和内容快照',
+            '首次开发按邮箱去重，限制任务用量和实际发送频率',
+            '拒发规则在入队和发送前生效',
+            '提交结果未知时保留记录，等待人工核对',
+            '队列、SMTP 结果与 Agent 来源写入审计',
+          ].map(rule => <li key={rule}><CircleCheck aria-hidden="true" />{rule}</li>)}</ul>
+          <button className="button" onClick={manageSuppression}><Ban aria-hidden="true" />查看拒发名单</button>
+        </section>
+        <section className="panel">
+          <h2><LockKeyhole aria-hidden="true" />工作台授权</h2>
+          <p className="muted">由工作台用户登记身份并保存发送权限。Agent 按保存时的账户、用途、上限和速率执行。</p>
+          <button className="text-button" onClick={showRecords}>查看发信记录<ArrowRight aria-hidden="true" /></button>
+        </section>
+      </aside>
+    </div>
+    <div className="agent-administration">
       <section className="panel">
-        <h2>Agent 登记</h2>
+        <h2><Bot aria-hidden="true" />Agent 登记</h2>
         <p className="muted">Codex、WorkBuddy 和其他本地 MCP 客户端可分别登记，每个 Agent 使用自己的令牌。</p>
         <form className="agent-register" onSubmit={register}>
           <Field label="Agent 名称"><input required maxLength={80} placeholder="例如 WorkBuddy" value={name} onChange={event => setName(event.target.value)} /></Field>
-          <button className="button primary" disabled={registering || !name.trim()}>{registering ? '登记中…' : '登记 Agent'}</button>
+          <button className="button primary" disabled={registering || !name.trim()}><Bot aria-hidden="true" />{registering ? '登记中…' : '登记 Agent'}</button>
         </form>
         {registrationError && <p className="alert error" role="alert">{registrationError}</p>}
         {current?.agents.length ? <ul className="record-list agent-list">{current.agents.map(agent => <li key={agent.id}>
@@ -86,14 +111,28 @@ export function AgentMail() {
           {tokens[agent.id] && !agent.revoked && <AgentToken token={tokens[agent.id]} dismiss={() => dismissToken(agent.id)} />}
         </li>)}</ul> : <p className="muted">尚未登记 Agent。</p>}
       </section>
-      {current && accounts.data && <PolicyEditor key={current.policy.revision} policy={current.policy} accounts={accounts.data.rows}
-        agents={current.agents.filter(agent => !agent.revoked)}
-        available={current.automatic_available} busy={change.isPending} notice={policyNotice}
-        save={(policy, agent_ids) => change.mutate({ action: 'set_agent_mail_policy', policy, agent_ids })} />}
-    </div>
+    <section className="panel">
+      <h2><ShieldCheck aria-hidden="true" />Agent 协作权限</h2>
+      <p className="muted">按客户端授权共享操作。发信授权在上方单独管理。</p>
+      {current && <label className="agent-policy-choice"><input type="checkbox"
+        checked={current.require_registered_crm ?? false} disabled={change.isPending}
+        onChange={event => change.mutate({ action: 'set_registered_crm_required', required: event.target.checked })} />
+        <span>CRM 基础查询和写入仅允许已登记且获授权的 Agent</span>
+      </label>}
+      {current && <label className="agent-policy-choice"><input type="checkbox"
+        checked={current.require_registered_mail ?? false} disabled={change.isPending}
+        onChange={event => change.mutate({ action: 'set_registered_mail_required', required: event.target.checked })} />
+        <span>邮件读取和起草仅允许已登记且获授权的 Agent</span>
+      </label>}
+      <p className="muted">先保存各客户端的权限，再按需开启登记限制。已有客户端可在兼容模式下继续使用基础功能。</p>
+      {current?.agents.filter(agent => !agent.revoked).map(agent =>
+        <CollaborationEditor key={agent.id + JSON.stringify(agent.collaboration_scopes)} agent={agent} busy={change.isPending}
+          save={scopes => change.mutate({ action: 'set_agent_collaboration', id: agent.id, scopes })} />)}
+      {!current?.agents.some(agent => !agent.revoked) && <p className="muted">请先登记需要协作的 Agent。</p>}
+    </section>
     <section className="panel">
       <div className="section-heading"><h2>Agent 可用附件</h2><button className="button" disabled={importFiles.isPending}
-        onClick={() => importFiles.mutate()}>导入 PDF 或图片</button></div>
+        onClick={() => importFiles.mutate()}><FileUp aria-hidden="true" />导入 PDF 或图片</button></div>
       {(assets.isError || importFiles.isError) && <p className="alert error" role="alert">{mailError(assets.error ?? importFiles.error)}</p>}
       {assets.data?.rows.length ? <ul className="record-list">{assets.data.rows.map(asset => <li key={asset.id}>
         <strong>{asset.filename}</strong><span>{Math.ceil(asset.size / 1024)} KiB</span>
@@ -103,7 +142,26 @@ export function AgentMail() {
         </button>
       </li>)}</ul> : <p className="muted">尚无本地附件。</p>}
     </section>
+    </div>
   </div>
+}
+
+function CollaborationEditor({ agent, busy, save }: {
+  agent: RegisteredAgent; busy: boolean; save: (scopes: CollaborationScope[]) => void
+}) {
+  const initial = agent.collaboration_scopes ?? []
+  const [scopes, setScopes] = useState(initial)
+  const changed = initial.length !== scopes.length || scopes.some(scope => !initial.includes(scope))
+  return <form className="inline-form" onSubmit={event => { event.preventDefault(); save(scopes) }}>
+    <fieldset disabled={busy}>
+      <legend>{agent.name}</legend>
+      <div className="agent-policy-pills">{(Object.keys(collaborationScopes) as CollaborationScope[]).map(scope =>
+        <label key={scope}><input type="checkbox" checked={scopes.includes(scope)}
+          onChange={event => setScopes(current => event.target.checked ? [...current, scope] : current.filter(item => item !== scope))} />
+          {collaborationScopes[scope]}</label>)}</div>
+    </fieldset>
+    <button type="submit" className="button" disabled={!changed || busy}>保存协作权限</button>
+  </form>
 }
 
 function AgentToken({ token, dismiss }: { token: string; dismiss: () => void }) {
@@ -118,52 +176,58 @@ function AgentToken({ token, dismiss }: { token: string; dismiss: () => void }) 
   </div>
 }
 
-function PolicyEditor({ policy, accounts, agents, available, busy, notice, save }: {
-  policy: AgentMailPolicy; accounts: Account[]; agents: RegisteredAgent[]; available: boolean; busy: boolean; notice: string; save: (policy: AgentMailPolicy, ids: string[]) => void
+function PolicyEditor({ policy, accounts, agents, available, busy, save }: {
+  policy: AgentMailPolicy; accounts: Account[]; agents: RegisteredAgent[]; available: boolean; busy: boolean; save: (policy: AgentMailPolicy, ids: string[]) => void
 }) {
   const firstSetup = policy.revision === 1 && policy.mode === 'manual' && available
-  const [value, setValue] = useState<AgentMailPolicy>(() => firstSetup ? {
-    ...policy, mode: 'automatic', purposes: Object.keys(purposes), task_limit: 20, daily_limit: 30, interval_seconds: 60,
-  } : policy)
+  const [value, setValue] = useState(policy)
   const [ids, setIds] = useState<string[] | null>(() => firstSetup ? null : agents.filter(agent => agent.automatic).map(agent => agent.id))
   const [accountIds, setAccountIds] = useState<string[] | null>(() => firstSetup ? null : policy.accounts)
   const selected = (ids ?? agents.map(agent => agent.id)).filter(id => agents.some(agent => agent.id === id))
   const selectedAccounts = (accountIds ?? accounts.map(account => account.id)).filter(id => accounts.some(account => account.id === id))
-  const incomplete = value.mode === 'automatic' && (!selected.length || !selectedAccounts.length || !value.purposes.length)
+  const incomplete = value.mode === 'automatic' && (!available || !selected.length || !selectedAccounts.length || !value.purposes.length)
+  function selectMode(mode: AgentMailPolicy['mode']) {
+    setValue(previous => {
+      if (mode === 'automatic' && firstSetup && !previous.purposes.length) {
+        return { ...previous, mode, purposes: Object.keys(purposes), task_limit: 20, daily_limit: 30, interval_seconds: 60 }
+      }
+      return { ...previous, mode }
+    })
+  }
   function togglePurpose(entry: string) {
     setValue(previous => ({ ...previous, purposes: previous.purposes.includes(entry)
       ? previous.purposes.filter(item => item !== entry) : [...previous.purposes, entry] }))
   }
-  return <form className="panel" onSubmit={event => { event.preventDefault(); if (!incomplete) save({ ...value, accounts: selectedAccounts }, selected) }}>
-    <h2>发送模式</h2>
+  return <form className="panel agent-policy-form" onSubmit={event => { event.preventDefault(); if (!incomplete) save({ ...value, accounts: selectedAccounts }, selected) }}>
+    <h2><Mail aria-hidden="true" />发送模式</h2>
     <p className="muted">当前生效：{policy.mode === 'automatic' ? '持续授权自动发送' : policy.mode === 'manual' ? '人工逐封审批' : '禁止 Agent 发送'}。点击保存后，新设置立即生效。</p>
-    {notice && <p role="status">{notice}</p>}
     <fieldset disabled={busy}>
       <div className="agent-mode-options" role="group" aria-label="Agent 发信模式">
         {([
-          ['automatic', '持续授权自动发送', '允许所选 Agent 在配置范围内发送'],
-          ['manual', '人工逐封审批', '草稿经工作台审核后发送'],
-          ['disabled', '禁止 Agent 发送', 'Agent 可起草，发送由人工操作'],
-        ] as const).map(([mode, label, hint]) => <label key={mode} className="agent-mode-option" data-selected={value.mode === mode}>
-          <input type="radio" name="mail-mode" value={mode} checked={value.mode === mode}
-            disabled={mode === 'automatic' && !available} onChange={() => setValue({ ...value, mode })} />
+          ['automatic', '持续授权自动发送', '授权范围内可直接提交', ShieldCheck],
+          ['manual', '人工逐封审批', '经工作台批准后提交', ClipboardCheck],
+          ['disabled', '禁止 Agent 发送', '保留 Agent 起草能力', Ban],
+        ] as const).map(([mode, label, hint, Icon]) => <label key={mode} className="agent-mode-option" data-selected={value.mode === mode}>
+          <Icon aria-hidden="true" /><input type="radio" name="mail-mode" value={mode} checked={value.mode === mode}
+            disabled={mode === 'automatic' && !available} onChange={() => selectMode(mode)} />
           <strong>{label}</strong><small>{hint}</small>
         </label>)}
       </div>
       {value.mode === 'automatic' && <>
         <h3>允许自动发信的 Agent</h3>
-        <div className="row-actions">{agents.map(agent => <label key={agent.id}>
+        <div className="agent-policy-pills">{agents.map(agent => <label key={agent.id}>
           <input type="checkbox" checked={selected.includes(agent.id)} onChange={event =>
             setIds(event.target.checked ? [...selected, agent.id] : selected.filter(id => id !== agent.id))} />{agent.name}
         </label>)}</div>
         {!agents.length && <p className="muted">请先登记要授权的 Agent。</p>}
         <h3>允许使用的发件邮箱</h3>
-        <div className="row-actions">{accounts.map(account => <label key={account.id}>
+        <div className="agent-policy-pills">{accounts.map(account => <label key={account.id}>
           <input type="checkbox" checked={selectedAccounts.includes(account.id)} onChange={event =>
             setAccountIds(event.target.checked ? [...selectedAccounts, account.id] : selectedAccounts.filter(id => id !== account.id))} />{account.email}
         </label>)}</div>
+        {!accounts.length && <p className="muted">请先添加发件账户。</p>}
         <h3>允许的邮件用途</h3>
-        <div className="row-actions">{Object.entries(purposes).map(([code,label]) => <label key={code}>
+        <div className="agent-policy-pills">{Object.entries(purposes).map(([code,label]) => <label key={code}>
           <input type="checkbox" checked={value.purposes.includes(code)} onChange={() => togglePurpose(code)} />{label}
         </label>)}</div>
         <div className="form-grid">{([
@@ -171,7 +235,9 @@ function PolicyEditor({ policy, accounts, agents, available, busy, notice, save 
         ] as const).map(([key,label,min,max]) => <Field key={key} label={label}><input type="number" min={min} max={max}
           value={value[key]} required onChange={event => setValue({ ...value, [key]: event.target.valueAsNumber })} /></Field>)}</div>
       </>}
-      <div className="form-footer"><button className="button primary" disabled={incomplete}>保存发送权限</button></div>
+      <div className="form-footer"><button className="button primary" disabled={incomplete || busy}>
+        <Check aria-hidden="true" />{busy ? '正在保存…' : '保存发送权限'}
+      </button></div>
     </fieldset>
   </form>
 }

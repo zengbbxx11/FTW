@@ -90,6 +90,7 @@ impl MailService {
             &submission.purpose,
         )
         .await?;
+        super::templates::ensure_resolved(&draft.subject, &draft.body)?;
         check_recipient(&mut tx, &draft.contact_id, &draft.recipient).await?;
         check_suppression(&mut tx, &draft.recipient).await?;
         let recipient = draft.recipient.to_ascii_lowercase();
@@ -134,8 +135,8 @@ impl MailService {
             .bind(&submission.id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation) VALUES (?,?,'agent','email_outbox',?,'authorized_enqueue')")
-            .bind(new_id()).bind(&agent).bind(&job).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation,task_id) VALUES (?,?,'agent','email_outbox',?,'authorized_enqueue',?)")
+            .bind(new_id()).bind(&agent).bind(&job).bind(&submission.task).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(Reply::Queued {
             id: submission.id,
@@ -181,6 +182,9 @@ pub(super) async fn check_outreach(
     purpose: &str,
     except_job: Option<&str>,
 ) -> Result<()> {
+    if draft.reply.is_some() && purpose == "first_outreach" {
+        return Err(Failure::Code("mail_reply_purpose_invalid"));
+    }
     let (sent, active) = outreach_history(db, recipient, except_job).await?;
     if active || (purpose == "first_outreach" && sent) {
         return Err(Failure::Code("outreach_already_recorded"));

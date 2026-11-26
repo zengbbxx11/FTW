@@ -19,6 +19,7 @@ impl MailService {
         if !matches!(state.as_str(), "pending_approval" | "approved") {
             return Err(Failure::Code("approval_required"));
         }
+        super::templates::ensure_resolved(&reviewed.subject, &reviewed.body)?;
         check_recipient(&mut db, &reviewed.contact_id, &reviewed.recipient).await?;
         check_suppression(&mut db, &reviewed.recipient).await?;
         let digest = reviewed.digest()?;
@@ -82,6 +83,7 @@ impl MailService {
         {
             return Err(Failure::Code("approval_snapshot_changed"));
         }
+        super::templates::ensure_resolved(&current.subject, &current.body)?;
         check_recipient(&mut tx, &current.contact_id, &current.recipient).await?;
         check_suppression(&mut tx, &current.recipient).await?;
         sqlx::query("INSERT INTO email_approvals(id,draft_id,revision,content_sha256,approved_by_user,expires_at)
@@ -121,6 +123,7 @@ impl MailService {
         if state != "approved" {
             return Err(Failure::Code("approval_required"));
         }
+        super::templates::ensure_resolved(&draft.subject, &draft.body)?;
         let (approval, digest): (String, String) = sqlx::query_as(
             "SELECT id,content_sha256 FROM email_approvals WHERE draft_id=? AND revision=? AND expires_at>unixepoch()",
         ).bind(id).bind(revision).fetch_optional(&mut *tx).await?.ok_or(Failure::Code("approval_expired"))?;
@@ -210,9 +213,10 @@ fn confirm(description: &str) -> Confirmation {
 mod tests {
     use super::*;
     use crate::mail::smtp;
+    use base64::{engine::general_purpose::STANDARD, Engine};
     use ftw_ipc::{
         crm::{self, ContactInput, Method},
-        mail::AgentCommand,
+        mail::{AgentCommand, Attachment},
         Response,
     };
     use lettre::{AsyncSmtpTransport, Tokio1Executor};
@@ -264,6 +268,57 @@ mod tests {
             .execute(&pool).await.unwrap();
         let service = MailService::new(pool).await.unwrap();
         (directory, service, id)
+    }
+
+    const PDF_ATTACHMENT: &[u8] = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\nattachment fixture\n%%EOF\n";
+
+    #[tokio::test]
+    async fn exports_outbound_attachment_without_overwriting_files() {
+        use ftw_ipc::mail::{Command, DraftInput};
+
+        let (directory, service, contact_id) = setup().await;
+        let bytes = PDF_ATTACHMENT;
+        let response = service
+            .desktop(
+                Command::SaveDraft {
+                    id: None,
+                    input: DraftInput {
+                        contact_id,
+                        account_id: "acct".into(),
+                        recipient: "receiver@example.test".into(),
+                        subject: "Attachment fixture".into(),
+                        body: "Test content".into(),
+                        attachments: vec![Attachment {
+                            filename: "fixture.pdf".into(),
+                            content_base64: STANDARD.encode(bytes),
+                        }],
+                        replace_attachments: false,
+                    },
+                },
+                0,
+            )
+            .await;
+        let Response::Mail { data } = response else {
+            panic!("{response:?}")
+        };
+        let Reply::Saved { id } = *data else {
+            panic!("{data:?}")
+        };
+        let path = directory.path().join("exported.pdf");
+        let command = || Command::ExportOutboundAttachment {
+            id: id.clone(),
+            index: 0,
+            destination: path.to_str().unwrap().into(),
+        };
+        let first = service.desktop(command(), 0).await;
+        assert!(matches!(first, Response::Mail { data } if matches!(*data, Reply::Saved { .. })));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::write(&path, b"existing content").unwrap();
+        let duplicate = service.desktop(command(), 0).await;
+        assert!(
+            matches!(duplicate, Response::Error { code, .. } if code == "attachment_destination_unavailable")
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"existing content");
     }
 
     async fn new_draft(service: &MailService, contact_id: String) -> String {
@@ -318,8 +373,11 @@ mod tests {
                     recipient: "receiver@example.test".into(),
                     subject: "Approved test email".into(),
                     body: "Approved final text".into(),
-                    attachments: Vec::new(),
-                    replace_attachments: false,
+                    attachments: vec![Attachment {
+                        filename: "fixture.pdf".into(),
+                        content_base64: STANDARD.encode(PDF_ATTACHMENT),
+                    }],
+                    replace_attachments: true,
                 },
                 Source::Manual,
             )
@@ -352,6 +410,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(wire.contains("Approved final text") && !wire.contains("Fixture body"));
+        let message = mail_parser::MessageParser::new()
+            .parse(wire.as_bytes())
+            .unwrap();
+        let attachment = message.attachments().next().unwrap();
+        assert_eq!(attachment.attachment_name(), Some("fixture.pdf"));
+        assert_eq!(attachment.decoded().as_ref(), PDF_ATTACHMENT);
         service
             .send_next_with(|_| panic!("the same approved draft would be sent twice"))
             .await
@@ -368,6 +432,398 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(entries, 1);
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn agent_reply_preserves_headers_and_customer_conversation() {
+        use ftw_ipc::{
+            agent::{Collaboration, Scope},
+            inbox,
+            mail::{Command, ReplyDraftInput, Secret},
+        };
+
+        let (directory, service, contact) = setup().await;
+        let service = service.with_send_ledger(directory.path()).await;
+        let original = new_draft(&service, contact.clone()).await;
+        let (revision, hash) = submit_review(&service, &original).await;
+        service
+            .record_approval(&original, revision, &hash, None)
+            .await
+            .unwrap();
+        service.enqueue(&original, Source::Manual).await.unwrap();
+        let (port, smtp) = fake_server(false).await;
+        service
+            .send_next_with(|_| Ok(test_transport(port)))
+            .await
+            .unwrap();
+        smtp.await.unwrap();
+        let (original_id, original_header): (String, String) =
+            sqlx::query_as("SELECT id,message_id_header FROM email_messages")
+                .fetch_one(&service.pool)
+                .await
+                .unwrap();
+        let thread = format!("sent:{original_id}");
+        sqlx::query("INSERT INTO inbox_messages(id,account_id,contact_id,thread_id,message_id_header,raw_sha256,sender,subject,
+                       body_text,attachment_names,received_at,raw,kind,message_role,match_state,reply_to_sent_id)
+                     VALUES('inbound','acct',?,?, 'customer-reply@example.test','fixture','receiver@example.test','Re: Quote','Request','[]',unixepoch(),X'00','message','correspondence','thread',?)")
+            .bind(&contact).bind(&thread).bind(&original_id).execute(&service.pool).await.unwrap();
+
+        let token = uuid::Uuid::new_v4().simple().to_string().repeat(2);
+        let Response::Mail { data } = service
+            .desktop(
+                Command::RegisterMailAgent {
+                    name: "Reply fixture".into(),
+                    token: Secret(token.clone()),
+                },
+                0,
+            )
+            .await
+        else {
+            panic!("registration")
+        };
+        let Reply::Saved { id: agent } = *data else {
+            panic!("registration result")
+        };
+        let request = || Collaboration::CreateReplyDraft {
+            request_id: "reply-fixture-1".into(),
+            input: ReplyDraftInput {
+                inbox_message_id: "inbound".into(),
+                subject: None,
+                body: "Confirmed, here are the next steps.".into(),
+            },
+        };
+        assert!(matches!(service.collaborate(&token, request()).await,
+            Response::Error { code, .. } if code == "agent_collaboration_not_authorized"));
+        service
+            .desktop(
+                Command::SetAgentCollaboration {
+                    id: agent.clone(),
+                    scopes: vec![Scope::ReadMail, Scope::CreateDrafts],
+                },
+                0,
+            )
+            .await;
+        let Response::Mail { data } = service.collaborate(&token, request()).await else {
+            panic!("reply draft")
+        };
+        let Reply::Saved { id } = *data else {
+            panic!("draft result")
+        };
+        assert!(matches!(service.collaborate(&token, request()).await,
+            Response::Mail { data } if matches!(data.as_ref(), Reply::Saved { id: saved } if saved==&id)));
+        let Reply::Draft { record } = service.get(&id).await.unwrap() else {
+            panic!("saved reply")
+        };
+        assert_eq!(record.reply_to_inbox_id.as_deref(), Some("inbound"));
+        assert_eq!(record.thread_id.as_deref(), Some(thread.as_str()));
+        assert_eq!(record.row.subject, "Re: Quote");
+        assert_eq!(record.row.recipient, "receiver@example.test");
+
+        sqlx::query(
+            "UPDATE mail_agent_policy SET mode='automatic',accounts_json='[\"acct\"]',
+                      purposes_json='[\"first_outreach\",\"outreach_followup\"]' WHERE id=1",
+        )
+        .execute(&service.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE mail_agent_clients SET automatic=1 WHERE id=?")
+            .bind(agent)
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        let send = |purpose: &str, request_id: &str| AgentCommand::SendAuthorized {
+            token: Secret(token.clone()),
+            id: id.clone(),
+            revision: 1,
+            purpose: purpose.into(),
+            task_id: "reply-fixture-task".into(),
+            request_id: request_id.into(),
+        };
+        assert!(
+            matches!(service.agent_session(Some(&token), send("first_outreach", "reply-wrong-purpose")).await,
+            Response::Error { code, .. } if code=="mail_reply_purpose_invalid")
+        );
+        let response = service
+            .agent_session(Some(&token), send("outreach_followup", "reply-send-1"))
+            .await;
+        assert!(
+            matches!(&response, Response::Mail { data } if matches!(**data, Reply::Queued { .. })),
+            "{response:?}"
+        );
+        let (port, smtp) = fake_server(false).await;
+        service
+            .send_next_with(|_| Ok(test_transport(port)))
+            .await
+            .unwrap();
+        let raw = tokio::time::timeout(Duration::from_secs(4), smtp)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            raw.contains("In-Reply-To: <customer-reply@example.test>"),
+            "{raw}"
+        );
+        assert!(
+            raw.replace("\r\n ", " ").contains(&format!(
+                "References: {original_header} <customer-reply@example.test>"
+            )),
+            "{raw}"
+        );
+        let response = service
+            .inbox(inbox::Command::Thread {
+                id: thread.clone(),
+                offset: 0,
+            })
+            .await;
+        assert!(
+            matches!(response, Response::Inbox { data } if matches!(data.as_ref(), inbox::Result::Thread { messages, .. }
+            if messages.len()==3 && messages.iter().any(|message| !message.row.received && message.body.contains("Confirmed"))))
+        );
+        let Reply::Draft { record } = service.get(&id).await.unwrap() else {
+            panic!("submitted reply")
+        };
+        assert_eq!(record.row.state, "smtp_accepted");
+        assert!(
+            !record.has_reply,
+            "the parent inbound is not a reply to the new outbound"
+        );
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn authorized_agent_and_desktop_sends_share_history_with_distinct_sources() {
+        use ftw_ipc::{
+            agent::{Collaboration, Scope},
+            data,
+            mail::{Command, Secret},
+        };
+
+        let (directory, service, contact_id) = setup().await;
+        let service = service.with_send_ledger(directory.path()).await;
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let client = service
+            .desktop(
+                Command::RegisterMailAgent {
+                    name: "Loopback agent".into(),
+                    token: Secret(token.clone()),
+                },
+                0,
+            )
+            .await;
+        let Response::Mail { data } = client else {
+            panic!("fixture registration failed")
+        };
+        let Reply::Saved { id: agent_id } = *data else {
+            panic!("fixture registration result")
+        };
+        let grant = service
+            .desktop(
+                Command::SetAgentCollaboration {
+                    id: agent_id.clone(),
+                    scopes: vec![Scope::ReadMail, Scope::ReadTasks],
+                },
+                0,
+            )
+            .await;
+        assert!(matches!(grant, Response::Mail { data } if matches!(*data, Reply::Saved { .. })));
+        // Seed the result of workstation authorization without prompting Windows or contacting an external server.
+        let mut tx = service.pool.begin().await.unwrap();
+        sqlx::query(
+            "UPDATE mail_agent_policy SET mode='automatic',accounts_json='[\"acct\"]',
+            purposes_json='[\"first_outreach\"]' WHERE id=1",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE mail_agent_clients SET automatic=1 WHERE id=?")
+            .bind(&agent_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let first = new_draft(&service, contact_id.clone()).await;
+        let submit = |id: &str, request: &str| AgentCommand::SendAuthorized {
+            token: Secret(token.clone()),
+            id: id.to_owned(),
+            revision: 1,
+            purpose: "first_outreach".into(),
+            task_id: "fixture-agent-task".into(),
+            request_id: request.to_owned(),
+        };
+        let (queued, retried) = tokio::join!(
+            service.agent_session(Some(&token), submit(&first, "fixture-send-1")),
+            service.agent_session(Some(&token), submit(&first, "fixture-send-1")),
+        );
+        let job_id = |result: Response| match result {
+            Response::Mail { data } => match *data {
+                Reply::Queued { job_id, .. } => job_id,
+                other => panic!("expected queue result, received {other:?}"),
+            },
+            other => panic!("queue failed: {other:?}"),
+        };
+        assert_eq!(job_id(queued), job_id(retried));
+        let duplicate = new_draft(&service, contact_id.clone()).await;
+        assert!(
+            matches!(service.agent_session(Some(&token), submit(&duplicate, "fixture-send-2")).await,
+            Response::Error { code, .. } if code == "outreach_already_recorded")
+        );
+
+        let (port, server) = fake_server(false).await;
+        service
+            .send_next_with(|_| Ok(test_transport(port)))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(4), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let desktop = service.desktop(Command::GetDraft { id: first }, 0).await;
+        assert!(
+            matches!(desktop, Response::Mail { data } if matches!(data.as_ref(), Reply::Draft { record }
+            if record.row.state == "smtp_accepted" && record.thread_id.is_some()))
+        );
+        let task = service
+            .collaborate(
+                &token,
+                Collaboration::MailTask {
+                    task_id: "fixture-agent-task".into(),
+                    offset: 0,
+                },
+            )
+            .await;
+        assert!(
+            matches!(task, Response::Data { data } if matches!(data.as_ref(), data::Result::AgentRunMail { rows, .. }
+            if rows.len() == 1 && rows[0].state == "smtp_accepted"))
+        );
+
+        let draft = service
+            .save(
+                None,
+                ftw_ipc::mail::DraftInput {
+                    contact_id: contact_id.clone(),
+                    account_id: "acct".into(),
+                    recipient: "receiver@example.test".into(),
+                    subject: "Human follow-up fixture".into(),
+                    body: "Follow-up after the first submission.".into(),
+                    attachments: Vec::new(),
+                    replace_attachments: false,
+                },
+                Source::Manual,
+            )
+            .await
+            .unwrap();
+        let Reply::Saved { id: manual } = draft else {
+            panic!("desktop draft")
+        };
+        service
+            .request_approval(&manual, Source::Manual)
+            .await
+            .unwrap();
+        let (snapshot, revision, _) = {
+            let mut db = service.pool.acquire().await.unwrap();
+            super::snapshot(&mut db, &manual).await.unwrap()
+        };
+        service
+            .record_approval(&manual, revision, &snapshot.digest().unwrap(), None)
+            .await
+            .unwrap();
+        let queued = service
+            .desktop(Command::SendApproved { id: manual.clone() }, 0)
+            .await;
+        assert!(matches!(queued, Response::Mail { data } if matches!(*data, Reply::Queued { .. })));
+        let (port, server) = fake_server(false).await;
+        service
+            .send_next_with(|_| Ok(test_transport(port)))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(4), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let agent_view = service
+            .agent_session(Some(&token), AgentCommand::GetDraft { id: manual })
+            .await;
+        assert!(
+            matches!(agent_view, Response::Mail { data } if matches!(data.as_ref(), Reply::Draft { record }
+            if record.row.state == "smtp_accepted" && record.thread_id.is_some()))
+        );
+        let sources: Vec<String> = sqlx::query_scalar("SELECT queued_source FROM email_outbox_jobs WHERE state='smtp_accepted' ORDER BY queued_source")
+            .fetch_all(&service.pool).await.unwrap();
+        assert_eq!(sources, ["agent", "manual"]);
+        let timeline = crate::crm::dispatch(
+            &service.pool,
+            crm::Command::ListActivities {
+                contact_id: Some(contact_id),
+                event_type: "email_sent".into(),
+                offset: 0,
+                keyword: None,
+                source: None,
+            },
+            crate::crm::Actor::DESKTOP,
+        )
+        .await;
+        assert!(
+            matches!(timeline, Response::Crm { data } if matches!(data.as_ref(), crm::Result::Activities { rows, .. } if rows.len() == 2))
+        );
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_unattempted_job_reopens_its_draft_without_smtp() {
+        use ftw_ipc::data::{MailJobAction, Result as DataReply};
+        let (_directory, service, contact) = setup().await;
+        let draft = new_draft(&service, contact).await;
+        let (revision, digest) = submit_review(&service, &draft).await;
+        service
+            .record_approval(&draft, revision, &digest, None)
+            .await
+            .unwrap();
+        let Reply::Queued { job_id, .. } = service.enqueue(&draft, Source::Agent).await.unwrap()
+        else {
+            panic!("expected queued fixture");
+        };
+        let unrelated = crate::crm::Actor {
+            source: Source::Agent,
+            id: "unrelated-fixture",
+            agent_run_id: None,
+        };
+        assert!(matches!(
+            service
+                .update_mail_job(unrelated, &job_id, MailJobAction::Cancel)
+                .await,
+            Err("mail_not_found")
+        ));
+
+        for _ in 0..2 {
+            let stopped = service
+                .update_mail_job(crate::crm::Actor::DESKTOP, &job_id, MailJobAction::Cancel)
+                .await
+                .unwrap();
+            assert!(
+                matches!(stopped, DataReply::MailJobUpdated { draft_revision, state, .. }
+                if draft_revision == revision + 1 && state == "cancelled")
+            );
+        }
+        service
+            .send_next_with(|_| panic!("cancelled job must not reach SMTP"))
+            .await
+            .unwrap();
+        let details = service.get(&draft).await.unwrap();
+        assert!(
+            matches!(details, Reply::Draft { record } if record.row.state == "draft" && record.row.revision == revision + 1)
+        );
+        assert!(matches!(
+            service
+                .update_mail_job(crate::crm::Actor::DESKTOP, &job_id, MailJobAction::Reopen)
+                .await,
+            Err("mail_job_action_unavailable")
+        ));
         service.pool.close().await;
     }
 
@@ -427,6 +883,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome, "recipient_suppressed");
+        service.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn unresolved_templates_are_blocked_before_review_and_smtp() {
+        let (_directory, service, contact) = setup().await;
+        let id = new_draft(&service, contact).await;
+        sqlx::query("UPDATE email_drafts SET body_text='Hello {{contact_name}}' WHERE id=?")
+            .bind(&id)
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.request_approval(&id, Source::Manual).await,
+            Err(Failure::Code("mail_unresolved_template"))
+        ));
+
+        // An already queued draft can predate this validation. Keep its historical snapshot intact.
+        let mut db = service.pool.acquire().await.unwrap();
+        let (draft, revision, _) = snapshot(&mut db, &id).await.unwrap();
+        let approval = new_id();
+        sqlx::query("INSERT INTO email_approvals(id,draft_id,revision,content_sha256,approved_by_user,expires_at) VALUES (?,?,?,?,'fixture',unixepoch()+1800)")
+            .bind(&approval).bind(&id).bind(revision).bind(draft.digest().unwrap()).execute(&mut *db).await.unwrap();
+        sqlx::query("INSERT INTO email_outbox_jobs(id,draft_id,approval_id,revision,message_id_header,state) VALUES ('template-queued',?,?,?,'<fixture@ftw.local>','queued')")
+            .bind(&id).bind(&approval).bind(revision).execute(&mut *db).await.unwrap();
+        sqlx::query("UPDATE email_drafts SET state='queued' WHERE id=?")
+            .bind(&id)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        drop(db);
+        service
+            .send_next_with(|_| panic!("unresolved templates must be blocked before SMTP"))
+            .await
+            .unwrap();
+        let outcome: String =
+            sqlx::query_scalar("SELECT outcome FROM email_outbox_jobs WHERE id='template-queued'")
+                .fetch_one(&service.pool)
+                .await
+                .unwrap();
+        assert_eq!(outcome, "mail_unresolved_template");
         service.pool.close().await;
     }
 
@@ -633,6 +1130,7 @@ mod tests {
             subject: "Attachment review".into(),
             body: "Review body".into(),
             assets: vec![],
+            reply: None,
             attachments: vec![ftw_ipc::mail::Attachment {
                 filename: "example.txt".into(),
                 content_base64: "Ym9keQ==".into(),

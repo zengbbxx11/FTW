@@ -30,8 +30,26 @@ pub async fn stats(pool: &SqlitePool) -> Result<Reply> {
     })
 }
 
-pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>) -> Result<Reply> {
-    validation::text(&mut filters.keyword, "keyword", 300, false)?;
+pub async fn list(pool: &SqlitePool, filters: ContactQuery, actor: Actor<'_>) -> Result<Reply> {
+    query_contacts(pool, filters, actor, false).await
+}
+
+pub async fn preview(
+    pool: &SqlitePool,
+    mut filters: ContactQuery,
+    actor: Actor<'_>,
+) -> Result<Reply> {
+    filters.offset = 0;
+    filters.custom_columns.clear();
+    query_contacts(pool, filters, actor, true).await
+}
+
+async fn query_contacts(
+    pool: &SqlitePool,
+    filters: ContactQuery,
+    actor: Actor<'_>,
+    preview: bool,
+) -> Result<Reply> {
     let mut query = QueryBuilder::new(
         "SELECT c.id, c.display_name, c.company_name, c.country_region, c.stage, c.customer_level, c.sample_status,
          c.archived_at, c.source, dates.effective_last, c.record_revision,
@@ -39,8 +57,101 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
          COALESCE((SELECT product_text FROM customer_interests i WHERE i.contact_id=c.id ORDER BY position LIMIT 1),'') primary_interest,
          (SELECT value FROM contact_methods WHERE contact_id = c.id AND kind = 'email'
             ORDER BY is_primary DESC, position LIMIT 1) AS email,
-         outreach.*
-         FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id
+         outreach.*",
+    );
+    if preview {
+        query.push(",COUNT(*) OVER() AS total_matches");
+    }
+    let page_size = if preview {
+        5
+    } else {
+        query::page_size(&filters)?
+    };
+    let mut tx = pool.begin().await?;
+    let catalog = append_match_conditions(&mut tx, actor, &filters, &mut query).await?;
+    let order = match filters.sort {
+        ContactSort::Updated => "c.updated_at DESC, c.rowid DESC, c.id",
+        ContactSort::Name => "c.display_name COLLATE NOCASE, c.id",
+        ContactSort::LastContact => "effective_last DESC, c.updated_at DESC, c.id",
+    };
+    query.push(" ORDER BY ");
+    if let Some(catalog) = catalog.as_ref().filter(|_| !filters.order.is_empty()) {
+        query::sorting(&mut query, &filters, catalog)?;
+        query.push(",c.id");
+    } else {
+        query.push(order);
+    }
+    query
+        .push(" LIMIT ")
+        .push_bind(page_size + 1)
+        .push(" OFFSET ")
+        .push_bind(i64::from(filters.offset));
+    let results = query.build().fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+    let mut rows = results
+        .iter()
+        .take(page_size as usize)
+        .map(|row| ContactRow {
+            mail_outreach: outreach(row),
+            id: row.get("id"),
+            record_revision: row.get("record_revision"),
+            data_epoch: row.get("data_epoch"),
+            primary_interest: row.get("primary_interest"),
+            custom_values: Vec::new(),
+            display_name: row.get("display_name"),
+            company_name: row.get("company_name"),
+            country_region: row.get("country_region"),
+            stage: row.get("stage"),
+            customer_level: row.get("customer_level"),
+            sample_status: row.get("sample_status"),
+            email: row.get("email"),
+            last_contact_at: row.get("effective_last"),
+            archived_at: row.get("archived_at"),
+            source: row.get("source"),
+        })
+        .collect::<Vec<_>>();
+    if preview {
+        return Ok(Reply::ContactPreview {
+            rows,
+            total: results.first().map_or(0, |row| row.get("total_matches")),
+        });
+    }
+    let has_more = results.len() > page_size as usize;
+    if !filters.custom_columns.is_empty() {
+        let ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
+        let mut values = fields::project(pool, actor, &ids, &filters.custom_columns).await?;
+        for row in &mut rows {
+            row.custom_values = values.remove(&row.id).unwrap_or_default();
+        }
+    }
+    Ok(Reply::Contacts { rows, has_more })
+}
+
+pub(super) async fn matching_targets_query(
+    db: &mut SqliteConnection,
+    actor: Actor<'_>,
+    mut filters: ContactQuery,
+) -> Result<QueryBuilder<'static, sqlx::Sqlite>> {
+    filters.custom_columns.clear();
+    filters.order.clear();
+    let mut query = QueryBuilder::new(
+        "SELECT c.id,c.record_revision,(SELECT epoch FROM app_change_epoch WHERE singleton=1)",
+    );
+    append_match_conditions(db, actor, &filters, &mut query).await?;
+    query.push(" AND c.archived_at IS NULL ORDER BY c.id");
+    Ok(query)
+}
+
+async fn append_match_conditions(
+    db: &mut SqliteConnection,
+    actor: Actor<'_>,
+    filters: &ContactQuery,
+    query: &mut QueryBuilder<'_, sqlx::Sqlite>,
+) -> Result<Option<query::Catalog>> {
+    let mut keyword = filters.keyword.clone();
+    validation::text(&mut keyword, "keyword", 300, false)?;
+    query.push(
+        " FROM contacts c JOIN crm_contact_dates dates ON dates.id=c.id
          JOIN mail_contact_outreach outreach ON outreach.contact_id=c.id WHERE 1 = 1",
     );
     match filters.archive {
@@ -62,18 +173,17 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
         }
         _ => return Err(Error::Invalid("quick_view")),
     }
-    let page_size = query::page_size(&filters)?;
     let extended = filters.filter.is_some()
         || !filters.order.is_empty()
         || !filters.custom_columns.is_empty()
         || filters.group.is_some();
     let catalog = if extended {
-        Some(query::catalog(pool, actor).await?)
+        Some(query::catalog_on(db, actor).await?)
     } else {
         None
     };
     if let Some(catalog) = &catalog {
-        query::conditions(&mut query, &filters, catalog)?;
+        query::conditions(query, filters, catalog)?;
     }
     for (column, value) in [
         ("country_region", filters.country.as_str()),
@@ -95,7 +205,7 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
         ("sample_status", filters.sample_status.as_str()),
     ] {
         if !value.trim().is_empty() {
-            let value = canonical_state(pool, field, value).await?;
+            let value = canonical_state(db, field, value).await?;
             query
                 .push(" AND ")
                 .push(state_sql(field))
@@ -104,9 +214,9 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
                 .push(" COLLATE NOCASE");
         }
     }
-    if !filters.keyword.is_empty() {
-        if filters.keyword.chars().count() >= 3 {
-            let phrase = format!("\"{}\"", filters.keyword.replace('"', "\"\""));
+    if !keyword.is_empty() {
+        if keyword.chars().count() >= 3 {
+            let phrase = format!("\"{}\"", keyword.replace('"', "\"\""));
             query
                 .push(
                     " AND c.rowid IN (SELECT rowid FROM contact_search WHERE contact_search MATCH ",
@@ -115,58 +225,10 @@ pub async fn list(pool: &SqlitePool, mut filters: ContactQuery, actor: Actor<'_>
                 .push(")");
         } else {
             query.push(" AND c.rowid IN (SELECT rowid FROM contact_search WHERE instr(lower(searchable), lower(")
-                .push_bind(filters.keyword.as_str()).push(")) > 0)");
+                .push_bind(keyword).push(")) > 0)");
         }
     }
-    let order = match filters.sort {
-        ContactSort::Updated => "c.updated_at DESC, c.rowid DESC, c.id",
-        ContactSort::Name => "c.display_name COLLATE NOCASE, c.id",
-        ContactSort::LastContact => "effective_last DESC, c.updated_at DESC, c.id",
-    };
-    query.push(" ORDER BY ");
-    if let Some(catalog) = catalog.as_ref().filter(|_| !filters.order.is_empty()) {
-        query::sorting(&mut query, &filters, catalog)?;
-        query.push(",c.id");
-    } else {
-        query.push(order);
-    }
-    query
-        .push(" LIMIT ")
-        .push_bind(page_size + 1)
-        .push(" OFFSET ")
-        .push_bind(i64::from(filters.offset));
-    let mut rows = query
-        .build()
-        .map(|row: SqliteRow| ContactRow {
-            mail_outreach: outreach(&row),
-            id: row.get("id"),
-            record_revision: row.get("record_revision"),
-            data_epoch: row.get("data_epoch"),
-            primary_interest: row.get("primary_interest"),
-            custom_values: Vec::new(),
-            display_name: row.get("display_name"),
-            company_name: row.get("company_name"),
-            country_region: row.get("country_region"),
-            stage: row.get("stage"),
-            customer_level: row.get("customer_level"),
-            sample_status: row.get("sample_status"),
-            email: row.get("email"),
-            last_contact_at: row.get("effective_last"),
-            archived_at: row.get("archived_at"),
-            source: row.get("source"),
-        })
-        .fetch_all(pool)
-        .await?;
-    let has_more = rows.len() > page_size as usize;
-    rows.truncate(page_size as usize);
-    if !filters.custom_columns.is_empty() {
-        let ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
-        let mut values = fields::project(pool, actor, &ids, &filters.custom_columns).await?;
-        for row in &mut rows {
-            row.custom_values = values.remove(&row.id).unwrap_or_default();
-        }
-    }
-    Ok(Reply::Contacts { rows, has_more })
+    Ok(catalog)
 }
 
 fn outreach(row: &SqliteRow) -> MailOutreach {
@@ -281,6 +343,27 @@ pub async fn save(
             return Err(Error::ReadOnly);
         }
     }
+    if matches!(actor.source, ftw_ipc::crm::Source::Agent) {
+        for (method, value) in input
+            .methods
+            .iter()
+            .zip(&normalized)
+            .filter(|(method, _)| method.is_verified)
+        {
+            let previously_verified: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM contact_methods WHERE contact_id=? AND id=? AND kind=? AND normalized=? AND is_verified)",
+            )
+            .bind(&id)
+            .bind(&method.id)
+            .bind(&method.kind)
+            .bind(value)
+            .fetch_one(&mut *connection)
+            .await?;
+            if !previously_verified {
+                return Err(Error::Invalid("contact_method_verification_required"));
+            }
+        }
+    }
     if !allow_duplicate {
         let emails: Vec<_> = input
             .methods
@@ -333,7 +416,7 @@ pub async fn save(
 
     save_children(connection, &id, &input, &normalized).await?;
     if inserting {
-        super::fields::apply_defaults(connection, &id).await?;
+        super::fields::apply_defaults(connection, &id, actor).await?;
     }
     let searchable = [
         input.display_name,
@@ -443,7 +526,36 @@ pub async fn archive(
     archived: bool,
     actor: Actor<'_>,
 ) -> Result<Reply> {
-    let mut tx = pool.begin().await?;
+    archive_contact(pool, id, archived, actor, None).await
+}
+
+pub(super) async fn archive_checked(
+    pool: &SqlitePool,
+    target: ftw_ipc::views::CellTarget,
+    archived: bool,
+    actor: Actor<'_>,
+) -> Result<Reply> {
+    archive_contact(
+        pool,
+        target.id,
+        archived,
+        actor,
+        Some((target.revision, &target.epoch)),
+    )
+    .await
+}
+
+async fn archive_contact(
+    pool: &SqlitePool,
+    id: String,
+    archived: bool,
+    actor: Actor<'_>,
+    expected: Option<(i64, &str)>,
+) -> Result<Reply> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some((revision, epoch)) = expected {
+        check_revision(&mut tx, &id, revision, Some(epoch)).await?;
+    }
     let (current, merged): (Option<i64>, Option<String>) =
         sqlx::query_as("SELECT archived_at,merged_into FROM contacts WHERE id=?")
             .bind(&id)
@@ -479,13 +591,13 @@ pub(super) fn state_sql(field: &str) -> String {
     format!("COALESCE((SELECT code FROM crm_state_aliases WHERE field='{field}' AND alias=trim(c.{field})), {legacy})")
 }
 
-async fn canonical_state(pool: &SqlitePool, field: &str, value: &str) -> Result<String> {
+async fn canonical_state(db: &mut SqliteConnection, field: &str, value: &str) -> Result<String> {
     let value = value.trim();
     let alias: Option<String> =
         sqlx::query_scalar("SELECT code FROM crm_state_aliases WHERE field=? AND alias=?")
             .bind(field)
             .bind(value)
-            .fetch_optional(pool)
+            .fetch_optional(db)
             .await?;
     if let Some(code) = alias {
         Ok(code)

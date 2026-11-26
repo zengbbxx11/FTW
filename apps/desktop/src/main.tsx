@@ -2,181 +2,156 @@ import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { invoke } from '@tauri-apps/api/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Activity, Bot, Database, History, LayoutDashboard, Mail, Search, UserSearch, UsersRound, type LucideIcon } from 'lucide-react'
+import { AppShell } from './AppShell'
 import { ContactDetail, ContactEditor, ContactList } from './crm/Contacts'
 import { CustomerQuality } from './crm/Quality'
+import { CompanyContacts } from './crm/CompanyContacts'
 import { LeadDetail, LeadEditor, LeadList } from './crm/Leads'
 import { Timeline } from './crm/Timeline'
 import type { Contact } from './crm/api'
-import { MailCenter } from './mail/MailCenter'
-import { Dashboard, DataTools } from './data/DataTools'
+import { MailCenter, type Folder } from './mail/MailCenter'
+import type { CustomerMailFile } from './mail/api'
+import { SampleWorkspace } from './crm/Samples'
+import { DataTools, type DataTab } from './data/DataTools'
+import { Dashboard, type DashboardLink } from './data/Dashboard'
+import { GlobalSearch } from './data/GlobalSearch'
+import { AgentRuns, type AgentRecordLink } from './data/AgentRuns'
+import { MailAnalytics, type MailReportLink } from './data/MailAnalytics'
+import { SystemStatus } from './data/SystemStatus'
+import type { AuditTarget, SearchTarget } from './data/api'
 import { CoreChanges } from './data/CoreChanges'
 import './styles.css'
+import './data/workbench.css'
+import './data/operations.css'
+import './crm/insights.css'
 
-type Health = {
-  coreVersion: string
-  schemaVersion: number
-  storageMode: 'portable' | 'local_app_data' | 'development'
-  dataRoot: string
-  processId: number
+let lastWebviewFailure = 0
+function reportWebviewFailure(failure: 'script_error' | 'unhandled_rejection') {
+  const now = Date.now()
+  if (now - lastWebviewFailure < 5000) return
+  lastWebviewFailure = now
+  void invoke('report_webview_failure', { failure }).catch(() => {})
 }
-
-type Issue = { code: string; detail: string }
-
-type Check =
-  | { status: 'loading' }
-  | { status: 'ready'; health: Health; checkedAt: Date }
-  | { status: 'error'; issue: Issue }
-
-const modeLabels: Record<Health['storageMode'], string> = {
-  portable: '便携模式',
-  local_app_data: 'Windows 用户目录',
-  development: '开发目录',
-}
-
-const errorLabels: Record<string, string> = {
-  profile_unavailable: '无法打开数据目录',
-  pipe_unavailable: '无法连接 Core',
-  core_missing: '找不到 Core 程序',
-  core_start_failed: 'Core 启动失败',
-  core_timeout: 'Core 响应超时',
-  core_unhealthy: 'Core 无法读取数据库',
-}
-
-function normalizeIssue(value: unknown): Issue {
-  if (typeof value === 'object' && value !== null && 'code' in value && 'detail' in value) {
-    return { code: String(value.code), detail: String(value.detail) }
-  }
-  return { code: 'unknown', detail: String(value) }
-}
-
-function SystemStatus() {
-  const [check, setCheck] = useState<Check>({ status: 'loading' })
-
-  const refresh = useCallback(async () => {
-    setCheck({ status: 'loading' })
-    try {
-      const health = await invoke<Health>('core_health')
-      setCheck({ status: 'ready', health, checkedAt: new Date() })
-    } catch (error) {
-      setCheck({ status: 'error', issue: normalizeIssue(error) })
-    }
-  }, [])
-
-  useEffect(() => { void refresh() }, [refresh])
-
-  return (
-    <>
-        <div className="page-heading">
-          <h1>系统状态</h1>
-          <button className="refresh" type="button" onClick={() => void refresh()} disabled={check.status === 'loading'}>
-            {check.status === 'loading' ? '正在检查…' : '重新检查'}
-          </button>
-        </div>
-
-        <section className="status-card" aria-label="Core 连接" aria-live="polite">
-          <div className="status-header">
-            <div className={'status-icon ' + check.status} aria-hidden="true">
-              {check.status === 'ready' ? '✓' : check.status === 'error' ? '!' : '·'}
-            </div>
-            <div>
-              <h2>
-                {check.status === 'loading' && '正在连接 Core'}
-                {check.status === 'ready' && 'Core 已就绪'}
-                {check.status === 'error' && (errorLabels[check.issue.code] ?? '健康检查失败')}
-              </h2>
-              {check.status === 'ready' && (
-                <p className="muted">上次检查 {check.checkedAt.toLocaleTimeString('zh-CN', { hour12: false })}</p>
-              )}
-            </div>
-          </div>
-
-          {check.status === 'ready' && (
-            <dl className="details">
-              <div className="detail-cell">
-                <dt>Core 版本</dt>
-                <dd>{check.health.coreVersion}</dd>
-              </div>
-              <div className="detail-cell">
-                <dt>数据库版本</dt>
-                <dd>{check.health.schemaVersion}</dd>
-              </div>
-              <div className="detail-cell">
-                <dt>存储模式</dt>
-                <dd>{modeLabels[check.health.storageMode]}</dd>
-              </div>
-              <div className="detail-cell">
-                <dt>进程 ID</dt>
-                <dd>{check.health.processId}</dd>
-              </div>
-              <div className="detail-cell data-path">
-                <dt>数据目录</dt>
-                <dd>{check.health.dataRoot}</dd>
-              </div>
-            </dl>
-          )}
-
-          {check.status === 'error' && (
-            <p className="error-detail">{check.issue.detail}</p>
-          )}
-        </section>
-    </>
-  )
-}
+window.addEventListener('error', () => reportWebviewFailure('script_error'))
+window.addEventListener('unhandledrejection', () => reportWebviewFailure('unhandled_rejection'))
 
 type Page =
-  | { kind: 'contacts' | 'customer-quality' | 'new-contact' | 'leads' | 'new-lead' | 'activities' | 'system' | 'dashboard' }
-  | { kind: 'data'; initialTab?: 'csv' }
-  | { kind: 'contact' | 'lead'; id: string }
-  | { kind: 'mail'; contact?: Contact; inboxContact?: string; draftContact?: string; inboxOnly?: boolean; reviewInbox?: boolean }
+  | { kind: 'contacts'; initialView?: 'mail_no_reply' }
+  | { kind: 'customer-quality'; duplicates?: boolean }
+  | { kind: 'new-contact' | 'leads' | 'new-lead' | 'system' | 'dashboard' | 'samples' | 'search' | 'agent-runs' | 'mail-analysis' }
+  | { kind: 'activities'; activityId?: string }
+  | { kind: 'data'; initialTab?: DataTab; fileContact?: string; fileDocument?: string }
+  | { kind: 'contact'; id: string; entry?: 'edit' | 'edit-channels' | 'edit-business'; returnTo?: { kind: 'company'; id: string } | { kind: 'customer-quality' } }
+  | { kind: 'company' | 'lead'; id: string }
+  | { kind: 'mail'; contact?: Contact; inboxContact?: string; draftContact?: string; draftId?: string; inboxMessage?: string; inboxOnly?: boolean; reviewInbox?: boolean; folder?: Folder }
 
-const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'mail' | 'system' | 'data'; label: string; sections: Page['kind'][]; icon: string }[] = [
-  { kind: 'dashboard', label: '工作台', sections: ['dashboard'], icon: 'M3 10l9-7 9 7M5 9v11h14V9m-10 11v-7h6v7' },
-  { kind: 'contacts', label: '客户', sections: ['contacts','customer-quality','contact','new-contact'], icon: 'M16 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2m14-6a4 4 0 0 1 4 4v2M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M17 4a3 3 0 0 1 0 6' },
-  { kind: 'leads', label: '候选客户', sections: ['leads','lead','new-lead'], icon: 'M4 20v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2H4m7-10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7' },
-  { kind: 'activities', label: '跟进记录', sections: ['activities'], icon: 'M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1m3 5h6m-6 4h6m-6 4h4' },
-  { kind: 'mail', label: '邮件中心', sections: ['mail'], icon: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm-1 2 9 6 9-6' },
-  { kind: 'system', label: '系统状态', sections: ['system'], icon: 'M4 4h16v12H4zM9 21h6m-3-5v5m-5-9 2-3 3 2 4-4' },
-  { kind: 'data', label: '数据与审计', sections: ['data'], icon: 'M20 6c0 2-3.6 3-8 3S4 8 4 6s3.6-3 8-3 8 1 8 3ZM4 6v12c0 2 3.6 3 8 3s8-1 8-3V6M4 12c0 2 3.6 3 8 3s8-1 8-3' },
+const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'mail' | 'system' | 'data' | 'search' | 'agent-runs'; label: string; sections: Page['kind'][]; icon: LucideIcon }[] = [
+  { kind: 'dashboard', label: '工作台', sections: ['dashboard'], icon: LayoutDashboard },
+  { kind: 'contacts', label: '客户管理', sections: ['contacts','customer-quality','contact','company','new-contact','samples'], icon: UsersRound },
+  { kind: 'leads', label: '候选客户', sections: ['leads','lead','new-lead'], icon: UserSearch },
+  { kind: 'activities', label: '跟进记录', sections: ['activities'], icon: History },
+  { kind: 'mail', label: '邮件中心', sections: ['mail', 'mail-analysis'], icon: Mail },
+  { kind: 'agent-runs', label: 'Agent 任务', sections: ['agent-runs'], icon: Bot },
+  { kind: 'system', label: '系统状态', sections: ['system'], icon: Activity },
+  { kind: 'data', label: '数据与审计', sections: ['data'], icon: Database },
+  { kind: 'search', label: '全局搜索', sections: ['search'], icon: Search },
 ]
+
+const dashboardPages: Record<DashboardLink, Page> = {
+  customers: { kind: 'contacts' }, sent: { kind: 'mail', folder: 'accepted' }, waiting: { kind: 'contacts', initialView: 'mail_no_reply' },
+  mail: { kind: 'mail' }, activities: { kind: 'activities' }, agent: { kind: 'agent-runs' }, analytics: { kind: 'mail-analysis' }, new: { kind: 'new-contact' },
+  csv: { kind: 'data', initialTab: 'csv' }, review: { kind: 'mail', folder: 'review' }, approvals: { kind: 'mail', folder: 'drafts' },
+  sync: { kind: 'mail', folder: 'imap' },
+}
 
 function App() {
   const [page, setPage] = useState<Page>({ kind: 'contacts' })
+  const [searchFocus, setSearchFocus] = useState(0)
+  const [searchKeyword, setSearchKeyword] = useState('')
+  const openSearch = useCallback(() => { setPage({ kind: 'search' }); setSearchFocus(value => value + 1) }, [])
+  useEffect(() => {
+    function shortcut(event: KeyboardEvent) {
+      if (!event.isComposing && event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        if (!event.repeat) openSearch()
+      }
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  }, [openSearch])
   const openContact = (id: string) => setPage({ kind: 'contact', id })
+  const openCompany = (id: string) => setPage({ kind: 'company', id })
+  const openActivity = (id: string) => setPage({ kind: 'activities', activityId: id })
   const compose = (contact: Contact) => setPage({ kind: 'mail', contact })
   const history = (id: string) => setPage({ kind: 'mail', inboxContact: id })
+  const files = (id: string) => setPage({ kind: 'data', initialTab: 'files', fileContact: id })
+  const openFileMail = (file: CustomerMailFile) => setPage(file.origin === 'inbox'
+    ? { kind: 'mail', inboxContact: file.contact_id, inboxMessage: file.message_id }
+    : { kind: 'mail', draftContact: file.contact_id, draftId: file.message_id })
   const openLead = (id: string) => setPage({ kind: 'lead', id })
   const contacts = () => setPage({ kind: 'contacts' })
   const leads = () => setPage({ kind: 'leads' })
+  const showAnalysis = () => setPage({ kind: 'mail-analysis' })
+  const openDraft = (id: string) => setPage({ kind: 'mail', draftId: id, folder: 'records' })
+  function openAgentRecord(kind: AgentRecordLink, id: string) {
+    if (kind === 'contact') return openContact(id)
+    if (kind === 'lead') return openLead(id)
+    if (kind === 'activity') return openActivity(id)
+    return openDraft(id)
+  }
+  function openMailReport(kind: MailReportLink) {
+    if (kind === 'waiting') return setPage({ kind: 'contacts', initialView: 'mail_no_reply' })
+    setPage({ kind: 'mail', folder: kind === 'mail' ? 'inbox' : kind === 'sync' ? 'imap' : kind })
+  }
+  function openSearchTarget(target: SearchTarget) {
+    switch (target.record_type) {
+      case 'customer': return openContact(target.id)
+      case 'activity': return openActivity(target.id)
+      case 'inbox': case 'inbox_attachment': return setPage({ kind: 'mail', inboxMessage: target.id })
+      case 'draft': case 'outbound_attachment': return openDraft(target.id)
+      case 'document': return setPage({ kind: 'data', initialTab: 'files', fileContact: target.contact_id, fileDocument: target.id })
+    }
+  }
 
-  return <>
-    <a className="skip-link" href="#workbench">跳到工作区</a>
-    <header className="app-header">
-      <div className="brand"><div className="brand-mark" aria-hidden="true">F</div>
-        <div className="brand-name">FTW <span>外贸智能工作台</span></div></div>
-      <nav className="app-nav" aria-label="工作台">
-        {navigation.map(({ kind, label, sections, icon }) => <button type="button" key={kind}
-          onClick={() => setPage({ kind })} aria-current={sections.includes(page.kind) ? 'page' : undefined}>
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
-            <path d={icon} />
-          </svg><span>{label}</span>
-        </button>)}
-      </nav>
-    </header>
-    <main className="workspace" id="workbench" data-page={page.kind} tabIndex={-1}>
-      {page.kind === 'dashboard' && <Dashboard mail={() => setPage({ kind: 'mail' })} inbox={() => setPage({ kind: 'mail', inboxOnly: true, reviewInbox: true })} />}
-      {page.kind === 'data' && <DataTools key={page.initialTab ?? 'backup'} initialTab={page.initialTab} openContact={openContact} />}
-      {page.kind === 'contacts' && <ContactList compose={compose} history={history} quality={() => setPage({ kind: 'customer-quality' })} importCsv={() => setPage({ kind: 'data', initialTab: 'csv' })} create={() => setPage({ kind: 'new-contact' })} />}
-      {page.kind === 'customer-quality' && <CustomerQuality back={contacts} open={openContact} openMail={id => setPage({ kind: 'mail', draftContact: id })} />}
-      {page.kind === 'contact' && <ContactDetail key={page.id} id={page.id} back={contacts} openRelated={openContact} compose={compose} history={history} />}
+  function openAuditTarget(target: AuditTarget) {
+    if (target.record_type === 'lead') return openLead(target.id)
+    return openSearchTarget({ record_type: target.record_type, id: target.id })
+  }
+
+  return <AppShell page={page.kind} navigate={kind => kind === 'search' ? openSearch() : setPage({ kind })}
+    navigation={navigation.map(({ sections, ...item }) => ({ ...item, active: sections.includes(page.kind) }))}>
+      {page.kind === 'dashboard' && <Dashboard navigate={link => setPage(dashboardPages[link])} openActivity={openActivity} />}
+      {page.kind === 'agent-runs' && <AgentRuns back={() => setPage({ kind: 'dashboard' })} open={openAgentRecord}
+        changes={() => setPage({ kind: 'data', initialTab: 'agent-changes' })} />}
+      {page.kind === 'mail-analysis' && <MailAnalytics open={openMailReport} />}
+      {page.kind === 'search' && <GlobalSearch focus={searchFocus} keyword={searchKeyword} setKeyword={setSearchKeyword} open={openSearchTarget} />}
+      {page.kind === 'data' && <DataTools key={`${page.initialTab ?? 'overview'}:${page.fileContact ?? ''}:${page.fileDocument ?? ''}`} initialTab={page.initialTab} fileContact={page.fileContact} fileDocument={page.fileDocument}
+        openContact={openContact} openFileMail={openFileMail} openAuditTarget={openAuditTarget} />}
+      {page.kind === 'contacts' && <ContactList key={page.initialView ?? 'default'} initialView={page.initialView}
+        compose={compose} history={history} files={files} company={openCompany} quality={duplicates => setPage({ kind: 'customer-quality', duplicates })} samples={() => setPage({ kind: 'samples' })}
+        importCsv={() => setPage({ kind: 'data', initialTab: 'csv' })} create={() => setPage({ kind: 'new-contact' })} />}
+      {page.kind === 'customer-quality' && <CustomerQuality key={String(Boolean(page.duplicates))} back={contacts} open={openContact}
+        duplicatesOnly={page.duplicates} edit={(id, area) => setPage({ kind: 'contact', id, entry: area === 'basic' ? 'edit' : `edit-${area}`, returnTo: { kind: 'customer-quality' } })}
+        openMail={(id, draftId) => setPage({ kind: 'mail', draftContact: id, draftId })} />}
+      {page.kind === 'company' && <CompanyContacts key={page.id} id={page.id} back={contacts} history={history}
+        open={id => setPage({ kind: 'contact', id, returnTo: { kind: 'company', id: page.id } })} />}
+      {page.kind === 'samples' && <SampleWorkspace back={contacts} openContact={openContact} openActivity={openActivity} />}
+      {page.kind === 'contact' && <ContactDetail key={page.id + (page.entry ?? '')} id={page.id} entry={page.entry}
+        back={() => page.returnTo ? setPage(page.returnTo) : contacts()} openRelated={openContact} compose={compose} history={history} files={files} company={openCompany} />}
       {page.kind === 'new-contact' && <ContactEditor saved={openContact} cancel={contacts} />}
-      {page.kind === 'leads' && <LeadList open={openLead} create={() => setPage({ kind: 'new-lead' })} />}
+      {page.kind === 'leads' && <LeadList open={openLead} openContact={openContact} create={() => setPage({ kind: 'new-lead' })} />}
       {page.kind === 'lead' && <LeadDetail key={page.id} id={page.id} back={leads} openContact={openContact} />}
       {page.kind === 'new-lead' && <LeadEditor saved={openLead} cancel={leads} />}
-      {page.kind === 'activities' && <><div className="page-heading"><h1>跟进记录</h1></div><Timeline openContact={openContact} /></>}
-      {page.kind === 'mail' && <MailCenter key={page.contact?.id ?? page.inboxContact ?? page.draftContact ?? (page.inboxOnly ? 'inbox' : 'mail')} initialContact={page.contact} inboxContact={page.inboxContact} draftContact={page.draftContact} initialInbox={page.inboxOnly} reviewInbox={page.reviewInbox} pickContact={contacts} openContact={openContact} />}
-      {page.kind === 'system' && <SystemStatus />}
-    </main>
-  </>
+      {page.kind === 'activities' && <Timeline key={page.activityId ?? 'activities'} openContact={openContact} initialActivity={page.activityId} />}
+      {page.kind === 'mail' && <MailCenter key={page.contact?.id ?? page.inboxMessage ?? page.draftId ?? page.inboxContact ?? page.draftContact ?? page.folder ?? (page.inboxOnly ? 'inbox' : 'mail')}
+        initialContact={page.contact} inboxContact={page.inboxContact} draftContact={page.draftContact} initialInbox={page.inboxOnly}
+        initialMessageId={page.inboxMessage} initialDraftId={page.draftId} initialFolder={page.folder}
+        reviewInbox={page.reviewInbox} pickContact={contacts} openContact={openContact} showAnalysis={showAnalysis}
+        openUnreplied={() => setPage({ kind: 'contacts', initialView: 'mail_no_reply' })} />}
+      {page.kind === 'system' && <SystemStatus audit={() => setPage({ kind: 'data', initialTab: 'audit' })}
+        mail={protocol => setPage({ kind: 'mail', folder: protocol === 'IMAP' ? 'imap' : 'accounts' })} />}
+  </AppShell>
 }
 
 const queryClient = new QueryClient({

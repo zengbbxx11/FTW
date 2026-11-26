@@ -1,15 +1,20 @@
 mod cells;
 pub(crate) mod changes;
+mod company;
 pub(crate) mod contacts;
+mod detail_changes;
 mod duplicates;
-mod fields;
+mod evidence;
+pub(crate) mod fields;
+pub(crate) mod history;
 mod leads;
 mod merge;
-mod quality;
+pub(crate) mod quality;
 mod query;
+mod samples;
 mod timeline;
 mod validation;
-mod views;
+pub(crate) mod views;
 
 use ftw_ipc::{
     crm::{Command, Result as Reply, Source},
@@ -52,7 +57,8 @@ pub(crate) enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 pub async fn dispatch(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Response {
-    response(execute(pool, command, actor).await)
+    // Keep the CRM command future out of the nested desktop and MCP dispatcher stacks.
+    response(Box::pin(execute(pool, command, actor)).await)
 }
 
 pub(crate) fn response(result: Result<Reply>) -> Response {
@@ -83,18 +89,63 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
             field,
             value,
         } => cells::update(pool, actor, targets, &field, &value).await,
-        Command::ListAgentChanges { offset, pending } => changes::list(pool, offset, pending).await,
+        Command::PreviewBulkContacts { query } => cells::scope(pool, actor, query).await,
+        Command::UpdateMatchingContacts {
+            query,
+            fingerprint,
+            field,
+            value,
+        } => cells::update_scope(pool, actor, query, &fingerprint, &field, value).await,
+        Command::ListAgentChanges {
+            offset,
+            pending,
+            scope,
+        } => {
+            changes::list(
+                pool,
+                offset,
+                scope
+                    .as_deref()
+                    .unwrap_or(if pending { "pending" } else { "" }),
+            )
+            .await
+        }
         Command::ResolveAgentChange { id, accept } => {
             changes::resolve(pool, actor, &id, accept).await
         }
+        Command::SampleWorkspace {
+            keyword,
+            status,
+            offset,
+            by_batch,
+        } => samples::list(pool, keyword, &status, offset, by_batch).await,
         Command::MergeContacts { primary, secondary } => {
             merge::merge(pool, actor, primary, secondary).await
         }
-        Command::CustomerQuality { category, offset } => {
-            quality::list(pool, &category, offset).await
+        Command::CustomerQuality {
+            category,
+            keyword,
+            offset,
+        } => quality::list(pool, &category, &keyword, offset).await,
+        Command::CompanyContacts { id, offset } => company::list(pool, &id, offset).await,
+        Command::AssociateCompany { anchor, contact } => {
+            company::associate(pool, actor, anchor, contact).await
         }
+        Command::FindCompanyProfiles { keyword } => company::find(pool, keyword).await,
+        Command::SaveCompanyProfile {
+            anchor,
+            profile,
+            input,
+            include_group,
+        } => company::save_profile(pool, actor, anchor, profile, input, include_group).await,
+        Command::SetCompanyMembership {
+            contact,
+            profile,
+            branch,
+        } => company::membership(pool, actor, contact, profile, branch).await,
         Command::CustomerStats => contacts::stats(pool).await,
         Command::ListContacts { query } => contacts::list(pool, query, actor).await,
+        Command::PreviewContacts { query } => contacts::preview(pool, query, actor).await,
         Command::ListViews { include_archived } => views::list(pool, actor, include_archived).await,
         Command::SaveView { view } => views::save(pool, actor, view).await,
         Command::ArchiveView {
@@ -129,11 +180,15 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
             input,
             allow_duplicate,
             entries,
+            company,
         } => {
-            let mut tx = pool.begin().await?;
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let result = contacts::save(&mut tx, None, *input, allow_duplicate, actor).await?;
             if let Reply::Saved { id } = &result {
-                fields::apply(&mut tx, actor, id, entries).await?;
+                fields::apply(&mut tx, actor, id, 1, entries).await?;
+                if company.is_some() {
+                    company::set_membership(&mut tx, actor, id, company, String::new()).await?;
+                }
             }
             tx.commit().await?;
             Ok(result)
@@ -163,27 +218,77 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
             Ok(result)
         }
         Command::SetArchived { id, archived } => contacts::archive(pool, id, archived, actor).await,
+        Command::SetContactArchive { target, archived } => {
+            contacts::archive_checked(pool, target, archived, actor).await
+        }
         Command::ListLeads {
             offset,
             review_status,
         } => leads::list(pool, offset, &review_status).await,
+        Command::LeadWorkspace {
+            offset,
+            review_status,
+            keyword,
+            source,
+        } => leads::workspace(pool, offset, &review_status, keyword, &source).await,
         Command::GetLead { id } => leads::get(pool, &id).await,
+        Command::ListLeadEvidence { lead_id, offset } => {
+            evidence::list(pool, evidence::Owner::Lead(&lead_id), offset).await
+        }
+        Command::AddLeadEvidence { lead_id, input } => {
+            evidence::add(pool, actor, evidence::Owner::Lead(&lead_id), input).await
+        }
+        Command::ListContactEvidence { contact_id, offset } => {
+            evidence::list(pool, evidence::Owner::Contact(&contact_id), offset).await
+        }
+        Command::AddContactEvidence { contact_id, input } => {
+            evidence::add(pool, actor, evidence::Owner::Contact(&contact_id), input).await
+        }
+        Command::ReviewLeadEvidence {
+            id,
+            revision,
+            epoch,
+            status,
+        } => evidence::review(pool, actor, &id, revision, &epoch, &status).await,
         Command::SaveLead {
             id,
             input,
             allow_duplicate,
-        } => leads::save(pool, id, *input, allow_duplicate, actor).await,
-        Command::SetLeadReview { id, rejected } => leads::review(pool, id, rejected, actor).await,
+            expected,
+        } => leads::save(pool, id, *input, allow_duplicate, expected, actor).await,
+        Command::PatchLead {
+            id,
+            expected,
+            patch,
+        } => leads::patch(pool, id, expected, *patch, actor).await,
+        Command::SetLeadReview {
+            id,
+            rejected,
+            expected,
+        } => leads::review(pool, id, rejected, expected, actor).await,
         Command::PromoteLead {
             id,
             allow_duplicate,
-        } => leads::promote(pool, id, allow_duplicate, actor).await,
+            expected,
+        } => leads::promote(pool, id, allow_duplicate, expected, actor).await,
         Command::ListActivities {
             contact_id,
             event_type,
             offset,
-        } => timeline::list(pool, contact_id, &event_type, offset).await,
+            keyword,
+            source,
+        } => timeline::list(pool, contact_id, &event_type, offset, keyword, source).await,
+        Command::GetActivity { id } => timeline::get(pool, &id).await,
         Command::SaveActivity { id, input } => timeline::save(pool, id, input, actor).await,
+        Command::UpdateActivity {
+            id,
+            expected_revision,
+            input,
+        } => timeline::save_guarded(pool, Some(id), input, actor, Some(expected_revision)).await,
+        Command::ContactHistory { id, offset } => history::list(pool, &id, offset).await,
+        Command::CustomFieldHistory { id, offset } => {
+            history::custom_fields(pool, actor, &id, offset).await
+        }
     }
 }
 
@@ -214,8 +319,9 @@ async fn audit(
     id: &str,
     operation: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO audit_logs(id, actor_id, source, entity, entity_id, operation) VALUES (?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO audit_logs(id, actor_id, source, entity, entity_id, operation, task_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(new_id()).bind(actor.id).bind(actor.source.as_str()).bind(entity).bind(id).bind(operation)
+        .bind(actor.agent_run_id)
         .execute(connection).await?;
     Ok(())
 }

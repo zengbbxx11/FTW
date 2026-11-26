@@ -20,6 +20,21 @@ pub struct Profile {
 
 impl Profile {
     pub fn resolve(executable: &Path, development_root: Option<PathBuf>) -> io::Result<Self> {
+        let (mode, root) = Self::location(executable, development_root)?;
+        let data = root.join("data");
+        fs::create_dir_all(&data).map_err(|error| path_error("create", &data, error))?;
+
+        Ok(Self {
+            mode,
+            root: fs::canonicalize(&root).map_err(|error| path_error("resolve", &root, error))?,
+            data: fs::canonicalize(&data).map_err(|error| path_error("resolve", &data, error))?,
+        })
+    }
+
+    pub(crate) fn location(
+        executable: &Path,
+        development_root: Option<PathBuf>,
+    ) -> io::Result<(StorageMode, PathBuf)> {
         let application_dir = executable
             .parent()
             .ok_or_else(|| io::Error::other("application directory is unavailable"))?;
@@ -43,14 +58,7 @@ impl Profile {
             ));
         }
 
-        let data = root.join("data");
-        fs::create_dir_all(&data).map_err(|error| path_error("create", &data, error))?;
-
-        Ok(Self {
-            mode,
-            root: fs::canonicalize(&root).map_err(|error| path_error("resolve", &root, error))?,
-            data: fs::canonicalize(&data).map_err(|error| path_error("resolve", &data, error))?,
-        })
+        Ok((mode, root))
     }
 }
 

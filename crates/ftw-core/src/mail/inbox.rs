@@ -51,7 +51,13 @@ impl MailService {
                 contact_id,
                 unmatched,
                 offset,
-            } => store::list(&self.pool, account_id, contact_id, unmatched, offset).await,
+                keyword,
+            } => {
+                store::list(
+                    &self.pool, account_id, contact_id, unmatched, offset, keyword,
+                )
+                .await
+            }
             Command::ReviewCandidates { id } => store::review_candidates(&self.pool, &id).await,
             Command::ReviewLink {
                 id,
@@ -65,6 +71,7 @@ impl MailService {
                     &contact_id,
                     expected_contact,
                     expected_match,
+                    crate::crm::Actor::DESKTOP,
                 )
                 .await
             }
@@ -77,15 +84,35 @@ impl MailService {
 
     pub async fn agent_inbox(&self, command: AgentCommand) -> Response {
         let result = match command {
+            AgentCommand::SyncStatus { account_id } => {
+                self.sync_status(account_id.as_deref()).await
+            }
             AgentCommand::DownloadFull { id } => self.download_full(id).await,
             AgentCommand::ReadBody { id, offset } => self.read_inbox_body(&id, offset).await,
             AgentCommand::Sync { account_id } => self.start_sync(account_id).await,
-            AgentCommand::List { contact_id, offset } => {
-                store::list(&self.pool, None, contact_id, false, offset).await
-            }
+            AgentCommand::List {
+                contact_id,
+                offset,
+                account_id,
+                keyword,
+            } => store::list(&self.pool, account_id, contact_id, false, offset, keyword).await,
             AgentCommand::Thread { id, offset } => store::thread(&self.pool, &id, offset).await,
         };
         response(result)
+    }
+
+    pub async fn inbox_session(&self, token: Option<&str>, command: AgentCommand) -> Response {
+        if let Err(error) = self
+            .session_actor(
+                token,
+                ftw_ipc::agent::AccessArea::Mail,
+                &[ftw_ipc::agent::Scope::ReadMail],
+            )
+            .await
+        {
+            return response(Err(error));
+        }
+        self.agent_inbox(command).await
     }
 
     async fn configure_imap(
@@ -163,6 +190,31 @@ impl MailService {
         Ok(Reply::Accounts { rows })
     }
 
+    async fn sync_status(&self, account_id: Option<&str>) -> Result<Reply> {
+        let rows = sqlx::query(
+            "SELECT a.id,i.account_id IS NOT NULL configured,s.last_sync,s.outcome
+             FROM email_accounts a LEFT JOIN imap_accounts i ON i.account_id=a.id
+             LEFT JOIN imap_sync_state s ON s.account_id=a.id AND s.folder='INBOX'
+             WHERE a.archived_at IS NULL AND (?1 IS NULL OR a.id=?1) ORDER BY a.display_name,a.id",
+        )
+        .bind(account_id)
+        .map(|r: sqlx::sqlite::SqliteRow| {
+            let configured: bool = r.get("configured");
+            let outcome: Option<String> = r.get("outcome");
+            let last_sync: Option<i64> = r.get("last_sync");
+            inbox::SyncStatus {
+                account_id: r.get("id"),
+                configured,
+                complete: configured && last_sync.is_some() && outcome.as_deref() == Some("ok"),
+                last_sync,
+                outcome,
+            }
+        })
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(Reply::SyncStatus { rows })
+    }
+
     async fn settings(&self, id: &str) -> Result<Settings> {
         sqlx::query_as("SELECT i.host,i.port,i.username,s.protected FROM imap_accounts i JOIN local_secrets s ON s.id=i.secret_ref JOIN email_accounts a ON a.id=i.account_id WHERE i.account_id=? AND a.archived_at IS NULL")
             .bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("imap_not_configured"))
@@ -227,6 +279,7 @@ impl MailService {
             }
             .await;
             if let Err(error) = result {
+                service.diagnostic_event("imap_download", error.code(), None);
                 let _ = sqlx::query("UPDATE inbox_messages SET download_outcome=? WHERE id=?")
                     .bind(error.code())
                     .bind(expected)
@@ -248,30 +301,44 @@ impl MailService {
         index: u16,
         destination: &str,
     ) -> Result<Reply> {
-        use tokio::io::AsyncWriteExt;
-        let path = std::path::Path::new(destination);
-        if !path.is_absolute() {
-            return Err(Failure::Code("invalid_attachments"));
-        }
-        let raw = store::full_bytes(&self.pool, self.objects()?, id).await?;
-        let attachment = store::inbound_attachment(&raw, index)?;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)
-            .await
-            .map_err(|_| Failure::Code("attachment_destination_unavailable"))?;
-        let result = async {
-            file.write_all(&attachment).await?;
-            file.sync_all().await
-        }
-        .await;
-        drop(file);
-        if result.is_err() {
-            let _ = tokio::fs::remove_file(path).await;
-            return Err(Failure::Code("attachment_destination_unavailable"));
-        }
+        let attachment = self.inbox_attachment_bytes(id, index).await?;
+        super::attachments::write_new(destination, &attachment).await?;
         Ok(Reply::Saved { id: id.to_owned() })
+    }
+
+    pub(super) async fn inbox_attachment_bytes(&self, id: &str, index: u16) -> Result<Vec<u8>> {
+        let raw = store::full_bytes(&self.pool, self.objects()?, id).await?;
+        store::inbound_attachment(&raw, index)
+    }
+
+    pub(super) async fn suggest_reply_link(
+        &self,
+        actor: &str,
+        id: &str,
+        contact: &str,
+    ) -> Result<Reply> {
+        store::suggest_link(&self.pool, actor, id, contact).await
+    }
+
+    pub(super) async fn confirm_reply_link(
+        &self,
+        actor: crate::crm::Actor<'_>,
+        id: &str,
+        contact: &str,
+        expected_contact: Option<String>,
+        expected_match: String,
+    ) -> Response {
+        response(
+            store::review_link(
+                &self.pool,
+                id,
+                contact,
+                expected_contact,
+                expected_match,
+                actor,
+            )
+            .await,
+        )
     }
 
     async fn start_sync(&self, account_id: String) -> Result<Reply> {
@@ -304,14 +371,18 @@ impl MailService {
                 Ok(Err(ref error)) => error.code(),
                 Err(_) => "imap_timeout",
             };
-            let _ = sqlx::query("UPDATE imap_sync_state SET last_sync=unixepoch(),outcome=? WHERE account_id=? AND folder=?")
+            let saved = sqlx::query("UPDATE imap_sync_state SET last_sync=unixepoch(),outcome=? WHERE account_id=? AND folder=?")
                 .bind(report).bind(id).bind(FOLDER).execute(&service.pool).await;
+            service.diagnostic_event("imap_sync", report, None);
+            if saved.is_err() {
+                service.diagnostic_event("imap_sync", "database_unavailable", None);
+            }
         });
         Ok(Reply::SyncStarted { account_id })
     }
 }
 
-fn response(result: Result<Reply>) -> Response {
+pub(super) fn response(result: Result<Reply>) -> Response {
     match result {
         Ok(data) => Response::Inbox {
             data: Box::new(data),

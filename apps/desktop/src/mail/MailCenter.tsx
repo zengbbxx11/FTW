@@ -1,226 +1,275 @@
-import { useState, type FormEvent } from 'react'
+import { useDeferredValue, useState } from 'react'
+import { Archive, Ban, ChartColumn, CircleAlert, CircleHelp, Clock, FilePenLine, Inbox, List, Mail, Pencil, Plus, RefreshCw, Send, Settings, ShieldCheck, UserRound, type LucideIcon } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateLabel, request, sourceLabel, type Contact } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
+import { useSavedViews } from '../crm/SavedViews'
 import { AgentMail } from './AgentMail'
-import { ImapSettings, InboxView, MailThread } from './Inbox'
-import { chooseMailAssets, mailCall, mailError, states, type Account, type Asset, type Draft, type DraftInput, type MailCommand } from './api'
+import { Accounts } from './Accounts'
+import { InboxView, MailThread, type ReplyTarget } from './Inbox'
+import { chooseMailAssets, mailCall, mailError, type Asset, type Draft, type DraftFolder, type DraftInput } from './api'
+import { AttachmentActions } from './AttachmentActions'
+import { MailSearch, MailStatus } from './MailWorkspace'
+import { DraftTemplatePicker, Templates } from './Templates'
 
-type View = { kind: 'drafts' | 'accounts' | 'inbox' | 'imap' | 'agent' } | { kind: 'draft' | 'edit'; id: string }
+export type Folder = DraftFolder | 'inbox' | 'review' | 'records' | 'accounts' | 'imap' | 'agent' | 'suppression' | 'templates'
+const folders: Record<Folder, { label: string; icon: LucideIcon }> = {
+  inbox: { label: '收件箱', icon: Inbox },
+  accepted: { label: '已提交 SMTP', icon: Send },
+  drafts: { label: '草稿与审批', icon: FilePenLine },
+  queue: { label: '发送队列', icon: Clock },
+  submissions: { label: '全部提交记录', icon: List },
+  failed: { label: '发送失败', icon: CircleAlert },
+  unknown: { label: '结果未知', icon: CircleHelp },
+  bounced: { label: '已退信', icon: Archive },
+  review: { label: '回复待确认', icon: Mail },
+  records: { label: '全部发信记录', icon: List },
+  accounts: { label: '发件账户', icon: Settings },
+  imap: { label: '收件设置', icon: RefreshCw },
+  agent: { label: 'Agent 发信权限', icon: ShieldCheck },
+  suppression: { label: '拒发名单', icon: Ban },
+  templates: { label: '邮件模板', icon: FilePenLine },
+}
+const messageFolders: Folder[] = ['inbox', 'accepted', 'drafts', 'queue', 'failed', 'unknown', 'bounced', 'review', 'records']
+const settingsFolders: Folder[] = ['accounts', 'imap', 'agent', 'suppression', 'templates']
+const queueMetrics = [
+  ['queue', '队列中', '等待或正在提交'], ['accepted', 'SMTP 已接受', '已由 SMTP 服务器接受'],
+  ['failed', '发送失败', '检查错误原因'], ['unknown', '提交结果未知', '先核对发件记录'],
+] as const
+
+function isOutbound(folder: Folder): folder is DraftFolder | 'records' {
+  return folder !== 'inbox' && folder !== 'review' && !settingsFolders.includes(folder)
+}
 
 function ErrorNotice({ error }: { error: unknown }) {
   return <p className="alert error" role="alert">{mailError(error)}</p>
 }
 
-export function MailCenter({ initialContact, inboxContact, draftContact, initialInbox, reviewInbox, pickContact, openContact }: {
-  initialContact?: Contact; inboxContact?: string; draftContact?: string; initialInbox?: boolean; reviewInbox?: boolean; pickContact: () => void; openContact: (id: string) => void
+export function MailCenter({ initialContact, inboxContact, draftContact, initialDraftId, initialMessageId, initialInbox, initialFolder, reviewInbox, pickContact, openContact, openUnreplied, showAnalysis }: {
+  initialContact?: Contact; inboxContact?: string; draftContact?: string; initialDraftId?: string; initialMessageId?: string; initialInbox?: boolean; reviewInbox?: boolean
+  initialFolder?: Folder
+  pickContact: () => void; openContact: (id: string) => void; openUnreplied: () => void; showAnalysis: () => void
 }) {
-  const [view, setView] = useState<View>({ kind: (initialInbox || inboxContact) ? 'inbox' : 'drafts' })
+  const [folder, setFolder] = useState<Folder>(initialFolder ?? (draftContact ? 'records' : reviewInbox && initialInbox ? 'review' : 'inbox'))
   const [compose, setCompose] = useState(initialContact !== undefined)
+  const [replyTarget, setReplyTarget] = useState<ReplyTarget>()
   const [offset, setOffset] = useState(0)
-  const openDraft = (id: string) => { setCompose(false); setView({ kind: 'draft', id }) }
-  const showList = () => { setCompose(false); setView({ kind: 'drafts' }) }
+  const [input, setInput] = useState('')
+  const [selection, setSelection] = useState<{ id: string; editing: boolean } | undefined>(initialDraftId ? { id: initialDraftId, editing: false } : undefined)
+  const [linkedMessage, setLinkedMessage] = useState(initialMessageId)
+  const keyword = useDeferredValue(input.trim())
+  const outbound = isOutbound(folder)
+  const queueArea = !compose && (queueMetrics.some(([key]) => key === folder) || folder === 'bounced' || folder === 'submissions')
+  const reviewArea = !compose && folder === 'review'
+  const accountsArea = !compose && (folder === 'accounts' || folder === 'imap')
+  const templatesArea = !compose && folder === 'templates'
+  function selectFolder(next: Folder) {
+    setFolder(next)
+    setCompose(false)
+    setReplyTarget(undefined)
+    setSelection(undefined)
+    setOffset(0)
+    setInput('')
+    setLinkedMessage(undefined)
+  }
+  function openDraft(id: string) {
+    if (compose) selectFolder('drafts')
+    setSelection({ id, editing: false })
+  }
+  function startReply(message: ReplyTarget) {
+    setReplyTarget(message)
+    setCompose(true)
+  }
   const drafts = useQuery({
-    queryKey: ['mail-drafts', draftContact ?? null, offset], enabled: !compose && view.kind === 'drafts',
-    queryFn: () => mailCall({ action: 'list_drafts', contact_id: draftContact ?? null, offset }, 'drafts'),
+    queryKey: ['mail-drafts', draftContact ?? null, folder, keyword, offset], enabled: !compose && outbound,
+    queryFn: () => mailCall({ action: 'list_drafts', contact_id: draftContact ?? null, offset, keyword,
+      folder: isOutbound(folder) && folder !== 'records' ? folder : undefined }, 'drafts'),
   })
-  return <>
-    <div className="page-heading"><h1>邮件中心</h1>
+  const summary = useQuery({
+    queryKey: ['mail-queue-summary', draftContact ?? null], enabled: queueArea,
+    queryFn: () => mailCall({ action: 'queue_summary', contact_id: draftContact ?? null }, 'queue_summary'),
+  })
+  const agent = useQuery({
+    queryKey: ['agent-mail-settings'], queryFn: () => mailCall({ action: 'agent_mail_settings' }, 'agent_mail_settings'),
+  })
+  const views = useSavedViews()
+  const mode = agent.data?.policy.mode
+  const approvalMode = mode === 'automatic'
+    ? agent.data?.automatic_available ? '持续授权自动发送' : '安全账本不可用'
+    : mode === 'manual' ? '逐封人工审批' : '已禁止 Agent 发送'
+  const page = drafts.data?.rows ?? []
+  const current = selection ?? (page[0] && { id: page[0].id, editing: false })
+  return <div className="mail-workspace">
+    <header className="page-heading mail-page-heading">
+      <div><h1>{folder === 'agent' ? 'Agent 邮件发送设置' : accountsArea ? '邮箱账户与签名' : templatesArea ? '开发邮件模板' : queueArea ? '邮件发送队列与异常' : reviewArea ? '客户回复匹配' : '邮件中心'}</h1>
+        <p>{folder === 'agent' ? '管理 MCP 发信身份、授权账户与用量限制' : accountsArea ? '管理 SMTP 发件、IMAP 收件和账户签名。' : templatesArea ? '按邮件用途整理模板，用客户资料生成预览。' : queueArea ? '查看队列、SMTP 提交结果和需要核对的发信记录。'
+          : reviewArea ? '核对待确认的来信、匹配依据与 CRM 联系人。' : '收件、发件与客户开发记录'}</p></div>
       <div className="row-actions">
-        <button className="button" onClick={showList}>邮件草稿</button>
-        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'inbox' }) }}>收件箱</button>
-        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'accounts' }) }}>发件账户</button>
-        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'imap' }) }}>收件设置</button>
-        <button className="button" onClick={() => { setCompose(false); setView({ kind: 'agent' }) }}>Agent 发信权限</button>
-        <button className="button primary" onClick={initialContact ? () => setCompose(true) : pickContact}>从客户写邮件</button>
+        {!compose && <button type="button" className="button" onClick={showAnalysis}><ChartColumn aria-hidden="true" />效果分析</button>}
+        {queueArea && <>
+          <button className="button" onClick={() => selectFolder('agent')}><ShieldCheck aria-hidden="true" />查看发信权限</button>
+          <button className="button primary" disabled={summary.isFetching || drafts.isFetching}
+            onClick={() => { void summary.refetch(); void drafts.refetch() }}><RefreshCw aria-hidden="true" />刷新队列</button>
+        </>}
+        {folder !== 'agent' && !compose && !queueArea && !reviewArea && !accountsArea && !templatesArea && <button className="button primary" onClick={initialContact ? () => setCompose(true) : pickContact}>
+          <Pencil aria-hidden="true" />从客户写邮件
+        </button>}
+      </div>
+    </header>
+    {folder !== 'agent' && mode && !queueArea && !reviewArea && !accountsArea && !templatesArea && <div className="mail-policy-banner" data-automatic={mode === 'automatic' && agent.data?.automatic_available}>
+      <ShieldCheck aria-hidden="true" /><strong>Agent 发信</strong><span>{approvalMode}</span>
+      {mode === 'automatic' && <small>{agent.data?.policy.accounts.length ?? 0} 个授权账户</small>}
+      <button className="text-button" onClick={() => selectFolder('agent')}>管理权限</button>
+    </div>}
+    <div className="mail-shell">
+      <nav className="mail-folders" aria-label="邮件分类">
+        {([['邮件分类', messageFolders], ['设置', settingsFolders]] as const).map(([label, items]) => <div key={label}>
+          <span>{label}</span>
+          {items.map(key => {
+            const { icon: Icon, label } = folders[key]
+            return <button type="button" key={key} aria-current={!compose && (folder === key || (key === 'queue' && folder === 'submissions')) ? 'page' : undefined} onClick={() => selectFolder(key)}>
+              <Icon aria-hidden="true" />{label}
+            </button>
+          })}
+          {label === '邮件分类' && views.data?.views.some(view => view.id === 'mail_no_reply' && !view.archived) &&
+            <button type="button" onClick={openUnreplied}><UserRound aria-hidden="true" />已发未见回复</button>}
+        </div>)}
+      </nav>
+      <div className="mail-main">
+      {compose && replyTarget ? <ReplyComposer key={replyTarget.id} reply={replyTarget} saved={openDraft} close={() => selectFolder(folder)} />
+        : compose && initialContact ? <DraftForm contact={initialContact} saved={openDraft} close={() => selectFolder(folder)} />
+        : accountsArea ? <Accounts key={folder} initialTab={folder === 'imap' ? 'imap' : 'smtp'} />
+        : templatesArea ? <Templates />
+        : folder === 'agent' ? <AgentMail manageSuppression={() => selectFolder('suppression')} showRecords={() => selectFolder('records')} />
+        : folder === 'suppression' ? <SuppressionSettings />
+        : outbound ? <>
+          {queueArea && <div className="mail-queue-metrics" aria-label="发送结果概览">
+            {summary.isError && <ErrorNotice error={summary.error} />}
+            {queueMetrics.map(([key, label, hint]) => {
+              const Icon = folders[key].icon
+              return <button type="button" key={key} data-metric={key} aria-pressed={folder === key} onClick={() => selectFolder(key)}>
+                <span className="mail-queue-symbol"><Icon aria-hidden="true" /></span>
+                <span><strong>{summary.data?.[key] ?? '—'}</strong><span>{label}</span><small>{hint}</small></span>
+              </button>
+            })}
+          </div>}
+          <div className={`mail-split${queueArea ? ' mail-queue-split' : ''}`} key={folder}>
+          <section className="mail-list-pane" aria-label={folders[folder].label}>
+            <header className="mail-list-heading">
+              <div className="section-heading"><h2>{folders[folder].label}</h2>
+                {queueArea && folder !== 'submissions' && <button className="text-button" onClick={() => selectFolder('submissions')}><List aria-hidden="true" />全部提交记录</button>}
+              </div>
+              <MailSearch label="搜索主题或收件邮箱" value={input} change={value => { setInput(value); setOffset(0); setSelection(undefined) }} />
+              {draftContact && <button className="text-button" onClick={() => openContact(draftContact)}>返回客户资料</button>}
+            </header>
+            <div className="mail-list-scroll">
+              {drafts.isError && <ErrorNotice error={drafts.error} />}
+              {drafts.isPending && <Empty>正在读取发件记录…</Empty>}
+              {drafts.data && !page.length && <Empty>当前没有符合条件的发件记录。</Empty>}
+              {queueArea && page.length > 0 ? <table className="mail-queue-table" aria-label={folders[folder].label}>
+                <thead><tr><th>邮件 / 收件人</th><th>提交状态</th><th>更新时间</th></tr></thead>
+                <tbody>{page.map(row => <tr key={row.id} data-active={current?.id === row.id}>
+                  <td><button type="button" className="text-button" aria-pressed={current?.id === row.id} onClick={() => openDraft(row.id)}>{row.subject || '（无主题）'}</button>
+                    <small>{row.recipient}</small></td>
+                  <td><MailStatus row={row} bounced={folder === 'bounced'} /></td>
+                  <td>{dateLabel(row.updated_at)}<small>{row.agent_name || sourceLabel(row.source)}</small></td>
+                </tr>)}</tbody>
+              </table> : page.map(row => <button type="button" className="mail-list-item" aria-pressed={current?.id === row.id} key={row.id} onClick={() => openDraft(row.id)}>
+                <span className="mail-list-avatar"><Send aria-hidden="true" /></span>
+                <span className="mail-list-content">
+                  <strong title={row.subject}>{row.subject || '（无主题）'}</strong>
+                  <small title={row.recipient}>{row.recipient}</small><MailStatus row={row} bounced={folder === 'bounced'} />
+                  <small>{dateLabel(row.updated_at)} · {row.agent_name || sourceLabel(row.source)}</small>
+                </span>
+              </button>)}
+            </div>
+            {drafts.data && <Pagination offset={offset} more={drafts.data.has_more} change={next => { setOffset(next); setSelection(undefined) }} />}
+          </section>
+          <div className="mail-reader">
+            {current ? <DraftView key={current.id} id={current.id} editing={current.editing} openContact={openContact}
+              edit={() => setSelection({ id: current.id, editing: true })} saved={openDraft} bounced={folder === 'bounced'} queueArea={queueArea} onReply={startReply} />
+              : <Empty>选择一封发件记录查看详情。</Empty>}
+          </div>
+        </div></>
+        : <InboxView key={folder} contactId={folder === 'inbox' ? inboxContact : undefined} initialMessageId={linkedMessage} initiallyReviewing={folder === 'review'} openContact={openContact} onReply={startReply} />}
       </div>
     </div>
-    {compose && initialContact ? <DraftForm contact={initialContact} saved={openDraft} close={showList} />
-      : view.kind === 'accounts' ? <Accounts />
-      : view.kind === 'imap' ? <ImapSettings />
-      : view.kind === 'agent' ? <AgentMail />
-      : view.kind === 'inbox' ? <InboxView contactId={inboxContact} initiallyReviewing={reviewInbox} openContact={openContact} />
-      : view.kind === 'draft' || view.kind === 'edit' ?
-        <DraftView key={view.id} id={view.id} editing={view.kind === 'edit'} openContact={openContact}
-          edit={() => setView({ kind: 'edit', id: view.id })} saved={openDraft} back={showList} />
-      : <>
-        {draftContact && <div className="section-heading"><h2>客户发信记录</h2><button className="button" onClick={() => openContact(draftContact)}>返回客户资料</button></div>}
-        {drafts.isError && <ErrorNotice error={drafts.error} />}
-        {drafts.isPending && <Empty>正在读取邮件草稿…</Empty>}
-        {drafts.data?.kind === 'drafts' && (drafts.data.rows.length === 0 ? <Empty>当前没有邮件草稿。</Empty>
-          : <><div className="table-wrap"><table><thead><tr><th>主题</th><th>收件邮箱</th><th>状态</th><th>来源</th></tr></thead>
-            <tbody>{drafts.data.rows.map(row => <tr key={row.id}>
-              <td><button className="text-button" onClick={() => openDraft(row.id)}>{row.subject}</button></td>
-              <td>{row.recipient}</td><td>{row.approval_expired ? '批准已过期' : states[row.state]}</td><td>{sourceLabel(row.source)}</td>
-            </tr>)}</tbody></table></div><Pagination offset={offset} more={drafts.data.has_more} change={setOffset} /></>)}
-      </>}
-  </>
+  </div>
 }
 
-function Accounts() {
-  const cache = useQueryClient()
-  const rows = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
-  const [security, setSecurity] = useState<'tls' | 'starttls'>('tls')
-  const [port, setPort] = useState(465)
+function SuppressionSettings() {
+  const [offset, setOffset] = useState(0)
+  const [input, setInput] = useState('')
   const [notice, setNotice] = useState('')
-  const [editing, setEditing] = useState('')
-  const [editingAccount, setEditingAccount] = useState('')
-  const [preferences, setPreferences] = useState('')
-  const action = useMutation({
-    mutationFn: async (command: MailCommand) => mailCall(command, command.action === 'test_account' ? 'connection_verified' : 'saved'),
+  const cache = useQueryClient()
+  const rules = useQuery({ queryKey: ['mail-suppression', offset], queryFn: () => mailCall({ action: 'list_suppression', offset }, 'suppression') })
+  const change = useMutation({
+    mutationFn: ({ target, blocked }: { target: string; blocked: boolean }) => mailCall({ action: 'set_suppression', target, blocked }, 'saved'),
     onMutate: () => setNotice(''),
-    onSuccess: async (result, command) => {
-      if (command.action === 'replace_password') setEditing('')
-      if (command.action === 'update_account' || command.action === 'delete_account') setEditingAccount('')
-      if (command.action === 'set_account_preferences') setPreferences('')
-      setNotice(command.action === 'delete_account' ? '邮箱账户已删除，历史邮件和草稿记录已保留。' :
-        command.action === 'update_account' ? '发件账户设置已保存。' : result.kind === 'connection_verified' ? 'SMTP 连接和认证通过。' :
-        command.action === 'set_suppression' ? command.blocked ? '已加入拒发名单。' : '已移出拒发名单。' : '邮箱账户设置已保存。')
-      await Promise.all(['mail-accounts', 'imap-accounts', 'mail-drafts', 'mail-draft', 'agent-mail-settings']
-        .map(key => cache.invalidateQueries({ queryKey: [key] })))
+    onSuccess: async (_, { blocked }) => {
+      if (blocked) { setInput(''); setOffset(0) }
+      else if (offset && rules.data?.rows.length === 1) setOffset(Math.max(0, offset - 20))
+      setNotice(blocked ? '已保存拒发规则。' : '已移出拒发名单。')
+      await cache.invalidateQueries({ queryKey: ['mail-suppression'] })
     },
   })
-  const create = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const form = event.currentTarget
-    const data = new FormData(form)
-    const field = (key: string) => String(data.get(key) ?? '')
-    action.mutate({ action: 'save_account', name: field('name'), email: field('email'), host: field('host'),
-      port, security, username: field('username'), password: field('password') }, {
-      onSettled: () => { const password = form.elements.namedItem('password'); if (password instanceof HTMLInputElement) password.value = '' },
-      onSuccess: () => form.reset(),
-    })
-  }
-  return <>
-    <section className="panel"><h2>发件账户</h2>
-      {rows.isError && <ErrorNotice error={rows.error} />}
-      {rows.data?.kind === 'accounts' && (rows.data.rows.length === 0 ? <p className="muted">尚未配置账户。</p> :
-        <ul className="record-list">{rows.data.rows.map(account => <li key={account.id}>
-          <strong>{account.name}</strong><span>{account.email}</span><small>{account.host}:{account.port}</small>
-          <button className="button" disabled={action.isPending} onClick={() => action.mutate({ action: 'test_account', id: account.id })}>测试 SMTP</button>
-          <button className="button" disabled={action.isPending} onClick={() => setEditingAccount(account.id)}>编辑账户</button>
-          <ConfirmButton label="删除这个账户？邮箱将停止收发，历史邮件与草稿会保留。" disabled={action.isPending}
-            onConfirm={() => action.mutate({ action: 'delete_account', id: account.id })}>删除账户</ConfirmButton>
-          <button className="button" disabled={action.isPending} onClick={() => setEditing(account.id)}>更新授权码</button>
-          <button className="button" disabled={action.isPending} onClick={() => setPreferences(account.id)}>发送上限与签名</button>
-          {preferences === account.id && <form className="form-grid" onSubmit={event => {
-            event.preventDefault()
-            const form = new FormData(event.currentTarget)
-            action.mutate({ action: 'set_account_preferences', id: account.id,
-              daily_limit: Number(form.get('limit')), signature: String(form.get('signature') ?? '') })
-          }}>
-            <Field label="近 24 小时发送上限"><input name="limit" type="number" min="1" max="500" defaultValue={account.daily_limit ?? 30} required /></Field>
-            <Field label="纯文本签名"><textarea name="signature" rows={3} defaultValue={account.signature ?? ''} /></Field>
-            <div className="row-actions"><button className="button" disabled={action.isPending}>保存设置</button>
-              <button type="button" className="button" onClick={() => setPreferences('')}>取消</button></div>
-          </form>}
-          {editing === account.id && <form className="row-actions" onSubmit={event => {
-            event.preventDefault()
-            const form = event.currentTarget
-            const password = String(new FormData(form).get('password') ?? '')
-            action.mutate({ action: 'replace_password', id: account.id, password }, { onSettled: () => form.reset() })
-          }}>
-            <Field label="新授权码或密码"><input autoFocus name="password" type="password" autoComplete="new-password" required /></Field>
-            <button className="button" disabled={action.isPending}>保存授权码</button>
-            <button type="button" className="button" onClick={() => setEditing('')}>取消</button>
-          </form>}
-          {editingAccount === account.id && <AccountEditor account={account} busy={action.isPending}
-            save={input => action.mutate({ action: 'update_account', input })} cancel={() => setEditingAccount('')} />}
-        </li>)}</ul>)}
-      {notice && <p role="status" className="muted">{notice}</p>}
-      {action.isError && <ErrorNotice error={action.error} />}
-    </section>
-    <form onSubmit={create}><fieldset className="panel" disabled={action.isPending}>
-      <h2>新增 SMTP 账户</h2>
-      <div className="form-grid">
-        <Field label="账户名称"><input name="name" required /></Field>
-        <Field label="发件邮箱"><input name="email" type="email" required /></Field>
-        <Field label="SMTP 主机"><input name="host" placeholder="smtp.example.com" required /></Field>
-        <Field label="加密方式"><select value={security} onChange={e => {
-          const value = e.target.value as typeof security
-          setSecurity(value)
-          setPort(value === 'tls' ? 465 : 587)
-        }}><option value="tls">TLS</option><option value="starttls">STARTTLS（强制）</option></select></Field>
-        <Field label="端口"><input type="number" min="1" max="65535" value={port || ''} onChange={e => setPort(e.target.valueAsNumber)} required /></Field>
-        <Field label="登录名"><input name="username" required /></Field>
-        <Field label="应用授权码或密码"><input name="password" type="password" autoComplete="new-password" required /></Field>
-      </div>
-      <div className="form-footer"><button className="button primary">保存发件账户</button></div>
-    </fieldset></form>
-    <form className="panel" onSubmit={event => {
-      event.preventDefault()
-      const data = new FormData(event.currentTarget)
-      action.mutate({ action: 'set_suppression', target: String(data.get('target') ?? ''), blocked: data.get('operation') === 'block' })
-    }}>
-      <h2>拒发规则</h2>
-      <div className="form-grid">
-        <Field label="邮箱或域名"><input name="target" required /></Field>
-        <Field label="操作"><select name="operation"><option value="block">加入拒发</option><option value="unblock">移除拒发</option></select></Field>
-      </div>
-      <div className="form-footer"><button className="button" disabled={action.isPending}>保存规则</button></div>
+  return <section className="panel mail-settings-panel">
+    <h2><Ban aria-hidden="true" />拒发名单</h2>
+    <p className="muted">按邮箱地址或域名阻止发送。Core 在入队和发送前应用此名单。</p>
+    <form className="mail-suppression-form" onSubmit={event => { event.preventDefault(); change.mutate({ target: input.trim(), blocked: true }) }}>
+      <Field label="邮箱或域名"><input value={input} onChange={event => setInput(event.target.value)} maxLength={320} required /></Field>
+      <button className="button primary" disabled={!input.trim() || change.isPending}><Plus aria-hidden="true" />加入拒发名单</button>
     </form>
-  </>
+    {notice && <p role="status" className="muted">{notice}</p>}
+    {(rules.isError || change.isError) && <ErrorNotice error={rules.error ?? change.error} />}
+    {rules.isPending && <Empty>正在读取拒发名单…</Empty>}
+    {rules.data && !rules.data.rows.length && <Empty>当前没有拒发规则。</Empty>}
+    {rules.data && <><ul className="record-list">{rules.data.rows.map(target => <li key={target}>
+      <strong>{target}</strong>
+      <ConfirmButton label={`将 ${target} 移出拒发名单？`} disabled={change.isPending}
+        onConfirm={() => change.mutate({ target, blocked: false })}>移出</ConfirmButton>
+    </li>)}</ul><Pagination offset={offset} more={rules.data.has_more} change={setOffset} /></>}
+  </section>
 }
 
-function AccountEditor({ account, busy, save, cancel }: {
-  account: Account; busy: boolean; save: (input: Extract<MailCommand, { action: 'update_account' }>['input']) => void; cancel: () => void
-}) {
-  const [security, setSecurity] = useState<'tls' | 'starttls'>(account.security ?? 'tls')
-  const [port, setPort] = useState(account.port ?? 465)
-  return <form className="inline-form" onSubmit={event => {
-    event.preventDefault()
-    const form = event.currentTarget
-    const data = new FormData(form)
-    const value = (key: string) => String(data.get(key) ?? '')
-    const password = value('password')
-    save({ id: account.id, name: value('name'), email: value('email'), host: value('host'),
-      port, security, username: value('username'), password: password || null })
-    const entry = form.elements.namedItem('password')
-    if (entry instanceof HTMLInputElement) entry.value = ''
-  }}>
-    <div className="form-grid">
-      <Field label="账户名称"><input name="name" defaultValue={account.name} required /></Field>
-      <Field label="发件邮箱"><input name="email" type="email" defaultValue={account.email} required /></Field>
-      <Field label="SMTP 主机"><input name="host" defaultValue={account.host} required /></Field>
-      <Field label="加密方式"><select value={security} onChange={event => {
-        const value = event.target.value as 'tls' | 'starttls'
-        setSecurity(value)
-        setPort(value === 'tls' ? 465 : 587)
-      }}><option value="tls">TLS</option><option value="starttls">STARTTLS（强制）</option></select></Field>
-      <Field label="端口"><input type="number" min="1" max="65535" value={port || ''} onChange={event => setPort(event.target.valueAsNumber)} required /></Field>
-      <Field label="登录名"><input name="username" defaultValue={account.username ?? account.email} required /></Field>
-      <Field label="新授权码或密码（留空保留原值）"><input name="password" type="password" autoComplete="new-password" /></Field>
-    </div>
-    <p className="muted">更换发件邮箱地址后，请重新配置收件设置，并重新选择 Agent 对该邮箱的发信授权。</p>
-    <div className="form-footer"><button type="button" className="button" onClick={cancel}>取消</button>
-      <button className="button primary" disabled={busy}>保存修改</button></div>
-  </form>
+function ReplyComposer({ reply, saved, close }: { reply: ReplyTarget; saved: (id: string) => void; close: () => void }) {
+  const contact = useQuery({ queryKey: ['contact', reply.contact_id], queryFn: () => request({ action: 'get_contact', id: reply.contact_id }, 'contact') })
+  if (contact.isError) return <><ErrorNotice error={contact.error} /><button type="button" className="button" onClick={close}>返回收件箱</button></>
+  return contact.data ? <DraftForm contact={contact.data.record} reply={reply} saved={saved} close={close} /> : <Empty>正在读取客户…</Empty>
 }
 
-function DraftForm({ contact, existing, saved, close }: {
-  contact: Contact; existing?: Draft; saved: (id: string) => void; close: () => void
+function DraftForm({ contact, existing, reply, saved, close }: {
+  contact: Contact; existing?: Draft; reply?: ReplyTarget; saved: (id: string) => void; close: () => void
 }) {
   const emails = contact.input.methods.filter(method => method.kind === 'email')
-  const [account, setAccount] = useState(existing?.account_id ?? '')
-  const [recipient, setRecipient] = useState(existing?.recipient ?? (emails.find(m => m.is_primary) ?? emails[0])?.value ?? '')
+  const [account, setAccount] = useState(existing?.account_id ?? reply?.account_id ?? '')
+  const [recipient, setRecipient] = useState(existing?.recipient ?? reply?.sender ?? (emails.find(m => m.is_primary) ?? emails[0])?.value ?? '')
   const [subject, setSubject] = useState(existing?.subject ?? '')
   const [body, setBody] = useState(existing?.body ?? '')
+  const [revision] = useState(existing?.revision ?? null)
   const [files, setFiles] = useState<Asset[]>([])
   const [replace, setReplace] = useState(false)
   const [fileError, setFileError] = useState('')
   const [readingFiles, setReadingFiles] = useState(false)
+  const [choosingTemplate, setChoosingTemplate] = useState(false)
   const cache = useQueryClient()
   const accounts = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
   const senderRows = accounts.data?.kind === 'accounts' ? accounts.data.rows : []
-  const sender = account ? (senderRows.some(row => row.id === account) ? account : '') : senderRows[0]?.id || ''
+  const sender = account ? (senderRows.some(row => row.id === account) ? account : '') : senderRows.find(row => row.is_default)?.id ?? senderRows[0]?.id ?? ''
   const currentRecipient = emails.find(item => item.value.toLowerCase() === recipient.toLowerCase())?.value ?? recipient
+  const fixedReply = Boolean(reply || existing?.reply_to_inbox_id)
   const save = useMutation({
     mutationFn: () => {
       const input: DraftInput = { contact_id: contact.id, account_id: sender, recipient: currentRecipient,
         subject, body, attachments: [], replace_attachments: replace }
+      const assetIds = files.map(file => file.id)
+      if (reply) return mailCall({ action: 'create_reply_draft', input: { inbox_message_id: reply.id, subject: subject.trim() || null, body }, asset_ids: assetIds }, 'saved')
+      if (existing && revision !== null) {
+        return mailCall({ action: 'update_draft', id: existing.id, expected_revision: revision, input, asset_ids: replace ? assetIds : null }, 'saved')
+      }
       return replace
-        ? mailCall({ action: 'save_draft_with_assets', id: existing?.id ?? null, input, asset_ids: files.map(file => file.id) }, 'saved')
-        : mailCall({ action: 'save_draft', id: existing?.id ?? null, input }, 'saved')
+        ? mailCall({ action: 'save_draft_with_assets', id: null, input, asset_ids: assetIds }, 'saved')
+        : mailCall({ action: 'save_draft', id: null, input }, 'saved')
     },
     onSuccess: async result => {
       await Promise.all([cache.invalidateQueries({ queryKey: ['mail-drafts'] }), cache.invalidateQueries({ queryKey: ['mail-draft', result.id] })])
@@ -238,17 +287,21 @@ function DraftForm({ contact, existing, saved, close }: {
   }
   return <form onSubmit={event => { event.preventDefault(); save.mutate() }}>
     <fieldset className="panel" disabled={save.isPending}>
-      <div className="section-heading"><h2>{existing ? '编辑邮件草稿' : '写邮件'} · {contact.input.display_name}</h2>
-        <button type="button" className="button" onClick={close}>取消</button></div>
+      <div className="section-heading"><h2>{existing ? '编辑邮件草稿' : reply ? '回复邮件' : '写邮件'} · {contact.input.display_name}</h2>
+        <div className="row-actions"><button type="button" className="button" aria-expanded={choosingTemplate} onClick={() => setChoosingTemplate(value => !value)}>
+          <FilePenLine aria-hidden="true" />选择模板</button><button type="button" className="button" onClick={close}>取消</button></div></div>
       {accounts.isError && <ErrorNotice error={accounts.error} />}
       {accounts.data && senderRows.length === 0 && <p className="alert warning">请先在「发件账户」配置 SMTP。</p>}
       {emails.length === 0 && <p className="alert warning">请先在客户资料中添加邮箱。</p>}
+      {reply && <p className="muted">原邮件 · {reply.subject || '无主题'}</p>}
+      {choosingTemplate && <DraftTemplatePicker contactId={contact.id} hasText={Boolean(subject.trim() || body.trim())}
+        onClose={() => setChoosingTemplate(false)} onApply={data => { setSubject(data.subject); setBody(data.body); setChoosingTemplate(false) }} />}
       <div className="form-grid">
-        <Field label="发件账户"><select value={sender} onChange={e => setAccount(e.target.value)} required>
+        <Field label="发件账户"><select value={sender} onChange={e => setAccount(e.target.value)} disabled={fixedReply} required>
           <option value="" disabled>选择账户</option>{senderRows.map(row => <option key={row.id} value={row.id}>{row.name} · {row.email}</option>)}</select></Field>
-        <Field label="收件邮箱"><select value={currentRecipient} onChange={e => setRecipient(e.target.value)} required>
+        <Field label="收件邮箱"><select value={currentRecipient} onChange={e => setRecipient(e.target.value)} disabled={fixedReply} required>
           <option value="" disabled>选择邮箱</option>{emails.map(row => <option key={row.value} value={row.value}>{row.value}</option>)}</select></Field>
-        <Field label="主题"><input value={subject} onChange={e => setSubject(e.target.value)} required /></Field>
+        <Field label="主题"><input value={subject} onChange={e => setSubject(e.target.value)} required={!reply} placeholder={reply ? '留空沿用原邮件主题' : undefined} /></Field>
       </div>
       <Field label="正文"><textarea rows={10} value={body} onChange={e => setBody(e.target.value)} required /></Field>
       {senderRows.find(row => row.id === sender)?.signature && <button type="button" className="button" onClick={() => {
@@ -270,8 +323,8 @@ function DraftForm({ contact, existing, saved, close }: {
   </form>
 }
 
-function DraftView({ id, editing, edit, back, saved, openContact }: {
-  id: string; editing: boolean; edit: () => void; back: () => void; saved: (id: string) => void; openContact: (id: string) => void
+function DraftView({ id, editing, edit, saved, openContact, bounced, queueArea, onReply }: {
+  id: string; editing: boolean; edit: () => void; saved: (id: string) => void; openContact: (id: string) => void; bounced: boolean; queueArea: boolean; onReply: (message: ReplyTarget) => void
 }) {
   const cache = useQueryClient()
   const [history, setHistory] = useState(false)
@@ -291,26 +344,28 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
       return mailCall({ action, id }, 'queued')
     },
     onSuccess: async () => {
-      await Promise.all([cache.invalidateQueries({ queryKey: ['mail-drafts'] }), cache.invalidateQueries({ queryKey: ['mail-draft', id] })])
+      saved(id)
+      await Promise.all([cache.invalidateQueries({ queryKey: ['mail-drafts'] }), cache.invalidateQueries({ queryKey: ['mail-draft', id] }),
+        cache.invalidateQueries({ queryKey: ['mail-queue-summary'] })])
     },
   })
-  if (draft.isError) return <><button className="button" onClick={back}>返回草稿</button><ErrorNotice error={draft.error} /></>
+  if (draft.isError) return <ErrorNotice error={draft.error} />
   if (!record) return <Empty>正在读取草稿…</Empty>
-  if (history && record.thread_id) return <MailThread threadId={record.thread_id} close={() => setHistory(false)} openContact={openContact} />
+  if (history && record.thread_id) return <MailThread threadId={record.thread_id} close={() => setHistory(false)} openContact={openContact} onReply={onReply} />
   if (editing) return contact.isError ? <ErrorNotice error={contact.error} /> : contact.data ?
     <DraftForm contact={contact.data.record} existing={record} saved={saved} close={() => saved(id)} /> : <Empty>正在读取客户…</Empty>
 
   const expired = record.approval_expired
   const attempt = record.approval_attempt
   const waiting = attempt?.state === 'waiting'
-  return <section className="panel">
-    <button className="text-button back-link" onClick={back}>返回邮件草稿</button>
+  return <section className="panel mail-reading-panel">
     <div className="section-heading">
-      <div><h2>{record.subject}</h2><p className="muted">{expired ? '批准已过期' : states[record.state]}{record.has_reply ? ' · 已有回复' : ''} · 修订 {record.revision} · {sourceLabel(record.source)}</p></div>
+      <div><MailStatus row={record} bounced={bounced} /><h2>{record.subject}</h2>
+        <p className="muted">{record.reply_to_inbox_id ? '会话回复 · ' : ''}{record.has_reply ? '已有回复 · ' : ''}修订 {record.revision} · {record.agent_name || sourceLabel(record.source)}</p></div>
       <div className="row-actions">
-        <button className="button" onClick={() => openContact(record.contact_id)}>打开客户</button>
-        {record.thread_id && <button className="button" onClick={() => setHistory(true)}>邮件往来</button>}
-        {['draft', 'pending_approval', 'approved'].includes(record.state) && <button className="button" onClick={edit}>编辑草稿</button>}
+        <button className="button" onClick={() => openContact(record.contact_id)}><UserRound aria-hidden="true" />打开客户</button>
+        {record.thread_id && <button className="button" onClick={() => setHistory(true)}><Mail aria-hidden="true" />邮件往来</button>}
+        {['draft', 'pending_approval', 'approved'].includes(record.state) && <button className="button" onClick={edit}><Pencil aria-hidden="true" />编辑草稿</button>}
         {record.account_active && record.state === 'draft' && <button className="button primary" disabled={transition.isPending} onClick={() => transition.mutate('request_approval')}>提交审核</button>}
         {record.account_active && (record.state === 'pending_approval' || (record.state === 'approved' && expired)) &&
           <button className="button primary" disabled={transition.isPending || waiting} onClick={() => transition.mutate('open_approval')}>{expired ? '重新审核' : '人工批准'}</button>}
@@ -326,15 +381,24 @@ function DraftView({ id, editing, edit, back, saved, openContact }: {
     {attempt?.state === 'approved' && attempt.revision === record.revision && record.state === 'approved' && !expired && <p role="status">当前修订已批准，可以提交发件。</p>}
     {attempt?.outcome && (attempt.state === 'failed' || attempt.state === 'interrupted') && <ErrorNotice error={attempt.outcome} />}
     {transition.isError && <ErrorNotice error={transition.error} />}
-    <dl className="profile-grid">
+    <dl className={queueArea ? 'review-properties mail-job-properties' : 'profile-grid'}>
       <div><dt>发件人</dt><dd>{record.sender}</dd></div>
       <div><dt>收件人</dt><dd>{record.recipient}</dd></div>
-      {record.expires_at !== null && <div><dt>批准有效至</dt><dd>{dateLabel(record.expires_at)}</dd></div>}
+      {queueArea && <>
+        <div><dt>更新时间</dt><dd>{dateLabel(record.updated_at)}</dd></div>
+        {record.job_id && <div><dt>发送编号</dt><dd>{record.job_id}</dd></div>}
+        {record.task_id && <div><dt>Agent 任务</dt><dd>{record.task_id}</dd></div>}
+        {record.outcome && record.state !== 'smtp_accepted' && <div><dt>提交结果</dt><dd>{mailError(record.outcome)}</dd></div>}
+      </>}
+      {!queueArea && record.expires_at !== null && <div><dt>批准有效至</dt><dd>{dateLabel(record.expires_at)}</dd></div>}
     </dl>
-    <h3>正文</h3><p className="mail-body">{record.body}</p>
-    {record.attachments.length > 0 && <><h3>附件</h3><ul className="source-list">{record.attachments.map(file =>
-      <li key={file.filename + file.sha256}>{file.filename} · {file.size.toLocaleString()} 字节 <small>SHA-256 {file.sha256}</small></li>)}</ul></>}
-    {record.outcome && record.state !== 'smtp_accepted' && <ErrorNotice error={record.outcome} />}
+    {record.state === 'delivery_unknown' && <p className="alert warning">请先核对邮箱服务记录，再决定后续处理。</p>}
+    {queueArea ? <details className="mail-conversation"><summary><Mail aria-hidden="true" />查看邮件正文</summary><p className="mail-body">{record.body}</p></details>
+      : <><h3>正文</h3><p className="mail-body">{record.body}</p></>}
+    {record.attachments.length > 0 && <><h3>附件</h3><ul className="source-list">{record.attachments.map((file, index) =>
+      <li key={file.filename + file.sha256 + index}>{file.filename} · {file.size.toLocaleString()} 字节 <small>SHA-256 {file.sha256}</small>
+        <AttachmentActions source="outbound" id={record.id} index={index} filename={file.filename} /></li>)}</ul></>}
+    {!queueArea && record.outcome && record.state !== 'smtp_accepted' && <ErrorNotice error={record.outcome} />}
     {record.state === 'smtp_accepted' && <p className="muted">SMTP 服务器已接受提交。送达与回复状态以邮件服务为准。</p>}
   </section>
 }

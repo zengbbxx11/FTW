@@ -20,6 +20,9 @@ impl MailService {
         expire_review(&mut connection).await?;
         let policy = current(&mut connection).await?;
         let agents = agents(&mut connection).await?;
+        let (require_registered_crm, require_registered_mail) = sqlx::query_as(
+            "SELECT require_registered_crm,require_registered_mail FROM agent_collaboration_settings WHERE id=1")
+            .fetch_one(&mut *connection).await?;
         let review = sqlx::query(
             "SELECT id,state,outcome FROM mail_agent_reviews ORDER BY rowid DESC LIMIT 1",
         )
@@ -35,6 +38,8 @@ impl MailService {
             agents,
             review,
             automatic_available: self.ledger.is_some(),
+            require_registered_crm,
+            require_registered_mail,
         })
     }
 
@@ -155,13 +160,15 @@ impl MailService {
 
 async fn agents(db: &mut SqliteConnection) -> Result<Vec<RegisteredAgent>> {
     Ok(
-        sqlx::query("SELECT id,name,revoked,automatic FROM mail_agent_clients ORDER BY name,id")
-            .map(|row: sqlx::sqlite::SqliteRow| RegisteredAgent {
+        sqlx::query("SELECT id,name,revoked,automatic,collaboration_scopes FROM mail_agent_clients ORDER BY name,id")
+            .try_map(|row: sqlx::sqlite::SqliteRow| Ok(RegisteredAgent {
                 id: row.get("id"),
                 name: row.get("name"),
                 revoked: row.get("revoked"),
                 automatic: row.get("automatic"),
-            })
+                collaboration_scopes: serde_json::from_str(row.get("collaboration_scopes"))
+                    .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+            }))
             .fetch_all(db)
             .await?,
     )

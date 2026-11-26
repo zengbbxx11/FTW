@@ -5,12 +5,17 @@ mod mail;
 mod server;
 mod storage;
 
-use ftw_ipc::{PipeEndpoint, Profile, Response, CORE_ALREADY_RUNNING};
+use ftw_ipc::{
+    diagnostics::{self, Component, Log},
+    PipeEndpoint, Profile, Response, CORE_ALREADY_RUNNING,
+};
 use std::{env, io, path::PathBuf, process::ExitCode, time::Duration};
 
 #[derive(Debug, thiserror::Error)]
 enum CoreError {
-    #[error("usage: ftw-core <serve [--idle-exit] | health> [--dev-root ABSOLUTE_PATH]")]
+    #[error(
+        "usage: ftw-core <serve [--idle-exit] | health | diagnostics> [--dev-root ABSOLUTE_PATH]"
+    )]
     Usage,
     #[error("profile_unavailable: {0}")]
     Profile(#[source] io::Error),
@@ -26,8 +31,23 @@ enum CoreError {
     Health(String),
 }
 
+impl CoreError {
+    fn diagnostic_code(&self) -> &'static str {
+        match self {
+            Self::Usage => "invalid_arguments",
+            Self::Profile(_) => "profile_unavailable",
+            Self::AlreadyRunning => "core_already_running",
+            Self::Io(code, _) => code,
+            Self::Database(_) => "database_unavailable",
+            Self::Migration(_) => "migration_failed",
+            Self::Health(_) => "health_unavailable",
+        }
+    }
+}
+
 struct Options {
     serve: bool,
+    diagnostics: bool,
     idle_exit: bool,
     dev_root: Option<PathBuf>,
 }
@@ -36,13 +56,15 @@ impl Options {
     fn parse() -> Result<Self, CoreError> {
         let mut args = env::args_os().skip(1);
         let command = args.next().ok_or(CoreError::Usage)?;
-        let serve = match command.to_str() {
-            Some("serve") => true,
-            Some("health") => false,
+        let (serve, diagnostics) = match command.to_str() {
+            Some("serve") => (true, false),
+            Some("health") => (false, false),
+            Some("diagnostics") => (false, true),
             _ => return Err(CoreError::Usage),
         };
         let mut options = Self {
             serve,
+            diagnostics,
             idle_exit: false,
             dev_root: None,
         };
@@ -77,10 +99,25 @@ async fn main() -> ExitCode {
 async fn run() -> Result<(), CoreError> {
     let options = Options::parse()?;
     let executable = env::current_exe().map_err(CoreError::Profile)?;
-    let profile = Profile::resolve(&executable, options.dev_root).map_err(CoreError::Profile)?;
-    if options.serve {
-        return server::serve(profile, options.idle_exit).await;
+    if options.diagnostics {
+        let report = diagnostics::report(&executable, options.dev_root)
+            .map_err(|error| CoreError::Io("diagnostics_unavailable", error))?;
+        println!("{report}");
+        return Ok(());
     }
+    if options.serve {
+        let log = Log::new(&executable, options.dev_root.clone(), Component::Core);
+        log.install_panic_hook();
+        let result = match Profile::resolve(&executable, options.dev_root) {
+            Ok(profile) => server::serve(profile, &log, options.idle_exit).await,
+            Err(error) => Err(CoreError::Profile(error)),
+        };
+        if let Err(error) = &result {
+            log.event("process", error.diagnostic_code());
+        }
+        return result;
+    }
+    let profile = Profile::resolve(&executable, options.dev_root).map_err(CoreError::Profile)?;
 
     let endpoint = PipeEndpoint::for_data_directory(&profile.data)
         .map_err(|error| CoreError::Io("pipe_unavailable", error))?;

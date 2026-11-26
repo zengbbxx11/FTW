@@ -34,6 +34,8 @@ pub enum Command {
         contact_id: Option<String>,
         unmatched: bool,
         offset: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyword: Option<String>,
     },
     Get {
         id: String,
@@ -60,6 +62,9 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    SyncStatus {
+        account_id: Option<String>,
+    },
     DownloadFull {
         id: String,
     },
@@ -73,6 +78,10 @@ pub enum AgentCommand {
     List {
         contact_id: Option<String>,
         offset: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyword: Option<String>,
     },
     Thread {
         id: String,
@@ -121,6 +130,8 @@ pub struct ReviewCandidate {
     pub company: String,
     pub country: String,
     pub exact_sender: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_by: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -134,6 +145,9 @@ pub struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    SyncStatus {
+        rows: Vec<SyncStatus>,
+    },
     Body {
         text: String,
         next_offset: Option<u32>,
@@ -162,4 +176,13 @@ pub enum Result {
         account_id: String,
     },
     ConnectionVerified,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SyncStatus {
+    pub account_id: String,
+    pub configured: bool,
+    pub last_sync: Option<i64>,
+    pub outcome: Option<String>,
+    pub complete: bool,
 }

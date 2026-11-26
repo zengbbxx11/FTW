@@ -28,6 +28,9 @@ fn permitted(catalog: &query::Catalog, config: &Config) -> Result<()> {
     if let Some(group) = &config.group_field {
         catalog.group_kind(group)?;
     }
+    for field in &config.query.custom_columns {
+        catalog.kind(field)?;
+    }
     let mut columns = HashSet::new();
     if config.columns.len() > 100 {
         return Err(Error::Invalid("view_columns"));
@@ -41,21 +44,113 @@ fn permitted(catalog: &query::Catalog, config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn filter_references(filter: &ftw_ipc::views::Filter, field_id: &str) -> bool {
+    use ftw_ipc::views::Filter;
+    match filter {
+        Filter::Rule { field, .. } => field == field_id,
+        Filter::Group { children, .. } => children
+            .iter()
+            .any(|child| filter_references(child, field_id)),
+    }
+}
+
+pub(super) async fn check_field_archive(db: &mut SqliteConnection, field_id: &str) -> Result<()> {
+    let configs: Vec<String> =
+        sqlx::query_scalar("SELECT config_json FROM crm_views WHERE NOT archived")
+            .fetch_all(db)
+            .await?;
+    for config in configs {
+        let config: Config =
+            serde_json::from_str(&config).map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
+        if config
+            .query
+            .filter
+            .as_ref()
+            .is_some_and(|filter| filter_references(filter, field_id))
+            || config
+                .query
+                .order
+                .iter()
+                .any(|order| order.field == field_id)
+            || config.group_field.as_deref() == Some(field_id)
+            || config
+                .query
+                .group
+                .as_ref()
+                .is_some_and(|(field, _)| field == field_id)
+        {
+            return Err(Error::Invalid("field_in_use_by_view"));
+        }
+    }
+    Ok(())
+}
+
+async fn archived_fields(db: &mut SqliteConnection) -> Result<HashSet<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM crm_fields WHERE archived")
+            .fetch_all(db)
+            .await?
+            .into_iter()
+            .collect(),
+    )
+}
+
+fn omit_archived_columns(config: &mut Config, archived: &HashSet<String>) {
+    config
+        .columns
+        .retain(|column| !archived.contains(&column.field));
+    config
+        .query
+        .custom_columns
+        .retain(|field| !archived.contains(field));
+}
+
+fn preserve_archived_columns(config: &mut Config, previous: Config, archived: &HashSet<String>) {
+    for (index, column) in previous.columns.into_iter().enumerate() {
+        if archived.contains(&column.field) {
+            config
+                .columns
+                .insert(index.min(config.columns.len()), column);
+        }
+    }
+    let fields = &mut config.query.custom_columns;
+    for (index, field) in previous.query.custom_columns.into_iter().enumerate() {
+        if archived.contains(&field) {
+            fields.insert(index.min(fields.len()), field);
+        }
+    }
+}
+
 pub async fn list(pool: &SqlitePool, actor: Actor<'_>, archived: bool) -> Result<Reply> {
+    list_with_status(pool, actor, if archived { None } else { Some(false) }).await
+}
+
+pub async fn list_archived(pool: &SqlitePool, actor: Actor<'_>) -> Result<Reply> {
+    list_with_status(pool, actor, Some(true)).await
+}
+
+async fn list_with_status(
+    pool: &SqlitePool,
+    actor: Actor<'_>,
+    archived: Option<bool>,
+) -> Result<Reply> {
     let desktop = matches!(actor.source, Source::Manual);
+    let mut tx = pool.begin().await?;
     let rows: Vec<ViewRow> = sqlx::query_as(
         "SELECT id,name,revision,hidden,is_default,archived,config_json
-        FROM crm_views WHERE (? OR NOT archived) AND (? OR NOT hidden) ORDER BY position,id",
+        FROM crm_views WHERE (?1 IS NULL OR archived=?1) AND (?2 OR NOT hidden) ORDER BY position,id",
     )
-    .bind(archived && desktop)
+    .bind(archived)
     .bind(desktop)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
-    let catalog = query::catalog(pool, actor).await?;
+    let catalog = query::catalog_on(&mut tx, actor).await?;
+    let archived = archived_fields(&mut tx).await?;
     let mut views = Vec::new();
     for row in rows {
-        let config: Config = serde_json::from_str(&row.config_json)
+        let mut config: Config = serde_json::from_str(&row.config_json)
             .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
+        omit_archived_columns(&mut config, &archived);
         if !desktop && permitted(&catalog, &config).is_err() {
             continue;
         }
@@ -69,15 +164,8 @@ pub async fn list(pool: &SqlitePool, actor: Actor<'_>, archived: bool) -> Result
             config,
         });
     }
+    tx.commit().await?;
     Ok(Reply::Views { views })
-}
-
-fn desktop(actor: Actor<'_>) -> Result<()> {
-    if matches!(actor.source, Source::Manual) {
-        Ok(())
-    } else {
-        Err(Error::ReadOnly)
-    }
 }
 
 async fn header(db: &mut SqliteConnection, id: &str, revision: i64) -> Result<(bool, bool, i64)> {
@@ -104,7 +192,10 @@ async fn name_available(db: &mut SqliteConnection, id: &str, name: &str) -> Resu
 }
 
 pub async fn save(pool: &SqlitePool, actor: Actor<'_>, mut input: ViewInput) -> Result<Reply> {
-    desktop(actor)?;
+    let agent = matches!(actor.source, Source::Agent);
+    if agent && (input.hidden || input.is_default) {
+        return Err(Error::ReadOnly);
+    }
     validation::text(&mut input.name, "view_name", 100, true)?;
     if input.hidden && input.is_default {
         return Err(Error::Invalid("view_default_hidden"));
@@ -116,9 +207,11 @@ pub async fn save(pool: &SqlitePool, actor: Actor<'_>, mut input: ViewInput) -> 
             validation::text(label, "view_column_label", 96, true)?;
         }
     }
-    permitted(&query::catalog(pool, actor).await?, &input.config)?;
-    let data = serde_json::to_string(&input.config).map_err(|_| Error::Invalid("view_config"))?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let catalog = query::catalog_on(&mut tx, actor).await?;
+    let archived_column_ids = archived_fields(&mut tx).await?;
+    omit_archived_columns(&mut input.config, &archived_column_ids);
+    permitted(&catalog, &input.config)?;
     let inserting = input.id.is_none();
     let id = input.id.unwrap_or_else(new_id);
     name_available(&mut tx, &id, &input.name).await?;
@@ -141,10 +234,27 @@ pub async fn save(pool: &SqlitePool, actor: Actor<'_>, mut input: ViewInput) -> 
         if archived {
             return Err(Error::ReadOnly);
         }
+        if agent {
+            check_shared(&mut tx, &id, &catalog, false).await?;
+        }
         if was_default && !input.is_default {
             return Err(Error::Invalid("view_choose_default"));
         }
+        if !archived_column_ids.is_empty() {
+            let previous: String =
+                sqlx::query_scalar("SELECT config_json FROM crm_views WHERE id=?")
+                    .bind(&id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            let previous =
+                serde_json::from_str(&previous).map_err(|_| Error::Invalid("view_config"))?;
+            preserve_archived_columns(&mut input.config, previous, &archived_column_ids);
+            if input.config.columns.len() > 100 {
+                return Err(Error::Invalid("view_columns"));
+            }
+        }
     }
+    let data = serde_json::to_string(&input.config).map_err(|_| Error::Invalid("view_config"))?;
     if input.is_default {
         sqlx::query(
             "UPDATE crm_views SET is_default=0,revision=revision+1 WHERE is_default=1 AND id<>?",
@@ -177,19 +287,29 @@ pub async fn archive(
     revision: i64,
     archived: bool,
 ) -> Result<Reply> {
-    desktop(actor)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if matches!(actor.source, Source::Agent) {
+        let catalog = query::catalog_on(&mut tx, actor).await?;
+        check_shared(&mut tx, id, &catalog, !archived).await?;
+    }
     let (current, default, _) = header(&mut tx, id, revision).await?;
     if default && archived {
         return Err(Error::Invalid("view_choose_default"));
     }
     if current != archived {
         if !archived {
-            let name: String = sqlx::query_scalar("SELECT name FROM crm_views WHERE id=?")
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let (name, config): (String, String) =
+                sqlx::query_as("SELECT name, config_json FROM crm_views WHERE id=?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             name_available(&mut tx, id, &name).await?;
+            if matches!(actor.source, Source::Manual) {
+                let mut config =
+                    serde_json::from_str(&config).map_err(|_| Error::Invalid("view_config"))?;
+                omit_archived_columns(&mut config, &archived_fields(&mut tx).await?);
+                permitted(&query::catalog_on(&mut tx, actor).await?, &config)?;
+            }
         }
         sqlx::query("UPDATE crm_views SET archived=?,revision=revision+1 WHERE id=?")
             .bind(archived)
@@ -209,6 +329,38 @@ pub async fn archive(
     Ok(Reply::Saved { id: id.into() })
 }
 
+async fn check_shared(
+    db: &mut SqliteConnection,
+    id: &str,
+    catalog: &query::Catalog,
+    allow_archived: bool,
+) -> Result<()> {
+    let config: String = sqlx::query_scalar("SELECT config_json FROM crm_views WHERE id=? AND NOT hidden AND (? OR NOT archived) AND NOT is_default")
+        .bind(id).bind(allow_archived).fetch_optional(&mut *db).await?.ok_or(Error::ReadOnly)?;
+    let mut config = serde_json::from_str(&config).map_err(|_| Error::Invalid("view_config"))?;
+    omit_archived_columns(&mut config, &archived_fields(db).await?);
+    permitted(catalog, &config).map_err(|_| Error::ReadOnly)
+}
+
+pub async fn query_saved(
+    pool: &SqlitePool,
+    actor: Actor<'_>,
+    id: &str,
+    offset: u32,
+) -> Result<Reply> {
+    let Reply::Views { views } = list(pool, actor, false).await? else {
+        unreachable!("list returns saved views")
+    };
+    let mut query = views
+        .into_iter()
+        .find(|view| view.id == id)
+        .ok_or(Error::NotFound)?
+        .config
+        .query;
+    query.offset = offset;
+    super::contacts::list(pool, query, actor).await
+}
+
 pub async fn move_view(
     pool: &SqlitePool,
     actor: Actor<'_>,
@@ -216,29 +368,47 @@ pub async fn move_view(
     revision: i64,
     direction: i8,
 ) -> Result<Reply> {
-    desktop(actor)?;
     let (comparison, order) = match direction {
         -1 => ("<", "DESC"),
         1 => (">", "ASC"),
         _ => return Err(Error::Invalid("view_direction")),
     };
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let desktop = matches!(actor.source, Source::Manual);
+    let shared = if desktop {
+        None
+    } else {
+        let catalog = query::catalog_on(&mut tx, actor).await?;
+        check_shared(&mut tx, id, &catalog, false).await?;
+        Some((catalog, archived_fields(&mut tx).await?))
+    };
     let (archived, _, position) = header(&mut tx, id, revision).await?;
     if archived {
         return Err(Error::ReadOnly);
     }
     let sql = format!(
-        "SELECT id,position FROM crm_views WHERE NOT archived AND position{comparison}?
-        ORDER BY position {order},id LIMIT 1"
+        "SELECT id,position,config_json FROM crm_views WHERE NOT archived AND position{comparison}?
+        AND (? OR (NOT hidden AND NOT is_default)) ORDER BY position {order},id"
     );
-    if let Some((other, neighbor)) = sqlx::query_as::<_, (String, i64)>(&sql)
+    let candidates: Vec<(String, i64, String)> = sqlx::query_as(&sql)
         .bind(position)
-        .fetch_optional(&mut *tx)
-        .await?
-    {
+        .bind(desktop)
+        .fetch_all(&mut *tx)
+        .await?;
+    for (other, neighbor, config) in candidates {
+        if let Some((catalog, archived)) = &shared {
+            let Ok(mut config) = serde_json::from_str(&config) else {
+                continue;
+            };
+            omit_archived_columns(&mut config, archived);
+            if permitted(catalog, &config).is_err() {
+                continue;
+            }
+        }
         sqlx::query("UPDATE crm_views SET position=CASE WHEN id=? THEN ? ELSE ? END,revision=revision+1 WHERE id IN (?,?)")
             .bind(id).bind(neighbor).bind(position).bind(id).bind(other).execute(&mut *tx).await?;
         audit(&mut tx, actor, "customer_view", id, "move").await?;
+        break;
     }
     tx.commit().await?;
     Ok(Reply::Saved { id: id.into() })

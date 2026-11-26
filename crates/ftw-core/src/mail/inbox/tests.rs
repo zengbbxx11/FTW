@@ -90,9 +90,10 @@ async fn associates_exact_replies_and_deduplicates_after_uidvalidity_change() {
     store::save(&pool, "acct", 13, 10, spoof.as_bytes(), None, false)
         .await
         .unwrap();
-    let inbox::Result::Rows { rows, .. } = store::list(&pool, Some("acct".into()), None, true, 0)
-        .await
-        .unwrap()
+    let inbox::Result::Rows { rows, .. } =
+        store::list(&pool, Some("acct".into()), None, true, 0, None)
+            .await
+            .unwrap()
     else {
         panic!("rows")
     };
@@ -128,6 +129,59 @@ async fn associates_exact_replies_and_deduplicates_after_uidvalidity_change() {
     };
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[1].row.contact_id, Some(contact));
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn replies_to_a_followup_stay_in_the_conversation_and_target_that_send() {
+    let (_directory, pool, contact) = fixture().await;
+    sqlx::query("INSERT INTO email_drafts(id,contact_id,account_id,recipient,subject,body_text,attachments_json,source)
+        VALUES('followup',?,'acct','buyer@example.test','Re: Quote','Follow-up','[]','manual')")
+        .bind(&contact).execute(&pool).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO email_approvals(id,draft_id,revision,content_sha256,approved_by_user,expires_at)
+         VALUES('followup-approval','followup',1,'fixture','test',unixepoch()+600);
+         INSERT INTO email_outbox_jobs(id,draft_id,approval_id,revision,message_id_header,state)
+         VALUES('followup-job','followup','followup-approval',1,'<followup@ftw.local>','smtp_accepted');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO email_messages(id,contact_id,account_id,outbox_id,message_id_header,from_address,to_address,subject,body_text,submitted_at,conversation_id)
+        VALUES('followup-sent',?,'acct','followup-job','<followup@ftw.local>','sender@example.test','buyer@example.test',
+          'Re: Quote','Follow-up',1700000001,'sent:outgoing')")
+        .bind(&contact).execute(&pool).await.unwrap();
+    let reply = String::from_utf8_lossy(MAIL).replace("<out@ftw.local>", "<followup@ftw.local>");
+    store::save(
+        &pool,
+        "acct",
+        12,
+        1,
+        reply.as_bytes(),
+        Some(1700000100),
+        false,
+    )
+    .await
+    .unwrap();
+    let row: (String, String, String) =
+        sqlx::query_as("SELECT thread_id,match_state,reply_to_sent_id FROM inbox_messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        row,
+        (
+            "sent:outgoing".into(),
+            "thread".into(),
+            "followup-sent".into()
+        )
+    );
+    let inbox::Result::Thread { messages, .. } =
+        store::thread(&pool, "sent:outgoing", 0).await.unwrap()
+    else {
+        panic!("thread")
+    };
+    assert_eq!(messages.len(), 3);
     pool.close().await;
 }
 

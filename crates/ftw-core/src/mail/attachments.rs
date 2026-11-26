@@ -18,40 +18,19 @@ pub const INBOX_LIMIT: usize = 16 * 1024 * 1024;
 
 impl MailService {
     pub(super) async fn import_assets(&self, paths: Vec<String>) -> Result<Reply> {
-        let root = self.objects()?;
-        if paths.is_empty() || paths.len() > 4 {
-            return Err(Failure::Code("attachment_limit"));
-        }
-        let mut imported = Vec::new();
-        let mut remaining = LIMIT;
-        for path in paths {
-            let path = PathBuf::from(path);
-            if !path.is_absolute() {
-                return Err(Failure::Code("invalid_attachments"));
-            }
-            let filename = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .ok_or(Failure::Code("invalid_attachments"))?;
-            check_text(filename, 180)?;
-            let data = read_bounded(&path, remaining).await.map_err(file_error)?;
-            let content_type = mime_for(filename, &data).ok_or(Failure::Code("attachment_type"))?;
-            remaining -= data.len();
-            let sha = store(root, &data).await.map_err(file_error)?;
-            imported.push((filename.to_owned(), data.len() as i64, content_type, sha));
-        }
+        let imported = import_objects(self.objects()?, paths).await?;
         let mut tx = self.pool.begin().await?;
         let mut rows = Vec::new();
-        for (filename, size, content_type, sha) in imported {
+        for file in imported {
             let row = sqlx::query(
                 "INSERT INTO mail_assets(id,filename,sha256,size,content_type) VALUES (?,?,?,?,?)
                 ON CONFLICT(sha256,filename) DO UPDATE SET filename=excluded.filename RETURNING *",
             )
             .bind(new_id())
-            .bind(filename)
-            .bind(sha)
-            .bind(size)
-            .bind(content_type)
+            .bind(file.filename)
+            .bind(file.sha256)
+            .bind(file.size)
+            .bind(file.content_type)
             .map(asset)
             .fetch_one(&mut *tx)
             .await?;
@@ -127,6 +106,77 @@ impl MailService {
             .as_deref()
             .ok_or(Failure::Code("attachment_storage_unavailable"))
     }
+}
+
+pub(super) struct ImportedObject {
+    pub filename: String,
+    pub size: i64,
+    pub content_type: &'static str,
+    pub sha256: String,
+}
+
+pub(super) async fn import_objects(root: &Path, paths: Vec<String>) -> Result<Vec<ImportedObject>> {
+    if paths.is_empty() || paths.len() > 4 {
+        return Err(Failure::Code("attachment_limit"));
+    }
+    let mut imported = Vec::new();
+    let mut remaining = LIMIT;
+    for path in paths {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(Failure::Code("invalid_attachments"));
+        }
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or(Failure::Code("invalid_attachments"))?;
+        let data = read_bounded(&path, remaining).await.map_err(file_error)?;
+        remaining -= data.len();
+        imported.push(import_bytes(root, filename, &data).await?);
+    }
+    Ok(imported)
+}
+
+pub(super) async fn import_bytes(
+    root: &Path,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<ImportedObject> {
+    check_text(filename, 180)?;
+    if filename.contains(['/', '\\', ':']) || bytes.len() > LIMIT {
+        return Err(Failure::Code("invalid_attachments"));
+    }
+    let content_type = mime_for(filename, bytes).ok_or(Failure::Code("attachment_type"))?;
+    Ok(ImportedObject {
+        filename: filename.to_owned(),
+        size: bytes.len() as i64,
+        content_type,
+        sha256: store(root, bytes).await.map_err(file_error)?,
+    })
+}
+
+pub(super) async fn write_new(destination: &str, bytes: &[u8]) -> Result<()> {
+    let path = Path::new(destination);
+    if !path.is_absolute() {
+        return Err(Failure::Code("invalid_attachments"));
+    }
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .await
+        .map_err(|_| Failure::Code("attachment_destination_unavailable"))?;
+    let result = async {
+        file.write_all(bytes).await?;
+        file.sync_all().await
+    }
+    .await;
+    drop(file);
+    if result.is_err() {
+        let _ = fs::remove_file(path).await;
+        return Err(Failure::Code("attachment_destination_unavailable"));
+    }
+    Ok(())
 }
 
 pub(super) async fn select(

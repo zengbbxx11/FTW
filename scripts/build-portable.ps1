@@ -34,6 +34,8 @@ New-Item -ItemType File -Path (Join-Path $destination 'portable.flag') | Out-Nul
 foreach ($guide in @('FTW-Agent-Quickstart.txt', 'FTW-Agent-Workflows.txt')) {
     Copy-Item -LiteralPath (Join-Path $root "docs\$guide") -Destination $destination
 }
+Copy-Item -LiteralPath (Join-Path $root 'apps\desktop\public\THIRD_PARTY_UI.txt') -Destination $destination
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'FTW-Diagnostics.cmd') -Destination $destination
 
 $acceptance = Join-Path $destination 'acceptance'
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'acceptance') -Destination $acceptance -Recurse
@@ -47,6 +49,10 @@ FTW portable for Windows x64
 Extract the whole folder to a writable location and run workbench.exe.
 WebView2 Evergreen Runtime must be available on the machine.
 Keep the three executables and portable.flag together with the data directory.
+
+For a problem report, go to System Status > Export Diagnostics in Workbench.
+If the window will not open, double-click FTW-Diagnostics.cmd in this folder.
+It prints the path to a local JSON file. Review the file before sharing it.
 
 For Codex and WorkBuddy, open FTW-Agent-Quickstart.txt for setup and
 FTW-Agent-Workflows.txt for ready-to-copy tasks. Both guides are in Chinese.

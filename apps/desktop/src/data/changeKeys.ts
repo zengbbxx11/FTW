@@ -1,16 +1,18 @@
 export type Versions = { epoch: string; domains: Record<string, number> }
 
 const keysByDomain: Record<string, string[]> = {
-  contacts: ['contacts', 'contact', 'lead'],
-  activity: ['contacts', 'contact', 'activities', 'dashboard'],
-  leads: ['leads', 'lead'],
-  mail: ['contacts', 'contact', 'mail-drafts', 'mail-draft', 'mail-accounts', 'inbox', 'inbox-record', 'inbox-thread', 'imap-accounts', 'dashboard'],
+  contacts: ['contacts', 'contact', 'contact-history', 'lead', 'sample-workspace', 'customer-files', 'audit', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics'],
+  activity: ['contacts', 'contact', 'activities', 'dashboard', 'sample-workspace', 'global-search'],
+  leads: ['leads', 'lead', 'contact', 'global-search', 'dashboard'],
+  mail: ['contacts', 'contact', 'mail-drafts', 'mail-draft', 'mail-queue-summary', 'mail-accounts', 'mail-suppression', 'customer-files', 'inbox', 'inbox-record', 'inbox-thread', 'imap-accounts', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics'],
   mail_expiration: ['mail-drafts', 'mail-draft', 'dashboard'],
   configuration: ['crm-states', 'contacts', 'contact'],
-  audit: ['audit'],
+  audit: ['audit', 'dashboard', 'agent-runs'],
   custom_fields: ['crm-fields', 'contact-fields', 'contacts', 'crm-views'],
   crm_views: ['crm-views'],
-  mail_assets: ['mail-assets', 'inbox-body'],
+  mail_assets: ['mail-assets', 'inbox-body', 'global-search'],
+  mail_templates: ['mail-templates', 'mail-template-preview'],
+  customer_documents: ['customer-files', 'global-search'],
   mail_agent_policy: ['agent-mail-settings'],
 }
 

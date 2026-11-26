@@ -218,7 +218,7 @@ pub(super) async fn save(
         let id = new_id();
         let delivery = if let Some(report) = &mail.delivery {
             sqlx::query_as::<_, (String, String, String)>(
-                "SELECT outbox_id,contact_id,'sent:' || id FROM email_messages
+                "SELECT outbox_id,contact_id,COALESCE(conversation_id,'sent:' || id) FROM email_messages
                 WHERE account_id=? AND message_id_header=? AND lower(to_address)=?",
             )
             .bind(account)
@@ -229,27 +229,29 @@ pub(super) async fn save(
         } else {
             None
         };
-        let (contact, thread, match_state) = if let Some((_, contact, thread)) = &delivery {
-            (Some(contact.clone()), thread.clone(), "delivery")
+        let (contact, thread, match_state, reply_to_sent) = if let Some((_, contact, thread)) =
+            &delivery
+        {
+            (Some(contact.clone()), thread.clone(), "delivery", None)
         } else if mail.role == "delivery_report" {
-            (None, format!("inbox:{id}"), "pending")
+            (None, format!("inbox:{id}"), "pending", None)
         } else {
-            let (contact, thread) = associate(&mut tx, account, &id, &mail).await?;
-            let state = if thread.starts_with("sent:") {
+            let (contact, thread, reply_to_sent) = associate(&mut tx, account, &id, &mail).await?;
+            let state = if thread != format!("inbox:{id}") {
                 "thread"
             } else if contact.is_some() {
                 "contact"
             } else {
                 "pending"
             };
-            (contact, thread, state)
+            (contact, thread, state, reply_to_sent)
         };
         let at = received.filter(|at| (0..=253_402_300_799).contains(at));
-        sqlx::query("INSERT INTO inbox_messages(id,account_id,contact_id,thread_id,message_id_header,raw_sha256,sender,subject,body_text,attachment_names,received_at,raw,kind,message_role,match_state,body_complete)
-            VALUES (?,?,?,?,?,?,?,?,?,?,COALESCE(?,unixepoch()),?,?,?,?,?)")
+        sqlx::query("INSERT INTO inbox_messages(id,account_id,contact_id,thread_id,message_id_header,raw_sha256,sender,subject,body_text,attachment_names,received_at,raw,kind,message_role,match_state,body_complete,reply_to_sent_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,COALESCE(?,unixepoch()),?,?,?,?,?,?)")
             .bind(&id).bind(account).bind(contact.as_deref()).bind(thread).bind(&mail.header_id).bind(hash).bind(&mail.sender)
             .bind(&mail.subject).bind(mail.body).bind(serde_json::json!(mail.attachments).to_string()).bind(at).bind(raw).bind(mail.kind)
-            .bind(mail.role).bind(match_state).bind(!oversized)
+            .bind(mail.role).bind(match_state).bind(!oversized).bind(reply_to_sent)
             .execute(&mut *tx).await?;
         if let (Some((outbox, _, _)), Some(report)) = (delivery, mail.delivery) {
             sqlx::query("INSERT INTO mail_delivery_events(inbox_id,outbox_id,action,status) VALUES (?,?,?,?)")
@@ -272,7 +274,7 @@ async fn associate(
     account: &str,
     id: &str,
     mail: &Parsed,
-) -> Result<(Option<String>, String)> {
+) -> Result<(Option<String>, String, Option<String>)> {
     let fallback_thread = format!("inbox:{id}");
     let address = mail.sender.to_ascii_lowercase();
     let matching: HashSet<String> = sqlx::query_scalar(
@@ -286,19 +288,19 @@ async fn associate(
     .collect();
 
     for reference in &mail.reply_ids {
-        let known: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT 'sent:' || id, contact_id FROM email_messages WHERE account_id=? AND message_id_header=?
-             UNION SELECT thread_id,contact_id FROM inbox_messages WHERE account_id=? AND message_id_header=? LIMIT 3",
+        let known: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT COALESCE(conversation_id,'sent:' || id), contact_id, id FROM email_messages WHERE account_id=? AND message_id_header=?
+             UNION SELECT thread_id,contact_id,NULL FROM inbox_messages WHERE account_id=? AND message_id_header=? LIMIT 3",
         ).bind(account).bind(format!("<{reference}>")).bind(account).bind(reference).fetch_all(&mut *db).await?;
-        if let [(thread, Some(contact))] = known.as_slice() {
+        if let [(thread, Some(contact), reply_to_sent)] = known.as_slice() {
             // An unverified sender may supply arbitrary References. Only an address belonging to
             // the matched contact can inherit that contact's thread automatically.
             if matching.contains(contact) {
-                return Ok((Some(contact.clone()), thread.clone()));
+                return Ok((Some(contact.clone()), thread.clone(), reply_to_sent.clone()));
             }
         }
         if !known.is_empty() {
-            return Ok((None, fallback_thread));
+            return Ok((None, fallback_thread, None));
         }
     }
     let contact = if matching.len() == 1 {
@@ -306,7 +308,7 @@ async fn associate(
     } else {
         None
     };
-    Ok((contact, fallback_thread))
+    Ok((contact, fallback_thread, None))
 }
 
 async fn activity(db: &mut SqliteConnection, message: &str, contact: &str) -> Result<()> {
@@ -321,7 +323,7 @@ async fn activity(db: &mut SqliteConnection, message: &str, contact: &str) -> Re
 }
 
 pub(super) async fn link(pool: &SqlitePool, id: &str, contact: &str) -> Result<Reply> {
-    link_contact(pool, id, contact, None).await
+    link_contact(pool, id, contact, None, crate::crm::Actor::DESKTOP).await
 }
 
 pub(super) async fn review_link(
@@ -330,8 +332,16 @@ pub(super) async fn review_link(
     contact: &str,
     expected_contact: Option<String>,
     expected_match: String,
+    actor: crate::crm::Actor<'_>,
 ) -> Result<Reply> {
-    link_contact(pool, id, contact, Some((expected_contact, expected_match))).await
+    link_contact(
+        pool,
+        id,
+        contact,
+        Some((expected_contact, expected_match)),
+        actor,
+    )
+    .await
 }
 
 async fn link_contact(
@@ -339,6 +349,7 @@ async fn link_contact(
     id: &str,
     contact: &str,
     expected: Option<(Option<String>, String)>,
+    actor: crate::crm::Actor<'_>,
 ) -> Result<Reply> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(expected) = expected {
@@ -361,10 +372,25 @@ async fn link_contact(
     if !allowed {
         return Err(Failure::Code("crm_not_found"));
     }
+    if matches!(actor.source, Source::Agent) {
+        let unambiguous: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM inbox_messages i WHERE i.id=? AND {NEEDS_REVIEW}
+               AND i.match_state IN ('pending','contact') AND i.message_role='correspondence'
+               AND (i.contact_id IS NULL OR i.contact_id=?)
+               AND EXISTS(SELECT 1 FROM contact_methods e WHERE e.contact_id=? AND e.kind='email'
+                 AND e.normalized=lower(i.sender) AND e.is_verified)
+               AND NOT EXISTS(SELECT 1 FROM contact_methods e JOIN contacts c ON c.id=e.contact_id
+                 WHERE e.contact_id<>? AND e.kind='email' AND e.normalized=lower(i.sender) AND c.archived_at IS NULL))"
+        )).bind(id).bind(contact).bind(contact).bind(contact).fetch_one(&mut *tx).await?;
+        if !unambiguous {
+            return Err(Failure::Code("mail_link_human_review_required"));
+        }
+    }
     let updated = sqlx::query(
         "UPDATE inbox_messages SET thread_id=CASE WHEN contact_id IS ? THEN thread_id ELSE 'inbox:' || id END,
+         reply_to_sent_id=CASE WHEN contact_id IS ? THEN reply_to_sent_id END,
          contact_id=?,match_state='manual' WHERE id=?",
-    ).bind(contact).bind(contact).bind(id).execute(&mut *tx).await?;
+    ).bind(contact).bind(contact).bind(contact).bind(id).execute(&mut *tx).await?;
     if updated.rows_affected() != 1 {
         return Err(Failure::Code("mail_not_found"));
     }
@@ -373,7 +399,24 @@ async fn link_contact(
     if correspondence {
         activity(&mut tx, id, contact).await?;
     }
-    audit(&mut tx, Source::Manual, "inbox_message", id, "link_contact").await?;
+    sqlx::query("DELETE FROM inbox_link_suggestions WHERE message_id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    if matches!(actor.source, Source::Manual) {
+        audit(&mut tx, Source::Manual, "inbox_message", id, "link_contact").await?;
+    } else {
+        super::super::audit_as(
+            &mut tx,
+            actor.source,
+            actor.id,
+            "inbox_message",
+            id,
+            "link_contact",
+            actor.agent_run_id,
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(Reply::Saved { id: id.to_owned() })
 }
@@ -383,15 +426,67 @@ pub(super) async fn review_candidates(pool: &SqlitePool, id: &str) -> Result<Rep
     let rows = sqlx::query(
         "SELECT c.id,c.display_name,c.company_name,c.country_region,
             EXISTS(SELECT 1 FROM contact_methods e WHERE e.kind='email' AND e.contact_id=c.id
-              AND e.normalized=lower(i.sender)) exact_sender
+              AND e.normalized=lower(i.sender)) exact_sender,
+            (SELECT json_group_array(a.name ORDER BY a.name,a.id) FROM inbox_link_suggestions s
+             JOIN mail_agent_clients a ON a.id=s.actor_id
+             WHERE s.message_id=i.id AND s.contact_id=c.id) suggested_by
          FROM inbox_messages i JOIN contacts c ON c.id=i.contact_id OR c.id IN (
              SELECT contact_id FROM contact_methods m WHERE m.kind='email' AND m.normalized=lower(i.sender))
-         WHERE i.id=? AND c.archived_at IS NULL ORDER BY exact_sender DESC,c.display_name,c.id LIMIT 21",
+             OR c.id IN (SELECT contact_id FROM inbox_link_suggestions WHERE message_id=i.id)
+         WHERE i.id=? AND c.archived_at IS NULL ORDER BY (suggested_by<>'[]') DESC,exact_sender DESC,c.display_name,c.id LIMIT 21",
     ).bind(id).map(|row: SqliteRow| ReviewCandidate {
         id: row.get("id"), name: row.get("display_name"), company: row.get("company_name"),
         country: row.get("country_region"), exact_sender: row.get("exact_sender"),
+        suggested_by: serde_json::from_str(row.get("suggested_by")).unwrap_or_default(),
     }).fetch_all(pool).await?;
     Ok(Reply::ReviewCandidates { rows })
+}
+
+pub(super) async fn suggest_link(
+    pool: &SqlitePool,
+    actor: &str,
+    id: &str,
+    contact: &str,
+) -> Result<Reply> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let pending: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 FROM inbox_messages i WHERE id=? AND {NEEDS_REVIEW} AND message_role='correspondence')"
+    )).bind(id).fetch_one(&mut *tx).await?;
+    if !pending {
+        return Err(Failure::Code("mail_link_changed"));
+    }
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM contacts WHERE id=? AND archived_at IS NULL)",
+    )
+    .bind(contact)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !active {
+        return Err(Failure::Code("crm_not_found"));
+    }
+    let applied = sqlx::query(
+        "INSERT INTO inbox_link_suggestions(message_id,contact_id,actor_id) VALUES(?,?,?)
+        ON CONFLICT(message_id,contact_id,actor_id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(contact)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await?;
+    if applied.rows_affected() > 0 {
+        super::super::audit_as(
+            &mut tx,
+            Source::Agent,
+            actor,
+            "inbox_message",
+            id,
+            "suggest_link_contact",
+            None,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Reply::Saved { id: id.to_owned() })
 }
 
 pub(crate) const NEEDS_REVIEW: &str = "(i.contact_id IS NULL OR i.match_state='contact')";
@@ -405,6 +500,7 @@ pub(super) async fn list(
     contact: Option<String>,
     unmatched: bool,
     offset: u32,
+    keyword: Option<String>,
 ) -> Result<Reply> {
     let mut query = QueryBuilder::new(RECEIVE);
     query.push(" WHERE 1=1");
@@ -416,6 +512,19 @@ pub(super) async fn list(
     }
     if unmatched {
         query.push(" AND ").push(NEEDS_REVIEW);
+    }
+    if let Some(keyword) = keyword
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        super::super::check_text(keyword, 320)?;
+        query
+            .push(" AND (instr(lower(i.subject),lower(")
+            .push_bind(keyword)
+            .push("))>0 OR instr(lower(i.sender),lower(")
+            .push_bind(keyword)
+            .push("))>0)");
     }
     query
         .push(" ORDER BY i.received_at DESC,i.id LIMIT 21 OFFSET ")
@@ -442,10 +551,10 @@ pub(super) async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
 pub(super) async fn thread(pool: &SqlitePool, id: &str, offset: u32) -> Result<Reply> {
     let query = format!(
         "{RECEIVE} WHERE i.thread_id=?
-         UNION ALL SELECT e.id,e.account_id,e.contact_id,c.display_name,'sent:' || e.id,
+         UNION ALL SELECT e.id,e.account_id,e.contact_id,c.display_name,COALESCE(e.conversation_id,'sent:' || e.id),
             e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]','outgoing','thread',1,NULL
          FROM email_messages e JOIN contacts c ON c.id=e.contact_id
-           WHERE 'sent:' || e.id=?
+           WHERE COALESCE(e.conversation_id,'sent:' || e.id)=?
          ORDER BY 8,1 LIMIT ? OFFSET ?",
     );
     let mut messages = sqlx::query(&query)
@@ -526,7 +635,7 @@ pub(super) async fn complete(
                 .fetch_one(&mut *tx)
                 .await?;
         if let Some((job,contact,thread)) = sqlx::query_as::<_,(String,String,String)>(
-            "SELECT outbox_id,contact_id,'sent:' || id FROM email_messages WHERE account_id=? AND message_id_header=? AND lower(to_address)=?",
+            "SELECT outbox_id,contact_id,COALESCE(conversation_id,'sent:' || id) FROM email_messages WHERE account_id=? AND message_id_header=? AND lower(to_address)=?",
         ).bind(account).bind(report.original_id).bind(report.recipient).fetch_optional(&mut *tx).await? {
             sqlx::query("INSERT OR IGNORE INTO mail_delivery_events(inbox_id,outbox_id,action,status) VALUES (?,?,?,?)")
                 .bind(id).bind(job).bind(report.action).bind(report.status).execute(&mut *tx).await?;

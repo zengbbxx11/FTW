@@ -2,23 +2,29 @@ mod accounts;
 mod approval;
 pub(crate) mod attachments;
 mod authorized;
+mod collaboration;
 mod credentials;
+pub(crate) mod file_workspace;
 mod inbox;
+mod templates;
 pub(crate) use inbox::NEEDS_REVIEW as INBOX_NEEDS_REVIEW;
 mod ledger;
 mod policy;
+mod reply_drafts;
 mod smtp;
+pub(crate) mod tasks;
 mod worker;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ftw_ipc::{
-    crm::{self, Source},
+    agent::{AccessArea, Scope},
+    crm::Source,
     mail::{self, AgentCommand, Command, DraftInput, Result as Reply},
     Response,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqliteRow, FromRow, Row, SqliteConnection, SqlitePool};
+use sqlx::{sqlite::SqliteRow, FromRow, QueryBuilder, Row, SqliteConnection, SqlitePool};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -72,6 +78,8 @@ struct Snapshot {
     attachments: Vec<mail::Attachment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     assets: Vec<mail::Asset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply: Option<reply_drafts::Context>,
 }
 
 impl Snapshot {
@@ -85,6 +93,7 @@ impl Snapshot {
 #[derive(Clone)]
 pub struct MailService {
     pool: SqlitePool,
+    diagnostics: Option<ftw_ipc::diagnostics::Log>,
     ledger: Option<ledger::Ledger>,
     object_root: Option<std::path::PathBuf>,
     prompt: Arc<Mutex<()>>,
@@ -110,12 +119,24 @@ impl MailService {
         tx.commit().await?;
         Ok(Self {
             pool,
+            diagnostics: None,
             ledger: None,
             object_root: None,
             prompt: Arc::new(Mutex::new(())),
             imap: Arc::new(Mutex::new(())),
             delivery: Arc::new(Mutex::new(())),
         })
+    }
+
+    pub fn with_diagnostics(mut self, log: ftw_ipc::diagnostics::Log) -> Self {
+        self.diagnostics = Some(log);
+        self
+    }
+
+    fn diagnostic_event(&self, operation: &str, code: &str, job_id: Option<&str>) {
+        if let Some(log) = &self.diagnostics {
+            log.mail_result(operation, code, job_id);
+        }
     }
 
     pub async fn with_send_ledger(mut self, data: &std::path::Path) -> Self {
@@ -154,13 +175,20 @@ impl MailService {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(450));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_error = None;
             loop {
                 tick.tick().await;
                 let Ok(_delivery) = service.delivery.try_lock() else {
                     continue;
                 };
                 // A failed final write leaves a durable 'sending' row for recovery on restart.
-                let _ = service.send_next().await;
+                let error = service.send_next().await.err().map(|error| error.code());
+                if error != last_error {
+                    if let Some(code) = error {
+                        service.diagnostic_event("smtp_worker", code, None);
+                    }
+                    last_error = error;
+                }
             }
         })
     }
@@ -170,22 +198,48 @@ impl MailService {
     }
 
     pub async fn agent(&self, command: AgentCommand) -> Response {
+        self.agent_session(None, command).await
+    }
+
+    pub async fn agent_session(&self, token: Option<&str>, command: AgentCommand) -> Response {
+        let scopes: Option<&[Scope]> = match &command {
+            AgentCommand::CreateDraft { .. }
+            | AgentCommand::RequestApproval { .. }
+            | AgentCommand::SendApproved { .. } => Some(&[Scope::CreateDrafts]),
+            AgentCommand::AttachDraftAssets { .. } => Some(&[Scope::EditDrafts]),
+            AgentCommand::ListTemplates { .. } => Some(&[Scope::ReadMail, Scope::ManageTemplates]),
+            AgentCommand::SendAuthorized { .. }
+            | AgentCommand::ListCustomers { .. }
+            | AgentCommand::GetCustomer { .. } => None,
+            _ => Some(&[Scope::ReadMail]),
+        };
+        let actor_id = if let Some(scopes) = scopes {
+            match self.session_actor(token, AccessArea::Mail, scopes).await {
+                Ok((actor, _)) => actor,
+                Err(error) => return response(Err(error)),
+            }
+        } else {
+            None
+        };
         let result = match command {
+            AgentCommand::ListTemplates { purpose, offset } => {
+                templates::list(&self.pool, &purpose, offset, false).await
+            }
+            AgentCommand::RenderTemplate { id, contact_id } => {
+                templates::render_saved(&self.pool, &id, &contact_id).await
+            }
             AgentCommand::ListCustomers { query } => {
-                return crate::crm::dispatch(
-                    &self.pool,
-                    crm::Command::ListContacts { query: *query },
-                    agent_actor(),
-                )
-                .await
+                return self
+                    .collaborate_crm(
+                        token,
+                        ftw_ipc::agent::Command::QueryCustomers { query: *query },
+                    )
+                    .await
             }
             AgentCommand::GetCustomer { id } => {
-                return crate::crm::dispatch(
-                    &self.pool,
-                    crm::Command::GetContact { id },
-                    agent_actor(),
-                )
-                .await
+                return self
+                    .collaborate_crm(token, ftw_ipc::agent::Command::GetCustomer { id })
+                    .await
             }
             AgentCommand::ListAssets { token } => self.list_agent_assets(&token.0).await,
             AgentCommand::AttachDraftAssets {
@@ -199,9 +253,12 @@ impl MailService {
             }
             AgentCommand::CheckOutreach { recipient } => self.outreach_check(&recipient).await,
             AgentCommand::ListAccounts => self.accounts(false).await,
-            AgentCommand::ListDrafts { contact_id, offset } => {
-                self.drafts(contact_id, offset).await
-            }
+            AgentCommand::ListDrafts {
+                contact_id,
+                offset,
+                folder,
+                keyword,
+            } => self.drafts(contact_id, offset, folder, keyword).await,
             AgentCommand::GetDraft { id } => self.get(&id).await,
             AgentCommand::ListPending { offset } => self.pending(offset).await,
             AgentCommand::CreateDraft {
@@ -221,23 +278,35 @@ impl MailService {
                     attachments: Vec::new(),
                     replace_attachments: false,
                 };
-                if let Some(request) = request_id {
-                    if let Err(reply) =
-                        crate::agent::claim(&self.pool, "create_email_draft", &request, &input)
-                            .await
+                let caller = actor_id.as_deref();
+                let actor = crate::crm::Actor {
+                    source: Source::Agent,
+                    id: caller.unwrap_or("mcp"),
+                    agent_run_id: request_id.as_deref(),
+                };
+                if let Some(request) = request_id.as_deref() {
+                    if let Err(reply) = crate::agent::claim_for(
+                        &self.pool,
+                        "create_email_draft",
+                        request,
+                        &input,
+                        caller,
+                    )
+                    .await
                     {
                         return reply;
                     }
-                    let result = self.save(None, input, Source::Agent).await;
-                    return crate::agent::finish(
+                    let result = self.save_with_assets(None, input, actor, None, None).await;
+                    return crate::agent::finish_for(
                         &self.pool,
                         "create_email_draft",
-                        &request,
+                        request,
                         response(result),
+                        caller,
                     )
                     .await;
                 }
-                self.save(None, input, Source::Agent).await
+                self.save_with_assets(None, input, actor, None, None).await
             }
             AgentCommand::SendAuthorized {
                 token,
@@ -289,6 +358,67 @@ impl MailService {
 
     async fn desktop_call(&self, command: Command, _owner: isize) -> Result<Reply> {
         match command {
+            Command::ListTemplates {
+                purpose,
+                offset,
+                archived,
+            } => templates::list(&self.pool, &purpose, offset, archived).await,
+            Command::GetTemplate { id } => templates::find(&self.pool, &id)
+                .await
+                .map(|record| Reply::Template { record }),
+            Command::SaveTemplate {
+                id,
+                expected_revision,
+                input,
+            } => templates::mutate(
+                &self.pool,
+                crate::crm::Actor::DESKTOP,
+                mail::TemplateChange::Save {
+                    id,
+                    expected_revision,
+                    input,
+                },
+            )
+            .await
+            .map(|(id, _)| Reply::Saved { id }),
+            Command::SetTemplateArchive {
+                id,
+                expected_revision,
+                archived,
+            } => templates::mutate(
+                &self.pool,
+                crate::crm::Actor::DESKTOP,
+                mail::TemplateChange::Archive {
+                    id,
+                    expected_revision,
+                    archived,
+                },
+            )
+            .await
+            .map(|(id, _)| Reply::Saved { id }),
+            Command::RenderTemplate { id, contact_id } => {
+                templates::render_saved(&self.pool, &id, &contact_id).await
+            }
+            Command::PreviewTemplate { input, contact_id } => {
+                templates::render(&self.pool, input, &contact_id).await
+            }
+            Command::ImportCustomerDocuments { contact_id, paths } => {
+                self.import_customer_documents(&contact_id, paths).await
+            }
+            Command::ExportCustomerDocument { id, destination } => {
+                self.export_customer_document(&id, &destination).await
+            }
+            Command::PreviewCustomerImage { id, offset } => {
+                self.preview_customer_image(&id, offset).await
+            }
+            Command::ExportOutboundAttachment {
+                id,
+                index,
+                destination,
+            } => {
+                self.export_outbound_attachment(&id, index, &destination)
+                    .await
+            }
             Command::ImportAssets { paths } => self.import_assets(paths).await,
             Command::ListAssets => self.list_assets(false).await,
             Command::SaveDraftWithAssets {
@@ -296,7 +426,7 @@ impl MailService {
                 input,
                 asset_ids,
             } => {
-                self.save_with_assets(id, input, Source::Manual, Some(asset_ids))
+                self.save_with_assets(id, input, crate::crm::Actor::DESKTOP, Some(asset_ids), None)
                     .await
             }
             Command::SetAssetAccess { id, allowed } => {
@@ -307,12 +437,24 @@ impl MailService {
                 }
             }
             Command::AgentMailSettings => self.policy_settings().await,
+            Command::ListSuppression { offset } => self.suppressions(offset).await,
             Command::SetAgentMailPolicy { policy, agent_ids } => {
                 self.change_policy(policy, agent_ids).await
             }
             Command::CancelMailPolicyReview { id } => self.cancel_policy_review(id).await,
             Command::RegisterMailAgent { name, token } => self.register_agent(name, &token.0).await,
             Command::RevokeMailAgent { id } => self.revoke_mail_agent(id).await,
+            Command::SetRegisteredCrmRequired { required } => {
+                self.set_registration_required(AccessArea::Crm, required)
+                    .await
+            }
+            Command::SetRegisteredMailRequired { required } => {
+                self.set_registration_required(AccessArea::Mail, required)
+                    .await
+            }
+            Command::SetAgentCollaboration { id, scopes } => {
+                self.set_collaboration(&id, scopes).await
+            }
             Command::ListAccounts => self.accounts(true).await,
             Command::SaveAccount {
                 name,
@@ -347,6 +489,7 @@ impl MailService {
             }
             Command::UpdateAccount { input } => self.update_account(input).await,
             Command::DeleteAccount { id } => self.delete_account(id).await,
+            Command::SetDefaultSender { id } => self.set_default_sender(id).await,
             Command::ReplacePassword { id, password } => {
                 let protected = protect_password(&password.0)?;
                 let mut tx = self.pool.begin().await?;
@@ -411,9 +554,51 @@ impl MailService {
                     _ => Err(Failure::Code("smtp_connection_failed")),
                 }
             }
-            Command::ListDrafts { contact_id, offset } => self.drafts(contact_id, offset).await,
+            Command::ListDrafts {
+                contact_id,
+                offset,
+                folder,
+                keyword,
+            } => self.drafts(contact_id, offset, folder, keyword).await,
+            Command::QueueSummary { contact_id } => self.queue_summary(contact_id).await,
+            Command::FileWorkspace {
+                contact_id,
+                keyword,
+                direction,
+                offset,
+                document_id,
+            } => {
+                file_workspace::list(
+                    &self.pool,
+                    contact_id,
+                    &keyword,
+                    &direction,
+                    offset,
+                    document_id,
+                )
+                .await
+            }
             Command::GetDraft { id } => self.get(&id).await,
             Command::SaveDraft { id, input } => self.save(id, input, Source::Manual).await,
+            Command::CreateReplyDraft { input, asset_ids } => {
+                self.create_reply_draft(input, crate::crm::Actor::DESKTOP, Some(asset_ids))
+                    .await
+            }
+            Command::UpdateDraft {
+                id,
+                expected_revision,
+                input,
+                asset_ids,
+            } => {
+                self.save_with_assets(
+                    Some(id),
+                    input,
+                    crate::crm::Actor::DESKTOP,
+                    asset_ids,
+                    Some(expected_revision),
+                )
+                .await
+            }
             Command::RequestApproval { id } => self.request_approval(&id, Source::Manual).await,
             Command::OpenApproval { id } => self.open_approval(id).await,
             Command::SendApproved { id } => self.enqueue(&id, Source::Manual).await,
@@ -439,7 +624,9 @@ impl MailService {
     }
 
     async fn accounts(&self, desktop: bool) -> Result<Reply> {
-        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,daily_limit,signature FROM email_accounts WHERE archived_at IS NULL ORDER BY display_name,id")
+        let rows = sqlx::query("SELECT id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,daily_limit,signature,
+            EXISTS(SELECT 1 FROM app_settings s WHERE s.key='default_sender_id' AND s.value=email_accounts.id) is_default
+            FROM email_accounts WHERE archived_at IS NULL ORDER BY display_name,id")
             .map(|r: SqliteRow| mail::Account {
                 id: r.get("id"), name: r.get("display_name"), email: r.get("email_address"),
                 host: desktop.then(|| r.get("smtp_host")),
@@ -448,17 +635,79 @@ impl MailService {
                 username: desktop.then(|| r.get("smtp_username")),
                 daily_limit: desktop.then(|| r.get::<i64,_>("daily_limit") as u16),
                 signature: desktop.then(|| r.get("signature")),
+                is_default: desktop.then(|| r.get("is_default")),
             }).fetch_all(&self.pool).await?;
         Ok(Reply::Accounts { rows })
     }
 
-    async fn drafts(&self, contact: Option<String>, offset: u32) -> Result<Reply> {
-        let mut rows = sqlx::query("SELECT * FROM mail_drafts_review WHERE (? IS NULL OR contact_id=? OR contact_id IN (SELECT id FROM contacts WHERE merged_into=?)) ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ?")
-            .bind(contact.as_deref()).bind(contact.as_deref()).bind(contact.as_deref()).bind(i64::from(offset)).map(draft_row)
-            .fetch_all(&self.pool).await?;
+    async fn drafts(
+        &self,
+        contact: Option<String>,
+        offset: u32,
+        folder: Option<ftw_ipc::mail::DraftFolder>,
+        keyword: Option<String>,
+    ) -> Result<Reply> {
+        use ftw_ipc::mail::DraftFolder;
+        let mut query = QueryBuilder::new("SELECT * FROM mail_drafts_review d WHERE 1=1");
+        if let Some(contact) = contact.as_deref() {
+            query
+                .push(" AND (contact_id=")
+                .push_bind(contact)
+                .push(" OR contact_id IN (SELECT id FROM contacts WHERE merged_into=")
+                .push_bind(contact)
+                .push("))");
+        }
+        if let Some(folder) = folder {
+            query.push(" AND ").push(match folder {
+                DraftFolder::Drafts => "state IN ('draft','pending_approval','approved')",
+                DraftFolder::Submissions => "state IN ('queued','sending','smtp_accepted','failed','delivery_unknown')",
+                DraftFolder::Accepted => "state='smtp_accepted'",
+                DraftFolder::Queue => "state IN ('queued','sending')",
+                DraftFolder::Failed => "state='failed'",
+                DraftFolder::Unknown => "state='delivery_unknown'",
+                DraftFolder::Bounced => "EXISTS(SELECT 1 FROM mail_delivery_events b WHERE b.outbox_id=d.job_id AND b.action='failed')",
+            });
+        }
+        if let Some(keyword) = keyword
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            check_text(keyword, 320)?;
+            query
+                .push(" AND (instr(lower(subject),lower(")
+                .push_bind(keyword)
+                .push("))>0 OR instr(lower(recipient),lower(")
+                .push_bind(keyword)
+                .push("))>0)");
+        }
+        query
+            .push(" ORDER BY updated_at DESC,rowid DESC LIMIT 21 OFFSET ")
+            .push_bind(i64::from(offset));
+        let mut rows = query.build().map(draft_row).fetch_all(&self.pool).await?;
         let has_more = rows.len() > 20;
         rows.truncate(20);
         Ok(Reply::Drafts { rows, has_more })
+    }
+
+    async fn queue_summary(&self, contact: Option<String>) -> Result<Reply> {
+        let (queue, accepted, failed, unknown) = sqlx::query_as(
+            "SELECT COUNT(*) FILTER (WHERE state IN ('queued','sending')),
+                    COUNT(*) FILTER (WHERE state='smtp_accepted'),
+                    COUNT(*) FILTER (WHERE state='failed'),
+                    COUNT(*) FILTER (WHERE state='delivery_unknown')
+             FROM email_drafts WHERE (?1 IS NULL OR contact_id=?1 OR contact_id IN
+                (SELECT id FROM contacts WHERE merged_into=?1))",
+        )
+        .bind(contact)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(Reply::QueueSummary {
+            queue,
+            accepted,
+            failed,
+            unknown,
+        })
     }
 
     async fn pending(&self, offset: u32) -> Result<Reply> {
@@ -479,8 +728,11 @@ impl MailService {
         let row = sqlx::query(
             "SELECT d.*,COALESCE((SELECT e.from_address FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id),a.email_address) email_address,a.archived_at IS NULL account_active,(SELECT expires_at FROM email_approvals WHERE draft_id=d.id AND revision=d.revision) expires_at,
              (SELECT outcome FROM email_outbox_jobs WHERE draft_id=d.id AND revision=d.revision) outcome,
-             (SELECT 'sent:' || e.id FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id) thread_id,
-             EXISTS(SELECT 1 FROM inbox_messages i JOIN email_messages e ON i.thread_id='sent:' || e.id JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id AND i.message_role='correspondence' AND i.match_state IN ('thread','manual')) has_reply
+             COALESCE((SELECT COALESCE(e.conversation_id,'sent:' || e.id) FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id WHERE o.draft_id=d.id),json_extract(d.reply_context_json,'$.thread_id')) thread_id,
+             json_extract(d.reply_context_json,'$.inbox_id') reply_to_inbox_id,
+             EXISTS(SELECT 1 FROM email_messages e JOIN email_outbox_jobs o ON o.id=e.outbox_id
+                 JOIN inbox_messages i ON i.reply_to_sent_id=e.id OR (i.reply_to_sent_id IS NULL AND i.thread_id='sent:' || e.id)
+                 WHERE o.draft_id=d.id AND i.account_id=e.account_id AND i.contact_id=e.contact_id AND i.message_role='correspondence' AND i.match_state IN ('thread','manual')) has_reply
              FROM mail_drafts_review d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=?",
         ).bind(id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_not_found"))?;
         let mut attachments = attachments(&row)?
@@ -514,6 +766,7 @@ impl MailService {
             attachments,
             expires_at: row.get("expires_at"),
             thread_id: row.get("thread_id"),
+            reply_to_inbox_id: row.get("reply_to_inbox_id"),
             has_reply: row.get("has_reply"),
             outcome: row.get("outcome"),
             row: draft_row(row),
@@ -524,25 +777,88 @@ impl MailService {
     }
 
     async fn save(&self, id: Option<String>, input: DraftInput, source: Source) -> Result<Reply> {
-        self.save_with_assets(id, input, source, None).await
+        let actor = if matches!(source, Source::Manual) {
+            crate::crm::Actor::DESKTOP
+        } else {
+            agent_actor()
+        };
+        self.save_with_assets(id, input, actor, None, None).await
     }
 
     async fn save_with_assets(
         &self,
         id: Option<String>,
-        mut input: DraftInput,
-        source: Source,
+        input: DraftInput,
+        actor: crate::crm::Actor<'_>,
         asset_ids: Option<Vec<String>>,
+        expected_revision: Option<i64>,
     ) -> Result<Reply> {
-        input.recipient = email_address(&input.recipient)?;
-        check_text(&input.subject, 360)?;
-        if input.body.trim().is_empty() || input.body.len() > 12_000 || input.body.contains('\0') {
-            return Err(Failure::Code("invalid_mail_body"));
-        }
-        validate_attachments(&input.attachments)?;
+        self.persist_draft(id, input, actor, asset_ids, expected_revision, None)
+            .await
+    }
+
+    async fn persist_draft(
+        &self,
+        id: Option<String>,
+        mut input: DraftInput,
+        actor: crate::crm::Actor<'_>,
+        asset_ids: Option<Vec<String>>,
+        expected_revision: Option<i64>,
+        reply_target: Option<&str>,
+    ) -> Result<Reply> {
         let updating = id.is_some();
         let id = id.unwrap_or_else(new_id);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(expected) = expected_revision {
+            let (revision, state): (i64, String) =
+                sqlx::query_as("SELECT revision,state FROM email_drafts WHERE id=?")
+                    .bind(&id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or(Failure::Code("mail_not_found"))?;
+            if expected != revision {
+                return Err(Failure::Code("mail_revision_conflict"));
+            }
+            if matches!(actor.source, Source::Agent) && state != "draft" {
+                return Err(Failure::Code("mail_read_only"));
+            }
+        }
+        let context = if let Some(inbox_id) = reply_target {
+            let (source, context) = reply_drafts::resolve(&mut tx, inbox_id).await?;
+            input.contact_id = source.contact_id;
+            input.account_id = source.account_id;
+            input.recipient = source.sender;
+            if input.subject.trim().is_empty() {
+                input.subject = reply_drafts::subject(&source.subject);
+            }
+            Some(context)
+        } else if updating {
+            let encoded = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT reply_context_json FROM email_drafts WHERE id=?",
+            )
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+            reply_drafts::decode(encoded)?
+        } else {
+            None
+        };
+        input.recipient = email_address(&input.recipient)?;
+        check_message(input.subject.trim(), &input.body)?;
+        validate_attachments(&input.attachments)?;
+        if updating {
+            if let Some(context) = &context {
+                reply_drafts::validate(
+                    &mut tx,
+                    context,
+                    &input.contact_id,
+                    &input.account_id,
+                    &input.recipient,
+                )
+                .await?;
+            }
+        }
         check_recipient(&mut tx, &input.contact_id, &input.recipient).await?;
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM email_accounts WHERE id=? AND archived_at IS NULL)",
@@ -572,19 +888,26 @@ impl MailService {
                 .bind(input.contact_id).bind(input.account_id).bind(input.recipient).bind(input.subject.trim()).bind(input.body)
                 .bind(replace).bind(encoded).bind(replace).bind(encoded_ids).bind(&id).execute(&mut *tx).await?.rows_affected()
         } else {
-            sqlx::query("INSERT INTO email_drafts(id,contact_id,account_id,recipient,subject,body_text,attachments_json,source,asset_ids_json) VALUES (?,?,?,?,?,?,?,?,?)")
+            let context = context
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| Failure::Code("mail_reply_context_changed"))?;
+            sqlx::query("INSERT INTO email_drafts(id,contact_id,account_id,recipient,subject,body_text,attachments_json,source,asset_ids_json,reply_context_json) VALUES (?,?,?,?,?,?,?,?,?,?)")
                 .bind(&id).bind(input.contact_id).bind(input.account_id).bind(input.recipient).bind(input.subject.trim()).bind(input.body)
-                .bind(encoded).bind(source.as_str()).bind(encoded_ids).execute(&mut *tx).await?.rows_affected()
+                .bind(encoded).bind(actor.source.as_str()).bind(encoded_ids).bind(context).execute(&mut *tx).await?.rows_affected()
         };
         if affected != 1 {
             return Err(Failure::Code("mail_read_only"));
         }
-        audit(
+        audit_as(
             &mut tx,
-            source,
+            actor.source,
+            actor.id,
             "email_draft",
             &id,
             if updating { "edit" } else { "create" },
+            actor.agent_run_id,
         )
         .await?;
         tx.commit().await?;
@@ -593,11 +916,14 @@ impl MailService {
 
     async fn request_approval(&self, id: &str, source: Source) -> Result<Reply> {
         let mut tx = self.pool.begin().await?;
-        let state: String = sqlx::query_scalar("SELECT d.state FROM email_drafts d JOIN email_accounts a ON a.id=d.account_id WHERE d.id=? AND a.archived_at IS NULL")
+        let (state, subject, body): (String, String, String) = sqlx::query_as("SELECT d.state,d.subject,d.body_text FROM email_drafts d JOIN email_accounts a ON a.id=d.account_id WHERE d.id=? AND a.archived_at IS NULL")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(Failure::Code("mail_not_found"))?;
+        if matches!(state.as_str(), "draft" | "pending_approval" | "approved") {
+            templates::ensure_resolved(&subject, &body)?;
+        }
         match state.as_str() {
             "draft" => {
                 sqlx::query("UPDATE email_drafts SET state='pending_approval',updated_at=unixepoch() WHERE id=?")
@@ -647,8 +973,21 @@ async fn audit(
         Source::Manual => "desktop-user",
         Source::Agent => "mcp",
     };
-    sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation) VALUES (?,?,?,?,?,?)")
+    audit_as(db, source, actor, entity, id, action, None).await
+}
+
+async fn audit_as(
+    db: &mut SqliteConnection,
+    source: Source,
+    actor: &str,
+    entity: &str,
+    id: &str,
+    action: &str,
+    task_id: Option<&str>,
+) -> Result<()> {
+    sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation,task_id) VALUES (?,?,?,?,?,?,?)")
         .bind(new_id()).bind(actor).bind(source.as_str()).bind(entity).bind(id).bind(action)
+        .bind(task_id)
         .execute(db).await?;
     Ok(())
 }
@@ -656,6 +995,14 @@ async fn audit(
 fn check_text(value: &str, max: usize) -> Result<()> {
     if value.trim().is_empty() || value.len() > max || value.chars().any(char::is_control) {
         return Err(Failure::Code("invalid_mail_field"));
+    }
+    Ok(())
+}
+
+fn check_message(subject: &str, body: &str) -> Result<()> {
+    check_text(subject, 360)?;
+    if body.trim().is_empty() || body.len() > 12_000 || body.contains('\0') {
+        return Err(Failure::Code("invalid_mail_body"));
     }
     Ok(())
 }
@@ -761,6 +1108,17 @@ fn validate_attachments(attachments: &[mail::Attachment]) -> Result<()> {
 async fn snapshot(db: &mut SqliteConnection, id: &str) -> Result<(Snapshot, i64, String)> {
     let row = sqlx::query("SELECT d.*,a.email_address FROM email_drafts d JOIN email_accounts a ON d.account_id=a.id WHERE d.id=? AND a.archived_at IS NULL")
         .bind(id).fetch_optional(&mut *db).await?.ok_or(Failure::Code("mail_not_found"))?;
+    let reply = reply_drafts::decode(row.get("reply_context_json"))?;
+    if let Some(context) = &reply {
+        reply_drafts::validate(
+            db,
+            context,
+            row.get("contact_id"),
+            row.get("account_id"),
+            row.get("recipient"),
+        )
+        .await?;
+    }
     Ok((
         Snapshot {
             contact_id: row.get("contact_id"),
@@ -771,6 +1129,7 @@ async fn snapshot(db: &mut SqliteConnection, id: &str) -> Result<(Snapshot, i64,
             body: row.get("body_text"),
             attachments: attachments(&row)?,
             assets: attachments::select(db, &attachments::ids(&row)?, false).await?,
+            reply,
         },
         row.get("revision"),
         row.get("state"),

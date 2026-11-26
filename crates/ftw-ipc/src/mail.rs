@@ -32,6 +32,47 @@ pub struct DraftInput {
     pub replace_attachments: bool,
 }
 
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyDraftInput {
+    pub inbox_message_id: String,
+    pub subject: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInput {
+    pub name: String,
+    pub purpose: String,
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TemplateChange {
+    Save {
+        id: Option<String>,
+        expected_revision: Option<i64>,
+        input: TemplateInput,
+    },
+    Archive {
+        id: String,
+        expected_revision: i64,
+        archived: bool,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Template {
+    pub id: String,
+    pub revision: i64,
+    pub archived_at: Option<i64>,
+    #[serde(flatten)]
+    pub input: TemplateInput,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountUpdate {
@@ -64,6 +105,8 @@ pub struct RegisteredAgent {
     pub revoked: bool,
     #[serde(default)]
     pub automatic: bool,
+    #[serde(default)]
+    pub collaboration_scopes: Vec<crate::agent::Scope>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -73,14 +116,72 @@ pub struct PolicyReview {
     pub outcome: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftFolder {
+    Drafts,
+    Submissions,
+    Accepted,
+    Queue,
+    Failed,
+    Unknown,
+    Bounced,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     AgentMailSettings,
+    ListTemplates {
+        purpose: String,
+        offset: u32,
+        archived: bool,
+    },
+    GetTemplate {
+        id: String,
+    },
+    SaveTemplate {
+        id: Option<String>,
+        expected_revision: Option<i64>,
+        input: TemplateInput,
+    },
+    SetTemplateArchive {
+        id: String,
+        expected_revision: i64,
+        archived: bool,
+    },
+    RenderTemplate {
+        id: String,
+        contact_id: String,
+    },
+    PreviewTemplate {
+        input: TemplateInput,
+        contact_id: String,
+    },
+    ImportCustomerDocuments {
+        contact_id: String,
+        paths: Vec<String>,
+    },
+    ExportCustomerDocument {
+        id: String,
+        destination: String,
+    },
+    PreviewCustomerImage {
+        id: String,
+        offset: u32,
+    },
+    ExportOutboundAttachment {
+        id: String,
+        index: u16,
+        destination: String,
+    },
     ImportAssets {
         paths: Vec<String>,
     },
     ListAssets,
+    ListSuppression {
+        offset: u32,
+    },
     SetAssetAccess {
         id: String,
         allowed: bool,
@@ -89,6 +190,12 @@ pub enum Command {
         id: Option<String>,
         input: DraftInput,
         asset_ids: Vec<String>,
+    },
+    UpdateDraft {
+        id: String,
+        expected_revision: i64,
+        input: DraftInput,
+        asset_ids: Option<Vec<String>>,
     },
     SetAgentMailPolicy {
         policy: AgentMailPolicy,
@@ -104,6 +211,16 @@ pub enum Command {
     },
     RevokeMailAgent {
         id: String,
+    },
+    SetAgentCollaboration {
+        id: String,
+        scopes: Vec<crate::agent::Scope>,
+    },
+    SetRegisteredCrmRequired {
+        required: bool,
+    },
+    SetRegisteredMailRequired {
+        required: bool,
     },
     ListAccounts,
     SaveAccount {
@@ -130,12 +247,30 @@ pub enum Command {
         daily_limit: u16,
         signature: String,
     },
+    SetDefaultSender {
+        id: String,
+    },
     TestAccount {
         id: String,
     },
     ListDrafts {
         contact_id: Option<String>,
         offset: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<DraftFolder>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyword: Option<String>,
+    },
+    QueueSummary {
+        contact_id: Option<String>,
+    },
+    FileWorkspace {
+        contact_id: Option<String>,
+        keyword: String,
+        direction: String,
+        offset: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        document_id: Option<String>,
     },
     GetDraft {
         id: String,
@@ -143,6 +278,11 @@ pub enum Command {
     SaveDraft {
         id: Option<String>,
         input: DraftInput,
+    },
+    CreateReplyDraft {
+        input: ReplyDraftInput,
+        #[serde(default)]
+        asset_ids: Vec<String>,
     },
     RequestApproval {
         id: String,
@@ -162,6 +302,14 @@ pub enum Command {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    ListTemplates {
+        purpose: String,
+        offset: u32,
+    },
+    RenderTemplate {
+        id: String,
+        contact_id: String,
+    },
     ListAssets {
         token: Secret,
     },
@@ -192,6 +340,10 @@ pub enum AgentCommand {
     ListDrafts {
         contact_id: Option<String>,
         offset: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<DraftFolder>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyword: Option<String>,
     },
     GetDraft {
         id: String,
@@ -233,6 +385,31 @@ pub struct Account {
     pub daily_limit: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_default: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomerMailFile {
+    pub origin: String,
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+    pub index: u32,
+    pub filename: String,
+    pub content_type: Option<String>,
+    pub size: Option<u32>,
+    pub sha256: Option<String>,
+    pub contact_id: String,
+    pub contact_name: String,
+    pub subject: String,
+    pub occurred_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -296,6 +473,8 @@ pub struct Draft {
     pub attachments: Vec<AttachmentInfo>,
     pub expires_at: Option<i64>,
     pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_inbox_id: Option<String>,
     pub has_reply: bool,
     pub outcome: Option<String>,
 }
@@ -303,8 +482,44 @@ pub struct Draft {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    DocumentUploadProgress {
+        upload_id: String,
+        next_offset: u32,
+        document_id: Option<String>,
+    },
+    DocumentChunk {
+        id: String,
+        content_base64: String,
+        offset: u32,
+        next_offset: Option<u32>,
+        size: u32,
+        sha256: String,
+    },
+    Templates {
+        rows: Vec<Template>,
+        has_more: bool,
+    },
+    Template {
+        record: Template,
+    },
+    TemplateSaved {
+        id: String,
+        revision: i64,
+    },
+    RenderedTemplate {
+        subject: String,
+        body: String,
+        missing: Vec<String>,
+    },
+    ImportedDocuments {
+        count: usize,
+    },
     Assets {
         rows: Vec<Asset>,
+    },
+    Suppression {
+        rows: Vec<String>,
+        has_more: bool,
     },
     OutreachCheck {
         allowed_for_first_outreach: bool,
@@ -317,12 +532,26 @@ pub enum Result {
         agents: Vec<RegisteredAgent>,
         review: Option<PolicyReview>,
         automatic_available: bool,
+        #[serde(default)]
+        require_registered_crm: bool,
+        #[serde(default)]
+        require_registered_mail: bool,
     },
     Accounts {
         rows: Vec<Account>,
     },
     Drafts {
         rows: Vec<DraftRow>,
+        has_more: bool,
+    },
+    QueueSummary {
+        queue: i64,
+        accepted: i64,
+        failed: i64,
+        unknown: i64,
+    },
+    FileWorkspace {
+        rows: Vec<CustomerMailFile>,
         has_more: bool,
     },
     Draft {

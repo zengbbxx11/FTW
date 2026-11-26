@@ -1,5 +1,5 @@
 use super::{Error, Result};
-use ftw_ipc::crm::{ActivityInput, ContactInput, LeadInput};
+use ftw_ipc::crm::{ActivityInput, ContactInput, Interest, LeadInput, Method};
 use std::collections::HashSet;
 use url::{Host, Url};
 
@@ -90,7 +90,7 @@ pub fn website(value: &str, field: &'static str) -> Result<String> {
     Ok(host.strip_prefix("www.").unwrap_or(host).to_lowercase())
 }
 
-fn timestamp(value: i64, field: &'static str) -> Result<()> {
+pub(super) fn timestamp(value: i64, field: &'static str) -> Result<()> {
     if !(-2208988800..=253402300799).contains(&value) {
         return Err(Error::Invalid(field));
     }
@@ -139,18 +139,7 @@ pub fn contact(input: &mut ContactInput) -> Result<(String, Vec<String>)> {
     let mut primary = HashSet::new();
     let mut normalized = Vec::with_capacity(input.methods.len());
     for method in &mut input.methods {
-        choice(
-            &method.kind,
-            "method_kind",
-            &["email", "phone", "whatsapp", "wechat", "other"],
-        )?;
-        text(&mut method.value, "method_value", 300, true)?;
-        text(&mut method.label, "method_label", 200, false)?;
-        let value = if method.kind == "email" {
-            email(&method.value)?
-        } else {
-            method.value.to_lowercase()
-        };
+        let value = method_value(method)?;
         if !seen.insert((method.kind.clone(), value.clone())) {
             return Err(Error::Invalid("duplicate_method"));
         }
@@ -160,16 +149,36 @@ pub fn contact(input: &mut ContactInput) -> Result<(String, Vec<String>)> {
         normalized.push(value);
     }
     for interest in &mut input.interests {
-        text(&mut interest.product_text, "product_text", 300, true)?;
-        text(&mut interest.requirement, "requirement", 2000, false)?;
-        if interest
-            .intent_quantity
-            .is_some_and(|qty| !(0..=9_000_000_000_000_000).contains(&qty))
-        {
-            return Err(Error::Invalid("intent_quantity"));
-        }
+        product_interest(interest)?;
     }
     Ok((domain, normalized))
+}
+
+pub fn method_value(method: &mut Method) -> Result<String> {
+    choice(
+        &method.kind,
+        "method_kind",
+        &["email", "phone", "whatsapp", "wechat", "other"],
+    )?;
+    text(&mut method.value, "method_value", 300, true)?;
+    text(&mut method.label, "method_label", 200, false)?;
+    if method.kind == "email" {
+        email(&method.value)
+    } else {
+        Ok(method.value.to_lowercase())
+    }
+}
+
+pub fn product_interest(interest: &mut Interest) -> Result<()> {
+    text(&mut interest.product_text, "product_text", 300, true)?;
+    text(&mut interest.requirement, "requirement", 2000, false)?;
+    if interest
+        .intent_quantity
+        .is_some_and(|qty| !(0..=9_000_000_000_000_000).contains(&qty))
+    {
+        return Err(Error::Invalid("intent_quantity"));
+    }
+    Ok(())
 }
 
 pub fn lead(input: &mut LeadInput) -> Result<(String, String)> {
@@ -200,6 +209,39 @@ pub fn lead(input: &mut LeadInput) -> Result<(String, String)> {
 
 pub fn activity(input: &mut ActivityInput) -> Result<()> {
     choice(&input.event_type, "event_type", ACTIVITY_TYPES)?;
+    if let Some(sample) = &mut input.sample {
+        if input.event_type != "sample" {
+            return Err(Error::Invalid("sample_event_type"));
+        }
+        text(&mut sample.model, "sample_model", 160, false)?;
+        if let Some(batch_ref) = &mut sample.batch_ref {
+            text(batch_ref, "sample_batch_ref", 100, false)?;
+        }
+        if let Some(progress) = &sample.progress {
+            choice(
+                progress,
+                "sample_progress",
+                &[
+                    "",
+                    "none",
+                    "not_sent",
+                    "planned",
+                    "in_progress",
+                    "in_transit",
+                    "evaluating",
+                    "passed",
+                    "complete",
+                    "failed",
+                ],
+            )?;
+        }
+        if sample
+            .quantity
+            .is_some_and(|quantity| !(1..=1_000_000).contains(&quantity))
+        {
+            return Err(Error::Invalid("sample_quantity"));
+        }
+    }
     text(&mut input.summary, "summary", 500, true)?;
     text(&mut input.details, "details", 4000, false)?;
     text(&mut input.channel, "channel", 240, false)?;

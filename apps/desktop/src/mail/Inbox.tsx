@@ -1,12 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
+import { AttachmentActions } from './AttachmentActions'
 import { useDeferredValue, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, ClipboardCheck, Inbox, Link2, Mail, MailSearch as MailSearchIcon, Paperclip, RefreshCw, Reply, UserRound } from 'lucide-react'
 import { dateLabel, request, type ContactQuery } from '../crm/api'
 import { Empty, Field, Pagination } from '../crm/components'
 import { mailError } from './api'
-import { CustomerIcon } from '../crm/CustomerIcon'
+import { MailSearch } from './MailWorkspace'
 
-type Account = {
+export type ImapAccount = {
   account_id: string; display_name: string; email_address: string; host: string | null
   port: number | null; username: string | null; last_sync: number | null; outcome: string | null
 }
@@ -14,11 +16,12 @@ type Row = {
   id: string; account_id: string; contact_id: string | null; contact_name: string | null
   thread_id: string; sender: string; subject: string; received_at: number; kind: string; received: boolean; message_role: string; match_state: string; body_complete: boolean; download_outcome: string | null
 }
-type ReviewCandidate = { id: string; name: string; company: string; country: string; exact_sender: boolean }
+type ReviewCandidate = { id: string; name: string; company: string; country: string; exact_sender: boolean; suggested_by?: string[] }
 type Message = Row & { body: string; attachments: string[] }
+export type ReplyTarget = Pick<Row, 'id' | 'account_id' | 'sender' | 'subject'> & { contact_id: string }
 type Reply =
   | { kind: 'body'; text: string; next_offset: number | null }
-  | { kind: 'accounts'; rows: Account[] }
+  | { kind: 'accounts'; rows: ImapAccount[] }
   | { kind: 'rows'; rows: Row[]; has_more: boolean }
   | { kind: 'review_candidates'; rows: ReviewCandidate[] }
   | { kind: 'message'; record: Message }
@@ -31,7 +34,7 @@ type Command =
   | { action: 'accounts' }
   | { action: 'configure'; account_id: string; host: string; port: number; username: string; password: string }
   | { action: 'test' | 'sync'; account_id: string }
-  | { action: 'list'; account_id: string | null; contact_id: string | null; unmatched: boolean; offset: number }
+  | { action: 'list'; account_id: string | null; contact_id: string | null; unmatched: boolean; offset: number; keyword?: string }
   | { action: 'review_candidates'; id: string }
   | { action: 'review_link'; id: string; contact_id: string; expected_contact: string | null; expected_match: string }
   | { action: 'get'; id: string }
@@ -55,16 +58,17 @@ function ErrorBox({ error }: { error: unknown }) {
   return <p role="alert" className="alert error">{mailError(error)}</p>
 }
 
-function useAccounts() {
+export function useImapAccounts() {
   return useQuery({ queryKey: ['imap-accounts'], queryFn: () => call({ action: 'accounts' }, 'accounts') })
 }
 
-export function ImapSettings() {
-  const accounts = useAccounts()
+export function testImapAccount(accountId: string) {
+  return call({ action: 'test', account_id: accountId }, 'connection_verified')
+}
+
+export function ImapAccountSettings({ account }: { account: ImapAccount }) {
   const cache = useQueryClient()
-  const [selected, setSelected] = useState('')
   const [notice, setNotice] = useState('')
-  const account = accounts.data?.rows.find(row => row.account_id === selected)
   const mutate = useMutation({
     mutationFn: async (command: Command) => command.action === 'configure' ? call(command, 'saved') : call(command, 'connection_verified'),
     onMutate: () => setNotice(''),
@@ -78,102 +82,112 @@ export function ImapSettings() {
     const form = event.currentTarget
     const data = new FormData(form)
     mutate.mutate({
-      action: 'configure', account_id: selected, host: String(data.get('host')), port: Number(data.get('port')),
+      action: 'configure', account_id: account.account_id, host: String(data.get('host')), port: Number(data.get('port')),
       username: String(data.get('username')), password: String(data.get('password')),
     }, { onSettled: () => { const entry = form.elements.namedItem('password'); if (entry instanceof HTMLInputElement) entry.value = '' } })
   }
-  return <section className="panel">
-    <h2>IMAP 收件设置</h2>
-    {accounts.isError && <ErrorBox error={accounts.error} />}
-    {accounts.data?.rows.length === 0 && <Empty>请先在「发件账户」添加邮箱。</Empty>}
-    {accounts.data && accounts.data.rows.length > 0 && <>
-      <Field label="邮箱账户"><select value={selected} onChange={e => { setSelected(e.target.value); setNotice(''); mutate.reset() }}>
-        <option value="">请选择</option>{accounts.data.rows.map(row => <option value={row.account_id} key={row.account_id}>{row.display_name} · {row.email_address}</option>)}
-      </select></Field>
-      {account && <form className="inline-form" key={selected} onSubmit={save}>
-        <div className="form-grid">
+  return <>
+      <form className="account-settings-form" onSubmit={save}>
+        <div className="account-form-fields">
           <Field label="IMAP 主机"><input name="host" placeholder="imap.example.com" defaultValue={account.host ?? ''} required /></Field>
           <Field label="TLS 端口"><input name="port" type="number" min="1" max="65535" defaultValue={account.port ?? 993} required /></Field>
           <Field label="IMAP 登录名"><input name="username" defaultValue={account.username ?? account.email_address} required /></Field>
           <Field label="IMAP 授权码或密码"><input type="password" name="password" autoComplete="new-password" required /></Field>
         </div>
         <div className="form-footer"><button className="button" type="button" disabled={!account.host || mutate.isPending}
-          onClick={() => mutate.mutate({ action: 'test', account_id: selected })}>测试 IMAP</button>
+          onClick={() => mutate.mutate({ action: 'test', account_id: account.account_id })}><RefreshCw aria-hidden="true" />测试 IMAP</button>
           <button className="button primary" disabled={mutate.isPending}>保存收件设置</button></div>
-      </form>}
-    </>}
+      </form>
     {notice && <p className="muted" role="status">{notice}</p>}
     {mutate.isError && <ErrorBox error={mutate.error} />}
-  </section>
+  </>
 }
 
-export function InboxView({ contactId, initiallyReviewing, openContact }: { contactId?: string; initiallyReviewing?: boolean; openContact: (id: string) => void }) {
-  const accounts = useAccounts()
+export function InboxView({ contactId, initialMessageId, initiallyReviewing, openContact, onReply }: { contactId?: string; initialMessageId?: string; initiallyReviewing?: boolean; openContact: (id: string) => void; onReply?: (message: ReplyTarget) => void }) {
+  const accounts = useImapAccounts()
   const [accountId, setAccount] = useState('')
-  const [unmatched, setUnmatched] = useState(Boolean(!contactId && initiallyReviewing))
-  const [reviewId, setReviewId] = useState('')
+  const unmatched = Boolean(!contactId && initiallyReviewing)
+  const [input, setInput] = useState('')
+  const keyword = useDeferredValue(input.trim())
+  const [selectedId, setSelectedId] = useState('')
+  const [dismissLinked, setDismissLinked] = useState(false)
+  const direct = dismissLinked ? '' : initialMessageId ?? ''
   const [notice, setNotice] = useState('')
   const [offset, setOffset] = useState(0)
-  const [opened, setOpened] = useState<string | null>(null)
-  const active = accounts.data?.rows.find(row => row.account_id === accountId)
+  const [fullReview, setFullReview] = useState(false)
+  const configured = accounts.data?.rows.filter(account => account.host) ?? []
+  const active = accounts.data?.rows.find(row => row.account_id === accountId) ?? (!accountId && configured.length === 1 ? configured[0] : undefined)
   const cache = useQueryClient()
   const rows = useQuery({
-    queryKey: ['inbox', accountId, contactId, unmatched, offset],
-    queryFn: () => call({ action: 'list', account_id: accountId || null, contact_id: contactId ?? null, unmatched, offset }, 'rows'),
+    queryKey: ['inbox', accountId, contactId, unmatched, offset, keyword],
+    queryFn: () => call({ action: 'list', account_id: accountId || null, contact_id: contactId ?? null, unmatched, offset, keyword }, 'rows'),
   })
+  const linked = useQuery({ queryKey: ['inbox-record', direct], enabled: Boolean(direct),
+    queryFn: () => call({ action: 'get', id: direct }, 'message') })
   const sync = useMutation({
-    mutationFn: () => call({ action: 'sync', account_id: accountId }, 'sync_started'),
+    mutationFn: (id: string) => call({ action: 'sync', account_id: id }, 'sync_started'),
     onSuccess: () => cache.invalidateQueries({ queryKey: ['imap-accounts'] }),
   })
   const page = rows.data?.rows ?? []
-  const current = page.find(row => row.id === reviewId) ?? page[0]
-  if (opened) return <MailThread id={opened} close={() => setOpened(null)} openContact={openContact} />
-  return <section className="panel inbox-workspace">
-    <div className="section-heading"><h2>{contactId ? '此客户的收件记录' : unmatched ? '客户回复匹配与待确认' : '收件箱'}</h2>
-      <button className="button primary" disabled={!active?.host || sync.isPending || active.outcome === 'running'}
-        onClick={() => sync.mutate()}>{active?.outcome === 'running' ? '同步中…' : '同步当前账户'}</button></div>
-    <div className="filters">
-      <Field label="邮箱账户"><select value={accountId} onChange={e => { setAccount(e.target.value); setOffset(0); sync.reset() }}>
-        <option value="">全部邮箱</option>{accounts.data?.rows.map(row => <option key={row.account_id} value={row.account_id}>{row.display_name}</option>)}
-      </select></Field>
-      {!contactId && <div className="row-actions" aria-label="收件箱视图">
-        <button type="button" className="button" aria-pressed={!unmatched} onClick={() => { setUnmatched(false); setOffset(0); setNotice('') }}>全部来信</button>
-        <button type="button" className="button" aria-pressed={unmatched} onClick={() => { setUnmatched(true); setOffset(0); setNotice('') }}>待核对归属</button>
-      </div>}
-    </div>
-    {active && <p className="muted">{active.host ? (active.outcome ? syncLabels[active.outcome] ?? mailError(active.outcome) : '尚未同步') : '请在收件设置中配置 IMAP'}
-      {active.last_sync && <> · {dateLabel(active.last_sync)}</>}</p>}
-    {accounts.isError && <ErrorBox error={accounts.error} />}
-    {sync.isError && <ErrorBox error={sync.error} />}
-    {rows.isError && <ErrorBox error={rows.error} />}
-    {rows.isPending && <Empty>正在读取收件箱…</Empty>}
-    {notice && <p role="status" className="review-notice">{notice}</p>}
-    {rows.data?.rows.length === 0 && <Empty>{unmatched ? '当前没有待核对归属的来信。' : '当前没有符合条件的来信。'}</Empty>}
-    {unmatched && current && <div className="review-layout">
-      <section className="panel review-list" aria-label="待核对邮件">
-        <h3>待核对邮件</h3>
-        {page.map(row => <button className="review-list-item" key={row.id} aria-pressed={current.id === row.id}
-          onClick={() => { setReviewId(row.id); setNotice('') }}>
-          <span className="review-item-icon"><CustomerIcon name="mail" /></span>
-          <span><strong>{row.subject || '（无主题）'}</strong><small>{row.sender || '无可识别发件地址'} · {dateLabel(row.received_at)}</small></span>
-          <span className="review-badge">{row.message_role === 'automatic' ? '自动来信' : row.message_role === 'delivery_report' ? '投递报告' : row.contact_id ? '会话待确认' : '待关联'}</span>
+  const current = direct ? page.find(row => row.id === direct) ?? linked.data?.record : page.find(row => row.id === selectedId) ?? page[0]
+  function select(id = '') {
+    setSelectedId(id)
+    setDismissLinked(true)
+    setFullReview(false)
+    setNotice('')
+  }
+  return <div className={`mail-split inbox-workspace${unmatched ? ' reply-review-workspace' : ''}`}>
+    <section className="mail-list-pane" aria-label="收件列表">
+      <header className="mail-list-heading">
+        <div className="section-heading">
+          <h2>{contactId ? '客户来信' : unmatched ? '待确认来信' : '收件箱'}</h2>
+          {contactId && <button className="text-button" onClick={() => openContact(contactId)}>打开客户</button>}
+          {unmatched && rows.data && <small>本页 {rows.data.rows.length} 封</small>}
+        </div>
+        <MailSearch label="搜索主题或发件人" value={input} change={value => { setInput(value); setOffset(0); select() }} />
+        <div className="mail-inbox-tools">
+          <select aria-label="收件账户" value={accountId} onChange={e => { setAccount(e.target.value); setOffset(0); select(); sync.reset() }}>
+            <option value="">全部邮箱</option>{accounts.data?.rows.map(row => <option key={row.account_id} value={row.account_id}>{row.display_name}</option>)}
+          </select>
+          <button className="button" type="button" disabled={!active?.host || sync.isPending || active.outcome === 'running'}
+            onClick={() => active && sync.mutate(active.account_id)}><RefreshCw aria-hidden="true" />{active?.outcome === 'running' ? '同步中…' : '同步'}</button>
+        </div>
+        <small className="mail-sync-status">{active?.host ? active.outcome ? syncLabels[active.outcome] ?? mailError(active.outcome) : '尚未同步'
+          : configured.length ? '选择一个邮箱后同步' : '请先配置 IMAP'}
+          {active?.last_sync ? ' · ' + dateLabel(active.last_sync) : ''}</small>
+      </header>
+      <div className="mail-list-scroll">
+        {accounts.isError && <ErrorBox error={accounts.error} />}
+        {sync.isError && <ErrorBox error={sync.error} />}
+        {rows.isError && <ErrorBox error={rows.error} />}
+        {rows.isPending && <Empty>正在读取收件箱…</Empty>}
+        {notice && <p role="status" className="review-notice">{notice}</p>}
+        {rows.data && !page.length && <Empty>{unmatched ? '当前没有待核对归属的来信。' : '当前没有符合条件的来信。'}</Empty>}
+        {page.map(row => <button type="button" className="mail-list-item" key={row.id} aria-pressed={current?.id === row.id} onClick={() => select(row.id)}>
+          <span className="mail-list-avatar">{unmatched ? <MailSearchIcon aria-hidden="true" /> : <Mail aria-hidden="true" />}</span>
+          <span className="mail-list-content">
+            <strong title={row.subject}>{row.subject || '（无主题）'}</strong>
+            <small title={row.sender}>{row.sender || '无可识别发件地址'}</small>
+            <span className="mail-status" data-status={row.contact_id ? 'linked' : 'unmatched'}>
+              {row.message_role === 'automatic' ? '自动来信' : row.message_role === 'delivery_report' ? '投递报告'
+                : row.match_state === 'contact' && unmatched ? '会话待确认' : row.contact_name ?? '待关联'}
+            </span>
+            <small>{dateLabel(row.received_at)}</small>
+          </span>
         </button>)}
-      </section>
-      <ReviewMail key={current.id} row={current} openThread={() => setOpened(current.id)} saved={name => {
-        setReviewId('')
+      </div>
+      {rows.data && <Pagination offset={offset} more={rows.data.has_more} change={next => { setOffset(next); select() }} />}
+    </section>
+    <div className="mail-reader">
+      {current ? unmatched && !fullReview ? <ReviewMail key={current.id} row={current} openThread={() => setFullReview(true)} saved={name => {
+        select()
         setNotice('已关联客户 ' + name)
         if (page.length === 1 && offset) setOffset(previous => previous - 20)
-      }} />
-    </div>}
-    {!unmatched && !!rows.data?.rows.length && <div className="table-wrap"><table>
-      <thead><tr><th>主题</th><th>发件邮箱</th><th>客户</th><th>收件时间</th></tr></thead>
-      <tbody>{rows.data.rows.map(row => <tr key={row.id}>
-        <td><button className="text-button" onClick={() => setOpened(row.id)}>{row.subject}</button></td><td>{row.sender || '—'}</td>
-        <td>{row.contact_name ?? '待关联'}</td><td>{dateLabel(row.received_at)}</td>
-      </tr>)}</tbody>
-    </table></div>}
-    {rows.data && <Pagination offset={offset} more={rows.data.has_more} change={setOffset} />}
-  </section>
+      }} /> : <MailThread key={current.id} id={current.id} close={unmatched ? () => setFullReview(false) : undefined} openContact={openContact} onReply={onReply} />
+        : direct && linked.isError ? <ErrorBox error={linked.error} />
+          : <div className="mail-reader-empty"><Inbox aria-hidden="true" /><p>{direct ? '正在读取关联邮件…' : '选择来信查看正文与会话'}</p></div>}
+    </div>
+  </div>
 }
 
 function ReviewMail({ row, openThread, saved }: { row: Row; openThread: () => void; saved: (name: string) => void }) {
@@ -201,15 +215,19 @@ function ReviewMail({ row, openThread, saved }: { row: Row; openThread: () => vo
     },
     onError: () => cache.invalidateQueries({ queryKey: ['inbox'] }),
   })
-  const candidates = keyword ? (search.data?.rows ?? []).map(customer => ({
+  const candidates: ReviewCandidate[] = keyword ? (search.data?.rows ?? []).map(customer => ({
     id: customer.id, name: customer.display_name, company: customer.company_name, country: customer.country_region,
     exact_sender: matches.data?.rows.some(item => item.id === customer.id && item.exact_sender) ?? false,
+    suggested_by: matches.data?.rows.find(item => item.id === customer.id)?.suggested_by,
   })) : matches.data?.rows ?? []
-  return <section className="panel review-detail" aria-label="邮件核验">
-    <div className="section-heading"><h3>{row.subject || '（无主题）'}</h3><button className="button" onClick={openThread}>打开完整会话</button></div>
+  const exactMatches = matches.data?.rows.filter(candidate => candidate.exact_sender).length
+  return <section className="panel review-detail reply-review-detail" aria-label="邮件核验">
+    <div className="section-heading"><div><span className="mail-status" data-status="unmatched"><ClipboardCheck aria-hidden="true" />待确认</span>
+      <h3>{row.subject || '（无主题）'}</h3></div><button className="button" onClick={openThread}><Mail aria-hidden="true" />打开完整会话</button></div>
     <dl className="review-properties">
       <div><dt>发件人</dt><dd>{row.sender || '—'}</dd></div>
       <div><dt>收到时间</dt><dd>{dateLabel(row.received_at)}</dd></div>
+      {row.message_role !== 'correspondence' && <div><dt>邮件类型</dt><dd>{row.message_role === 'automatic' ? '自动来信' : row.message_role === 'delivery_report' ? '投递报告' : '待核对'}</dd></div>}
       {row.contact_name && <div><dt>当前关联</dt><dd>{row.contact_name}</dd></div>}
     </dl>
     {preview.isError && <ErrorBox error={preview.error} />}
@@ -218,27 +236,36 @@ function ReviewMail({ row, openThread, saved }: { row: Row; openThread: () => vo
       <p className="mail-body">{preview.data.record.body || '没有可显示的纯文本正文。'}</p>
       {!preview.data.record.body_complete && <small>正文不完整，可在完整会话中下载原邮件。</small>}
     </div>}
+    <div className="reply-match-guidance"><h4>匹配依据</h4>
+      {matches.data && <p>{exactMatches === 1 ? '有一位客户登记了相同的发件邮箱。请核对正文与业务背景。'
+        : exactMatches ? `${exactMatches === 21 ? '至少 ' : ''}${exactMatches} 位客户登记了相同的发件邮箱，请确认属于哪一位。`
+        : row.contact_name ? '此邮件已有初步归属。可以核对当前客户或搜索其他客户。'
+        : '没有相同的发件邮箱。可按姓名、公司或邮箱查找客户。'}</p>}
+      {row.message_role !== 'correspondence' && <p>自动来信和投递报告独立记录。</p>}
+    </div>
     <Field label="查找其他客户"><input type="search" placeholder="姓名、公司或邮箱" value={filter}
       onChange={event => { setFilter(event.target.value); setSelection(null) }} /></Field>
     {(matches.isError || search.isError) && <ErrorBox error={search.error ?? matches.error} />}
     {((keyword && search.isPending) || (!keyword && matches.isPending)) && <small>正在查找客户…</small>}
     {candidates.length > 0 && <fieldset className="review-candidates" disabled={link.isPending}>
       <legend>{keyword ? '搜索结果' : '相关客户'}</legend>
-      {candidates.map(candidate => <label key={candidate.id}><input type="radio" name="mail-review-candidate"
+      {candidates.map(candidate => <label key={candidate.id}><input type="radio" name="mail-review-candidate" aria-label={`关联 ${candidate.name}`}
         checked={selection?.id === candidate.id} onChange={() => setSelection(candidate)} />
         <span><strong>{candidate.name}</strong><small>{[candidate.company, candidate.country].filter(Boolean).join(' · ')}</small></span>
-        {candidate.exact_sender && <span className="review-badge">邮箱相同</span>}
+        {candidate.exact_sender ? <span className="review-badge">邮箱相同</span>
+          : candidate.id === row.contact_id ? <span className="review-badge">当前归属</span> : null}
+        {!!candidate.suggested_by?.length && <span className="review-badge">建议人 {candidate.suggested_by.join('、')}</span>}
       </label>)}
     </fieldset>}
     {!candidates.length && (keyword ? search.data : matches.data) && <small>{keyword ? '未找到符合条件的客户。' : '没有可靠的邮箱匹配，请搜索客户核对。'}</small>}
     <div className="form-footer"><button type="button" className="button primary" disabled={!selection || link.isPending}
-      onClick={() => selection && link.mutate(selection)}>{link.isPending ? '正在关联…' : '关联所选客户'}</button></div>
+      onClick={() => selection && link.mutate(selection)}><Link2 aria-hidden="true" />{link.isPending ? '正在关联…' : '关联所选客户'}</button></div>
     {link.isError && <ErrorBox error={link.error} />}
   </section>
 }
 
-export function MailThread({ id, threadId, close, openContact }: {
-  id?: string; threadId?: string; close: () => void; openContact: (id: string) => void
+export function MailThread({ id, threadId, close, openContact, onReply }: {
+  id?: string; threadId?: string; close?: () => void; openContact: (id: string) => void; onReply?: (message: ReplyTarget) => void
 }) {
   const [offset, setOffset] = useState(0)
   const [filter, setFilter] = useState('')
@@ -265,12 +292,17 @@ export function MailThread({ id, threadId, close, openContact }: {
     },
   })
   const record = inbox.data?.record
-  return <section className="panel">
+  const otherMessages = thread.data?.messages.filter(message => message.id !== record?.id) ?? []
+  return <section className="panel mail-reading-panel">
     <div className="section-heading">
-      <div><button className="text-button back-link" onClick={close}>返回邮件列表</button><h2>{record?.subject ?? '邮件往来'}</h2></div>
+      <div>{close && <button className="text-button back-link" onClick={close}><ArrowLeft aria-hidden="true" />返回邮件详情</button>}
+        {record?.contact_name && <span className="mail-status" data-status="linked">已关联 CRM · {record.contact_name}</span>}
+        <h2>{record?.subject || '邮件往来'}</h2>
+        {record && <p className="muted">{record.sender || '无可识别发件地址'} · {dateLabel(record.received_at)}</p>}
+      </div>
       {record && <div className="row-actions">
-        {record.contact_id && <button className="button" onClick={() => openContact(record.contact_id!)}>{record.contact_name ?? '查看客户'}</button>}
-        <button className="button" onClick={() => setLinking(!linking)}>{record.contact_id ? '更正关联' : '关联客户'}</button>
+        {record.contact_id && <button className="button" onClick={() => openContact(record.contact_id!)}><UserRound aria-hidden="true" />客户档案</button>}
+        <button className="button" onClick={() => setLinking(!linking)} aria-expanded={linking}><Link2 aria-hidden="true" />{record.contact_id ? '更正关联' : '关联客户'}</button>
       </div>}
     </div>
     {linking && <div className="inline-form">
@@ -287,35 +319,43 @@ export function MailThread({ id, threadId, close, openContact }: {
     {id && inbox.isError && <ErrorBox error={inbox.error} />}
     {thread.isError && <ErrorBox error={thread.error} />}
     {key && thread.isPending && <Empty>正在读取会话…</Empty>}
-    {thread.data?.messages.map(message => <article className="inline-form" key={message.id}>
-      <h3>{message.subject}</h3><small>{message.received ? '收件' : '发件'} · {message.sender} · {dateLabel(message.received_at)}</small>
-      {message.message_role === 'delivery_report' && <p className="muted">邮件服务投递报告</p>}
-      {message.message_role === 'automatic' && <p className="muted">自动来信</p>}
-      {message.match_state === 'contact' && <p className="muted">已找到同邮箱联系人，所属会话待确认。</p>}
-      <p className="mail-body">{message.body || '此邮件没有可显示的纯文本内容。'}</p>
-      {message.received && <InboxContents message={message} />}
-    </article>)}
-    {thread.data && <Pagination offset={offset} more={thread.data.has_more} change={setOffset} pageSize={10} />}
+    {record && <MailMessage message={record} selected onReply={onReply} />}
+    {thread.data && (otherMessages.length > 0 || thread.data.has_more || offset > 0) && <details className="mail-conversation" open={!record}>
+      <summary><Mail aria-hidden="true" />{record ? '同一会话的其他邮件' : '会话邮件'}</summary>
+      {otherMessages.map(message => <MailMessage message={message} key={message.id} onReply={onReply} />)}
+      <Pagination offset={offset} more={thread.data.has_more} change={setOffset} pageSize={10} />
+    </details>}
   </section>
+}
+
+function MailMessage({ message, selected = false, onReply }: { message: Message; selected?: boolean; onReply?: (message: ReplyTarget) => void }) {
+  const contactId = message.contact_id
+  return <article className="mail-message" data-selected={selected}>
+    {!selected && <><h3>{message.subject}</h3><small>{message.received ? '收件' : '发件'} · {message.sender} · {dateLabel(message.received_at)}</small></>}
+    {message.message_role === 'delivery_report' && <p className="muted">邮件服务投递报告</p>}
+    {message.message_role === 'automatic' && <p className="muted">自动来信</p>}
+    {message.match_state === 'contact' && <p className="muted">已找到同邮箱联系人，所属会话待确认。</p>}
+    <p className="mail-body">{message.body || '此邮件没有可显示的纯文本内容。'}</p>
+    {message.received && <InboxContents message={message} />}
+    {onReply && contactId && message.received && message.message_role === 'correspondence' && ['thread', 'manual'].includes(message.match_state) &&
+      <button type="button" className="button" onClick={() => onReply({ ...message, contact_id: contactId })}><Reply aria-hidden="true" />回复此邮件</button>}
+  </article>
 }
 
 function InboxContents({ message }: { message: Message }) {
   const cache = useQueryClient()
   const [offset, setOffset] = useState(0)
   const [expanded, setExpanded] = useState(false)
-  const [saved, setSaved] = useState('')
   const body = useQuery({
     queryKey: ['inbox-body',message.id,offset], enabled: expanded,
     queryFn: () => call({ action: 'read_body', id: message.id, offset }, 'body'),
   })
   const download = useMutation({
     mutationFn: () => call({ action: 'download_full', id: message.id }, 'saved'),
-    onSuccess: () => cache.invalidateQueries({ queryKey: ['inbox-thread'] }),
-  })
-  const save = useMutation({
-    mutationFn: ({filename,index}:{filename:string;index:number}) =>
-      invoke<boolean>('save_inbox_attachment',{ id: message.id, filename, index }),
-    onSuccess: (written,part) => { if (written) setSaved(part.filename) },
+    onSuccess: () => Promise.all([
+      cache.invalidateQueries({ queryKey: ['inbox-thread'] }),
+      cache.invalidateQueries({ queryKey: ['inbox-record', message.id] }),
+    ]),
   })
   const pending = message.download_outcome === 'running'
   return <>
@@ -324,7 +364,7 @@ function InboxContents({ message }: { message: Message }) {
       {message.download_outcome && !['running','ok'].includes(message.download_outcome)
         && <ErrorBox error={message.download_outcome} />}
       <button className="button" disabled={download.isPending || pending} onClick={() => download.mutate()}>
-        {pending ? '正在下载完整邮件…' : '下载完整邮件（最大 16 MiB）'}
+        <Paperclip aria-hidden="true" />{pending ? '正在下载完整邮件…' : '下载完整邮件（最大 16 MiB）'}
       </button></>}
     {message.body_complete && <>
       <button className="button" onClick={() => { setExpanded(value => !value); setOffset(0) }}>{expanded ? '关闭完整正文' : '读取完整正文'}</button>
@@ -338,11 +378,13 @@ function InboxContents({ message }: { message: Message }) {
           </div>
         </>}
       </>}
-      {message.attachments.length > 0 && <ul className="record-list">{message.attachments.map((filename,index) => <li key={index}>
-        <span>{filename}</span><button className="button" disabled={save.isPending} onClick={() => save.mutate({filename,index})}>另存为</button>
-      </li>)}</ul>}
-      {saved && <p className="muted" role="status">已保存 {saved}</p>}
-      {save.isError && <ErrorBox error={save.error} />}
     </>}
+    {message.attachments.length > 0 && <div className="mail-attachments">
+      <h3>附件（{message.attachments.length}）</h3>
+      <ul className="record-list">{message.attachments.map((filename, index) => <li key={index}>
+        <span><Paperclip aria-hidden="true" />{filename}</span>
+        {message.body_complete && <AttachmentActions source="inbox" id={message.id} index={index} filename={filename} />}
+      </li>)}</ul>
+    </div>}
   </>
 }

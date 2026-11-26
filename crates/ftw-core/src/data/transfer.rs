@@ -1,8 +1,8 @@
 use super::Result;
 use crate::crm::{self, contacts};
 use ftw_ipc::{
-    crm::{ContactInput, Method, Result as CrmReply},
-    data::{ImportIssue, Result as Reply},
+    crm::{ArchiveFilter, ContactInput, Method, Result as CrmReply},
+    data::{ImportIssue, ImportMapping, Result as Reply},
     display_path,
 };
 use sqlx::{Acquire, Row, SqlitePool};
@@ -46,6 +46,16 @@ pub async fn import(
     apply: bool,
     default_stage: &str,
 ) -> Result<Reply> {
+    import_as(pool, csv, apply, default_stage, crm::Actor::DESKTOP).await
+}
+
+pub(crate) async fn import_as(
+    pool: &SqlitePool,
+    csv: &str,
+    apply: bool,
+    default_stage: &str,
+    actor: crm::Actor<'_>,
+) -> Result<Reply> {
     if csv.is_empty() || csv.len() > 512 * 1024 {
         return Err("csv_size_limit");
     }
@@ -64,6 +74,18 @@ pub async fn import(
     if indexes[0].is_none() {
         return Err("csv_name_column_required");
     }
+    let mappings: Vec<_> = HEADERS
+        .iter()
+        .zip(&indexes)
+        .filter_map(|((field, _), index)| {
+            let source = header.get((*index)?)?.trim();
+            Some(ImportMapping {
+                source: source.to_owned(),
+                field: (*field).to_owned(),
+            })
+        })
+        .collect();
+    let unused_columns = header.len().saturating_sub(mappings.len());
 
     let mut tx = pool.begin().await.map_err(|_| "database_unavailable")?;
     let mut accepted = 0;
@@ -77,8 +99,7 @@ pub async fn import(
             Ok(record) => {
                 let mut savepoint = tx.begin().await.map_err(|_| "database_unavailable")?;
                 let input = contact_from(&record, &indexes, default_stage);
-                match contacts::save(&mut savepoint, None, input, false, crm::Actor::DESKTOP).await
-                {
+                match contacts::save(&mut savepoint, None, input, false, actor).await {
                     Ok(CrmReply::Saved { .. }) => {
                         savepoint
                             .commit()
@@ -114,6 +135,8 @@ pub async fn import(
         rejected,
         issues,
         applied: apply,
+        mappings,
+        unused_columns,
     })
 }
 
@@ -181,51 +204,146 @@ fn contact_from(
 }
 
 pub async fn export(pool: &SqlitePool, root: &Path) -> Result<Reply> {
+    let columns: Vec<_> = (0..HEADERS.len()).collect();
+    export_file(pool, root, ArchiveFilter::Active, &columns).await
+}
+
+pub async fn export_selected(
+    pool: &SqlitePool,
+    root: &Path,
+    scope: ArchiveFilter,
+    fields: &[String],
+) -> Result<Reply> {
+    let columns = export_columns(fields)?;
+    export_file(pool, root, scope, &columns).await
+}
+
+fn export_columns(fields: &[String]) -> Result<Vec<usize>> {
+    let mut columns: Vec<usize> = fields
+        .iter()
+        .map(|field| {
+            HEADERS
+                .iter()
+                .position(|(_, names)| names[0] == field)
+                .ok_or("csv_export_fields_invalid")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    columns.sort_unstable();
+    if columns.is_empty() || columns.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("csv_export_fields_invalid");
+    }
+    Ok(columns)
+}
+
+pub(crate) async fn export_page(
+    pool: &SqlitePool,
+    scope: ArchiveFilter,
+    fields: &[String],
+    offset: u32,
+) -> Result<Reply> {
+    let columns = export_columns(fields)?;
+    let mut bytes = Vec::new();
+    let page_size = 20;
+    let has_more =
+        write_export(pool, &mut bytes, scope, &columns, Some((page_size, offset))).await?;
+    let csv = String::from_utf8(bytes).map_err(|_| "csv_export_failed")?;
+    let next_offset = if has_more {
+        Some(offset.checked_add(page_size).ok_or("invalid_csv_offset")?)
+    } else {
+        None
+    };
+    Ok(Reply::CustomerCsv { csv, next_offset })
+}
+
+async fn export_file(
+    pool: &SqlitePool,
+    root: &Path,
+    scope: ArchiveFilter,
+    columns: &[usize],
+) -> Result<Reply> {
     let folder = root.join("exports");
     fs::create_dir_all(&folder).map_err(|_| "csv_export_failed")?;
     let filename = format!("contacts-{}", Uuid::new_v4());
     let temporary = folder.join(format!("{filename}.partial"));
     let destination = folder.join(format!("{filename}.csv"));
-    let result = export_to(pool, &temporary).await;
+    let result = export_to(pool, &temporary, scope, columns)
+        .await
+        .and_then(|()| fs::rename(&temporary, &destination).map_err(|_| "csv_export_failed"));
     if let Err(error) = result {
         let _ = fs::remove_file(&temporary);
         return Err(error);
     }
-    fs::rename(temporary, &destination).map_err(|_| "csv_export_failed")?;
     Ok(Reply::File {
         path: display_path(&destination),
     })
 }
 
-async fn export_to(pool: &SqlitePool, path: &Path) -> Result<()> {
-    use futures_util::TryStreamExt;
+async fn export_to(
+    pool: &SqlitePool,
+    path: &Path,
+    scope: ArchiveFilter,
+    columns: &[usize],
+) -> Result<()> {
     use std::io::Write;
 
-    let mut file = fs::File::create(path).map_err(|_| "csv_export_failed")?;
+    let mut file = fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| "csv_export_failed")?;
     file.write_all(&[0xef, 0xbb, 0xbf])
         .map_err(|_| "csv_export_failed")?;
-    let mut writer = csv::Writer::from_writer(file);
+    write_export(pool, file, scope, columns, None).await?;
+    Ok(())
+}
+
+async fn write_export(
+    pool: &SqlitePool,
+    out: impl std::io::Write,
+    scope: ArchiveFilter,
+    columns: &[usize],
+    page: Option<(u32, u32)>,
+) -> Result<bool> {
+    use futures_util::TryStreamExt;
+    let mut writer = csv::Writer::from_writer(out);
     writer
-        .write_record(HEADERS.map(|(label, _)| label))
+        .write_record(columns.iter().map(|&index| HEADERS[index].0))
         .map_err(|_| "csv_export_failed")?;
+    let scope = match scope {
+        ArchiveFilter::Active => "active",
+        ArchiveFilter::Archived => "archived",
+        ArchiveFilter::All => "all",
+    };
+    let (limit, offset) = page.map_or((-1, 0), |(size, offset)| {
+        (i64::from(size) + 1, i64::from(offset))
+    });
     let mut rows = sqlx::query("SELECT display_name,company_name,country_region,stage,customer_level,sample_status,customer_source,
         COALESCE((SELECT value FROM contact_methods WHERE contact_id=c.id AND kind='email' ORDER BY is_primary DESC,position LIMIT 1),'') email,
         COALESCE((SELECT value FROM contact_methods WHERE contact_id=c.id AND kind='phone' ORDER BY is_primary DESC,position LIMIT 1),'') phone,
         COALESCE((SELECT value FROM contact_methods WHERE contact_id=c.id AND kind='whatsapp' ORDER BY is_primary DESC,position LIMIT 1),'') whatsapp,
-        website_url,main_need,notes FROM contacts c WHERE archived_at IS NULL ORDER BY display_name,id").fetch(pool);
+        website_url,main_need,notes FROM contacts c WHERE merged_into IS NULL AND
+          (?1='all' OR (archived_at IS NULL)=(?1='active')) ORDER BY display_name,id LIMIT ?2 OFFSET ?3")
+          .bind(scope).bind(limit).bind(offset).fetch(pool);
+    let mut written = 0;
     while let Some(row) = rows.try_next().await.map_err(|_| "database_unavailable")? {
-        let values: Vec<_> = (0..HEADERS.len())
-            .map(|index| spreadsheet_safe(row.get::<String, _>(index)))
+        if page.is_some_and(|(size, _)| written >= size) {
+            writer.flush().map_err(|_| "csv_export_failed")?;
+            return Ok(true);
+        }
+        let values: Vec<_> = columns
+            .iter()
+            .map(|&index| spreadsheet_safe(row.get::<String, _>(index)))
             .collect();
         writer
             .write_record(values)
             .map_err(|_| "csv_export_failed")?;
+        written += 1;
     }
     writer.flush().map_err(|_| "csv_export_failed")?;
-    Ok(())
+    Ok(false)
 }
 
-fn spreadsheet_safe(text: String) -> String {
+pub(super) fn spreadsheet_safe(text: String) -> String {
     if text.trim_start().starts_with(['=', '+', '-', '@']) {
         format!("'{text}")
     } else {

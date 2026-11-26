@@ -104,6 +104,7 @@ async fn typed_values_and_archived_options_survive_reload() {
                 field_id: ids[0].clone(),
                 value: Some(Value::Text("BK06".into())),
             }],
+            company: None,
         },
         Actor::DESKTOP,
     )

@@ -42,6 +42,17 @@ pub(super) fn message(
         .to(to)
         .subject(&snapshot.subject)
         .message_id(Some(message_id));
+    let builder = if let Some(reply) = &snapshot.reply {
+        let references = reply.root.as_ref().map_or_else(
+            || reply.parent.clone(),
+            |root| format!("{root} {}", reply.parent),
+        );
+        builder
+            .in_reply_to(reply.parent.clone())
+            .references(references)
+    } else {
+        builder
+    };
     if snapshot.attachments.is_empty() && assets.is_empty() {
         return builder
             .body(snapshot.body.clone())

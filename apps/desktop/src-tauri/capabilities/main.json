@@ -6,12 +6,18 @@
   ],
   "permissions": [
     "allow-core-health",
+    "allow-mcp-status",
+    "allow-export-support-report",
+    "allow-report-webview-failure",
     "allow-core-changes",
     "allow-crm-request",
     "allow-mail-request",
     "allow-inbox-request",
     "allow-data-request",
     "allow-choose-mail-assets",
-    "allow-save-inbox-attachment"
+    "allow-import-customer-documents",
+    "allow-export-customer-document",
+    "allow-save-inbox-attachment",
+    "allow-save-outbound-attachment"
   ]
 }

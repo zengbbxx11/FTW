@@ -2,7 +2,9 @@ import { useDeferredValue, useState } from 'react'
 import { QueryBuilder, type Field as QueryField, type RuleGroupType } from 'react-querybuilder'
 import 'react-querybuilder/dist/query-builder.css'
 import { useQuery } from '@tanstack/react-query'
-import { dateLabel, outreachLabels, request, stages, type ContactQuery, type StateOption } from './api'
+import { Columns3 } from 'lucide-react'
+import { ToolPopover } from '../ui/WorkbenchUI'
+import { dateLabel, outreachLabels, request, stages, type ContactQuery, type ContactRow, type StateOption } from './api'
 import type { AvailableColumn, FieldOperator, Filter } from './viewTypes'
 
 const operators = {
@@ -10,6 +12,16 @@ const operators = {
   gte: '大于等于', lte: '小于等于', within_days: '最近 N 天', older_than_days: '早于 N 天',
 } as const
 const options = (keys: FieldOperator[]) => keys.map(name => ({ name, label: operators[name] }))
+const previewFields = [
+  ['company', '公司或店铺', (row: ContactRow) => row.company_name],
+  ['country', '国家 / 地区', (row: ContactRow) => row.country_region],
+  ['stage', '客户阶段', (row: ContactRow) => stages[row.stage]],
+  ['email', '主要邮箱', (row: ContactRow) => row.email],
+  ['mail', '邮件开发', (row: ContactRow) => outreachLabels[row.mail_outreach.status]],
+  ['sent', '最近发信', (row: ContactRow) => dateLabel(row.mail_outreach.last_sent_at)],
+  ['last', '最近联系', (row: ContactRow) => dateLabel(row.last_contact_at)],
+] as const
+type PreviewField = typeof previewFields[number][0]
 
 function queryField(column: AvailableColumn, catalog: StateOption[]): QueryField {
   const basic = { name: column.id, label: column.title }
@@ -71,15 +83,17 @@ export default function AdvancedFilters({ columns, catalog, filter, query, apply
 }) {
   const [draft, setDraft] = useState(() => fromFilter(filter))
   const [error, setError] = useState('')
+  const [visible, setVisible] = useState<PreviewField[]>(['country', 'mail', 'last'])
+  const previewColumns = previewFields.filter(([id]) => visible.includes(id))
   const deferred = useDeferredValue(draft)
   let criteria: ContactQuery | null = null
   try {
-    criteria = { ...query, filter: toFilter(deferred, columns), offset: 0, page_size: 20, custom_columns: [] }
+    criteria = { ...query, filter: toFilter(deferred, columns), offset: 0, custom_columns: [] }
   } catch { /* Some rules are unfinished while the user edits them. */ }
   const preview = useQuery({
     queryKey: ['contacts', 'filter-preview', criteria],
     enabled: criteria !== null,
-    queryFn: () => request({ action: 'list_contacts', query: criteria! }, 'contacts'),
+    queryFn: () => request({ action: 'preview_contacts', query: criteria! }, 'contact_preview'),
   })
   return <div className="filter-editor-layout"><section className="panel r3-advanced">
     <div className="section-heading"><h2>组合筛选</h2>
@@ -101,15 +115,23 @@ export default function AdvancedFilters({ columns, catalog, filter, query, apply
     </div>
   </section>
   <section className="panel filter-preview" aria-label="筛选结果预览">
-    <h2>结果预览</h2>
+    <div className="section-heading">
+      <h2 aria-live="polite">结果预览{preview.data && ` · 匹配 ${preview.data.total.toLocaleString('zh-CN')} 位客户`}</h2>
+      <ToolPopover label="预览列" trigger={<button type="button" className="button"><Columns3 aria-hidden="true" size={16} />显示 {previewColumns.length + 1} 列</button>}>
+        <div className="filter-preview-column-picker">
+          {previewFields.map(([id, label]) => <label key={id}><input type="checkbox" checked={visible.includes(id)}
+            onChange={() => setVisible(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])} />{label}</label>)}
+        </div>
+      </ToolPopover>
+    </div>
     {!criteria ? <p className="muted">填完筛选值后显示结果。</p>
       : preview.isError ? <p className="muted">无法预览当前条件。</p>
       : preview.isPending ? <p className="muted">正在查找匹配客户…</p>
-      : preview.data.rows.length ? <><small>最多显示前 5 位客户</small><table>
-        <thead><tr><th>客户</th><th>国家 / 地区</th><th>最近联系</th></tr></thead>
-        <tbody>{preview.data.rows.slice(0, 5).map(row => <tr key={row.id}>
-          <td>{row.display_name}</td><td>{row.country_region || '—'}</td><td>{dateLabel(row.last_contact_at)}</td>
+      : preview.data.rows.length ? <>{preview.data.total > preview.data.rows.length && <small>预览前 {preview.data.rows.length} 位客户</small>}<div className="table-wrap"><table>
+        <thead><tr><th scope="col">客户</th>{previewColumns.map(([id, label]) => <th scope="col" key={id}>{label}</th>)}</tr></thead>
+        <tbody>{preview.data.rows.map(row => <tr key={row.id}>
+          <td>{row.display_name}</td>{previewColumns.map(([id, , value]) => <td key={id}>{value(row) || '—'}</td>)}
         </tr>)}</tbody>
-      </table></> : <p className="muted">没有符合条件的客户。</p>}
+      </table></div></> : <p className="muted">没有符合条件的客户。</p>}
   </section></div>
 }

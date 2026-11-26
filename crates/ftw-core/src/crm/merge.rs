@@ -1,8 +1,5 @@
 use super::{audit, contacts, validation, Actor, Error, Result};
-use ftw_ipc::{
-    crm::{Result as Reply, Source},
-    views::CellTarget,
-};
+use ftw_ipc::{crm::Result as Reply, views::CellTarget};
 use sqlx::SqlitePool;
 
 pub async fn merge(
@@ -11,9 +8,6 @@ pub async fn merge(
     primary: CellTarget,
     secondary: CellTarget,
 ) -> Result<Reply> {
-    if !matches!(actor.source, Source::Manual) {
-        return Err(Error::ReadOnly);
-    }
     if primary.id == secondary.id || primary.epoch != secondary.epoch {
         return Err(Error::Invalid("merge_pair"));
     }
@@ -118,17 +112,20 @@ pub async fn merge(
     ).bind(&primary.id).bind(&secondary.id).fetch_all(&mut *tx).await?;
     // Copy multi-select items only for attributes that were missing on the retained customer.
     // The incoming source and all of its original property values remain on the archived record.
-    for field in copied {
+    for field in &copied {
         sqlx::query("INSERT INTO crm_field_multi_values(contact_id,field_id,option_id) SELECT ?,field_id,option_id FROM crm_field_multi_values WHERE contact_id=? AND field_id=?")
             .bind(&primary.id).bind(&secondary.id).bind(field).execute(&mut *tx).await?;
     }
+    super::fields::record_merged_values(&mut tx, actor, &primary.id, primary.revision + 1, &copied)
+        .await?;
     for query in [
-        "UPDATE activities SET contact_id=? WHERE contact_id=?",
+        "INSERT INTO crm_company_memberships(contact_id,company_id,branch)
+         SELECT ?,company_id,branch FROM crm_company_memberships WHERE contact_id=? ON CONFLICT(contact_id) DO NOTHING",
+        "UPDATE activities SET contact_id=?,record_revision=record_revision+1 WHERE contact_id=?",
+        "UPDATE lead_evidence SET contact_id=? WHERE contact_id=?",
         "UPDATE inbox_messages SET contact_id=? WHERE contact_id=?",
         "UPDATE email_messages SET contact_id=? WHERE contact_id=?",
         "UPDATE contacts SET merged_into=?,record_revision=record_revision+1 WHERE merged_into=?",
-        "UPDATE contacts SET merged_into=?,archived_at=unixepoch(),updated_at=unixepoch(),
-          updated_by='desktop-user',record_revision=record_revision+1 WHERE id=?",
     ] {
         sqlx::query(query)
             .bind(&primary.id)
@@ -136,6 +133,15 @@ pub async fn merge(
             .execute(&mut *tx)
             .await?;
     }
+    sqlx::query(
+        "UPDATE contacts SET merged_into=?,archived_at=unixepoch(),updated_at=unixepoch(),
+        updated_by=?,record_revision=record_revision+1 WHERE id=?",
+    )
+    .bind(&primary.id)
+    .bind(actor.id)
+    .bind(&secondary.id)
+    .execute(&mut *tx)
+    .await?;
     audit(
         &mut tx,
         actor,

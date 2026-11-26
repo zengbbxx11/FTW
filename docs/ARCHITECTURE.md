@@ -12,6 +12,14 @@
 
 成功返回 `{"status":"ready","health":{...}}`，其中 `health` 含 `coreVersion`、`schemaVersion`、`storageMode`、`dataRoot` 和 `processId`。错误返回 `{"status":"error","code":"..."}`。当前错误码有 `invalid_request`、`unsupported_protocol_version`、`database_unavailable`。CLI 的 `health` 命令成功时输出 `health` 对象，失败时退出非零并将错误写到 stderr。
 
+### 故障诊断
+
+桌面、Core 和 MCP 在数据根目录的 `logs` 记录结构化诊断事件。每个组件保留当前文件和一份历史文件，各约 256 KiB。便携目录无法写入时，尝试写入 Windows 用户目录下隔离的诊断目录。日志失败不阻断业务请求。
+
+从「系统状态 → 导出诊断报告」另存 JSON。窗口无法打开时，双击便携目录的 `FTW-Diagnostics.cmd`，命令窗口会显示报告位置。也可运行 `ftw-core.exe diagnostics` 获取同口径 JSON。该命令不启动 Core 服务，也不打开 CRM 数据库。便携目录缺少 Core 或 Core 无法运行时，脚本仍会生成包含 Windows 版本与三个程序存在状态的最小报告。
+
+完整报告包含程序版本、Windows 版本、WebView2 Runtime 安装版本、存储模式、三个程序文件的 SHA-256、最近一次观测到的 SQLite Schema、各组件最近的诊断事件和可用的发信任务编号。采集器只读取规定的结构化事件，排除历史自由文本日志、业务数据库、邮件、客户资料、附件、凭据、令牌以及机器目录路径。文件仅保存在本地。排障时可附上出错时间、所用页面或 MCP 工具及复现步骤。
+
 ## SQLite 路径和迁移
 
 Core 打开 `data/workbench.db`，连接启用外键、WAL、FULL 同步和五秒锁等待。SQLx 使用内嵌迁移和自身的 `_sqlx_migrations` 表，健康检查读取最近成功迁移的版本。版本 1 创建可保存非敏感键值设置的 `app_settings`。迁移失败时 Core 保留原库、记录具体错误并退出。

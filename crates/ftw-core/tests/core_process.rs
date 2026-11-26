@@ -68,7 +68,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     let mut first = CoreProcess::start(root);
     let health = first.ready(root).await;
     assert_eq!(health.process_id, first.0.id());
-    assert_eq!(health.schema_version, 14);
+    assert_eq!(health.schema_version, 26);
     assert!(matches!(health.storage_mode, StorageMode::Development));
     assert!(health.data_root.contains("FTW 验收 "));
 
@@ -104,7 +104,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     database.close().await.unwrap();
 
     let mut restarted = CoreProcess::start(root);
-    assert_eq!(restarted.ready(root).await.schema_version, 14);
+    assert_eq!(restarted.ready(root).await.schema_version, 26);
     drop(restarted);
 
     let mut database = open_database(&data).await;
@@ -197,6 +197,200 @@ async fn crm_ok(pipe: &PipeEndpoint, command: crm::Command) -> crm::Result {
         Response::Crm { data } => *data,
         response => panic!("expected CRM result, received {response:?}"),
     }
+}
+
+#[tokio::test]
+async fn independent_customer_documents_remain_downloadable_after_backup_restore() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ftw_ipc::{agent, data, mail};
+    let profile = tempdir().unwrap();
+    let root = profile.path();
+    let mut core = CoreProcess::start(root);
+    core.ready(root).await;
+    let pipe = PipeEndpoint::for_data_directory(&root.join("data")).unwrap();
+    let contact = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveContact {
+                id: None,
+                input: contact("Document fixture", "documents@example.test"),
+                allow_duplicate: false,
+            },
+        )
+        .await,
+    );
+    let content = b"%PDF-1.4\n% isolated test document\n";
+    let source = root.join("test catalogue.pdf");
+    std::fs::write(&source, content).unwrap();
+    for count in [1, 0] {
+        let response = pipe
+            .request(&Operation::Mail(Box::new(
+                mail::Command::ImportCustomerDocuments {
+                    contact_id: contact.clone(),
+                    paths: vec![source.to_string_lossy().into_owned()],
+                },
+            )))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response, Response::Mail { data } if matches!(*data, mail::Result::ImportedDocuments { count: n } if n == count))
+        );
+    }
+    let response = pipe
+        .request(&Operation::Mail(Box::new(mail::Command::FileWorkspace {
+            document_id: None,
+            contact_id: Some(contact.clone()),
+            keyword: "catalogue".into(),
+            direction: "document".into(),
+            offset: 0,
+        })))
+        .await
+        .unwrap();
+    let Response::Mail { data } = response else {
+        panic!("file workspace")
+    };
+    let mail::Result::FileWorkspace { rows, .. } = *data else {
+        panic!("file workspace rows")
+    };
+    assert_eq!(rows.len(), 1);
+    let file = &rows[0];
+    assert_eq!(file.size, Some(content.len() as u32));
+    assert_eq!(file.source.as_deref(), Some("manual"));
+
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let sender = pipe
+        .request(&Operation::Mail(Box::new(
+            mail::Command::RegisterMailAgent {
+                name: "File collaboration fixture".into(),
+                token: mail::Secret(token.clone()),
+            },
+        )))
+        .await
+        .unwrap();
+    let Response::Mail { data } = sender else {
+        panic!("register document client")
+    };
+    let mail::Result::Saved { id: agent_id } = *data else {
+        panic!("register client result")
+    };
+    let grant = pipe
+        .request(&Operation::Mail(Box::new(
+            mail::Command::SetAgentCollaboration {
+                id: agent_id,
+                scopes: vec![agent::Scope::ReadDocuments, agent::Scope::UploadDocuments],
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(grant, Response::Mail { data } if matches!(*data, mail::Result::Saved { .. }))
+    );
+    let collaborate = |command| Operation::AgentCollaboration {
+        token: mail::Secret(token.clone()),
+        command: Box::new(command),
+    };
+    let read = pipe
+        .request(&collaborate(agent::Collaboration::ReadDocument {
+            id: file.document_id.clone().unwrap(),
+            offset: 0,
+        }))
+        .await
+        .unwrap();
+    assert!(
+        matches!(read, Response::Mail { data } if matches!(data.as_ref(), mail::Result::DocumentChunk {
+        content_base64, next_offset: None, .. } if STANDARD.decode(content_base64).unwrap() == content))
+    );
+
+    let agent_content = b"%PDF-1.4\n% Agent catalogue\n";
+    let upload = pipe
+        .request(&collaborate(agent::Collaboration::UploadDocument {
+            contact_id: contact,
+            filename: "agent catalogue.pdf".into(),
+            content_base64: STANDARD.encode(agent_content),
+        }))
+        .await
+        .unwrap();
+    let Response::Mail { data } = upload else {
+        panic!("agent document upload")
+    };
+    let mail::Result::Saved {
+        id: customer_document_id,
+    } = *data
+    else {
+        panic!("upload result")
+    };
+    let agent_destination = root.join("exported agent catalogue.pdf");
+    let exported = pipe
+        .request(&Operation::Mail(Box::new(
+            mail::Command::ExportCustomerDocument {
+                id: customer_document_id,
+                destination: agent_destination.to_string_lossy().into_owned(),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(exported, Response::Mail { data } if matches!(*data, mail::Result::Saved { .. }))
+    );
+    assert_eq!(std::fs::read(agent_destination).unwrap(), agent_content);
+
+    let library = pipe
+        .request(&Operation::Mail(Box::new(mail::Command::ListAssets)))
+        .await
+        .unwrap();
+    assert!(
+        matches!(library, Response::Mail { data } if matches!(data.as_ref(), mail::Result::Assets { rows } if rows.is_empty()))
+    );
+    let response = pipe
+        .request(&Operation::Data(Box::new(data::Command::CreateBackup)))
+        .await
+        .unwrap();
+    let Response::Data { data } = response else {
+        panic!("backup")
+    };
+    let data::Result::File { path } = *data else {
+        panic!("backup file")
+    };
+    let filename = Path::new(&path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    std::fs::remove_file(
+        root.join("data/mail-objects")
+            .join(file.sha256.as_ref().unwrap()),
+    )
+    .unwrap();
+    let restore = pipe
+        .request(&Operation::Data(Box::new(data::Command::Restore {
+            filename,
+        })))
+        .await
+        .unwrap();
+    assert!(
+        matches!(restore, Response::Data { data } if matches!(*data, data::Result::Restored { .. }))
+    );
+    let destination = root.join("exported document.pdf");
+    let export = || {
+        Operation::Mail(Box::new(mail::Command::ExportCustomerDocument {
+            id: file.document_id.clone().unwrap(),
+            destination: destination.to_string_lossy().into_owned(),
+        }))
+    };
+    let exported = pipe.request(&export()).await.unwrap();
+    assert!(
+        matches!(exported, Response::Mail { data } if matches!(*data, mail::Result::Saved { .. }))
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), content);
+    let duplicate = pipe.request(&export()).await.unwrap();
+    assert!(
+        matches!(duplicate, Response::Error { code, .. } if code == "attachment_destination_unavailable")
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), content);
 }
 
 fn saved(result: crm::Result) -> String {
@@ -402,6 +596,8 @@ async fn crm_contacts_timeline_search_and_archive_survive_restart() {
     let result = crm_ok(
         &pipe,
         crm::Command::ListActivities {
+            keyword: None,
+            source: None,
             contact_id: Some(id.clone()),
             event_type: "call".into(),
             offset: 0,
@@ -444,6 +640,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
             crm::Command::SaveLead {
                 id: None,
                 allow_duplicate: false,
+                expected: None,
                 input: Box::new(crm::LeadInput {
                     display_name: "Potential buyer".into(),
                     email: "Buyer@Example.com".into(),
@@ -463,6 +660,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
         crm::Command::SaveLead {
             id: None,
             allow_duplicate: false,
+            expected: None,
             input: Box::new(crm::LeadInput {
                 display_name: "Same website".into(),
                 website_url: "https://example.com/sales".into(),
@@ -480,6 +678,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
             crm::Command::SetLeadReview {
                 id: lead.clone(),
                 rejected: true,
+                expected: None,
             },
         )
         .await,
@@ -489,6 +688,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
         crm::Command::PromoteLead {
             id: lead.clone(),
             allow_duplicate: false,
+            expected: None,
         },
     )
     .await;
@@ -499,6 +699,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
             crm::Command::SetLeadReview {
                 id: lead.clone(),
                 rejected: false,
+                expected: None,
             },
         )
         .await,
@@ -510,6 +711,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
             crm::Command::PromoteLead {
                 id: lead.clone(),
                 allow_duplicate: false,
+                expected: None,
             },
         )
         .await,
@@ -520,6 +722,7 @@ async fn candidate_review_deduplication_and_promotion_use_one_core_transaction()
             crm::Command::PromoteLead {
                 id: lead.clone(),
                 allow_duplicate: false,
+                expected: None,
             },
         )
         .await,
@@ -561,7 +764,7 @@ async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
     original.close().await.unwrap();
 
     let mut core = CoreProcess::start(root);
-    assert_eq!(core.ready(root).await.schema_version, 14);
+    assert_eq!(core.ready(root).await.schema_version, 26);
     let snapshot = fs::read_dir(root.join("backups"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -599,6 +802,146 @@ async fn revisions(pipe: &PipeEndpoint) -> ftw_ipc::ChangeVersions {
         panic!("expected Core change versions")
     };
     versions
+}
+
+#[tokio::test]
+async fn agent_detail_review_preserves_a_quantity_confirmed_after_the_proposal() {
+    use ftw_ipc::agent::{Command, ContactDetailSuggestion, Evidence, EvidenceKind};
+
+    let dir = tempdir().unwrap();
+    let mut core = CoreProcess::start(dir.path());
+    core.ready(dir.path()).await;
+    let pipe = PipeEndpoint::for_data_directory(&dir.path().join("data")).unwrap();
+    let mut input = contact("Confirmed product details", "details@example.test");
+    input.interests = vec![crm::Interest {
+        id: None,
+        product_text: "Pilot camera".into(),
+        requirement: "User confirmed test criteria".into(),
+        intent_quantity: None,
+        quantity_is_estimate: false,
+    }];
+    let id = saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveContact {
+                id: None,
+                input,
+                allow_duplicate: false,
+            },
+        )
+        .await,
+    );
+    let crm::Result::Contact { mut record } =
+        crm_ok(&pipe, crm::Command::GetContact { id: id.clone() }).await
+    else {
+        panic!("expected customer")
+    };
+    let result = pipe
+        .request(&Operation::AgentCrm(Box::new(
+            Command::SuggestCustomerDetail {
+                request_id: "detail-conflict-test".into(),
+                id: id.clone(),
+                expected_revision: record.record_revision,
+                expected_epoch: record.data_epoch.clone(),
+                detail: ContactDetailSuggestion::ProductInterest {
+                    product_text: "pilot camera".into(),
+                    intent_quantity: Some(20),
+                    quantity_is_estimate: true,
+                    requirement: String::new(),
+                },
+                evidence: Evidence {
+                    kind: EvidenceKind::Inferred,
+                    url: Some("https://example.test/catalog".into()),
+                    note: None,
+                },
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, Response::Crm { data } if matches!(*data, crm::Result::AgentReviewPending { count: 1, .. }))
+    );
+
+    let result = pipe
+        .request(&Operation::AgentCrm(Box::new(
+            Command::SuggestCustomerDetail {
+                request_id: "detail-correction-conflict".into(),
+                id: id.clone(),
+                expected_revision: record.record_revision,
+                expected_epoch: record.data_epoch.clone(),
+                detail: ContactDetailSuggestion::CorrectProductInterest {
+                    interest_id: record.input.interests[0].id.clone().unwrap(),
+                    intent_quantity: Some(21),
+                    quantity_is_estimate: Some(false),
+                    requirement: None,
+                },
+                evidence: Evidence {
+                    kind: EvidenceKind::Inferred,
+                    url: None,
+                    note: None,
+                },
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, Response::Crm { data } if matches!(*data, crm::Result::AgentReviewPending { count: 1, .. }))
+    );
+
+    record.input.interests[0].intent_quantity = Some(72);
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveContactChecked {
+                id: id.clone(),
+                input: Box::new(record.input),
+                allow_duplicate: false,
+                expected_revision: record.record_revision,
+                expected_epoch: Some(record.data_epoch),
+            },
+        )
+        .await,
+    );
+    let crm::Result::AgentChanges {
+        rows, conflicts, ..
+    } = crm_ok(
+        &pipe,
+        crm::Command::ListAgentChanges {
+            offset: 0,
+            pending: false,
+            scope: Some("conflict".into()),
+        },
+    )
+    .await
+    else {
+        panic!("expected pending change")
+    };
+    assert_eq!(conflicts, 2);
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert!(row.current_value.contains("\"intent_quantity\":72"));
+        assert_eq!(row.evidence_kind.as_deref(), Some("inferred"));
+        let result = crm_call(
+            &pipe,
+            crm::Command::ResolveAgentChange {
+                id: row.id,
+                accept: true,
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Response::Error { detail, .. } if detail.as_deref() == Some("agent_change_superseded"))
+        );
+    }
+    let crm::Result::Contact { record } = crm_ok(&pipe, crm::Command::GetContact { id }).await
+    else {
+        panic!("expected customer")
+    };
+    assert_eq!(record.input.interests[0].intent_quantity, Some(72));
+    assert_eq!(
+        record.input.interests[0].requirement,
+        "User confirmed test criteria"
+    );
 }
 
 #[tokio::test]
@@ -724,4 +1067,60 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
             crm::Result::Contacts { rows, .. } if rows.len() == 1 && rows[0].last_contact_at == record.effective_last_contact_at)
         );
     }
+    let result = pipe
+        .request(&Operation::AgentCrm(Box::new(
+            ftw_ipc::agent::Command::AddActivity {
+                request_id: "structured-sample-test".into(),
+                input: crm::ActivityInput {
+                    contact_id: id.clone(),
+                    event_type: "sample".into(),
+                    occurred_at: 1_760_000_000,
+                    summary: "样品寄出".into(),
+                    sample: Some(crm::SampleActivity {
+                        model: "DC226".into(),
+                        quantity: Some(2),
+                        batch_ref: Some("CAM-A".into()),
+                        progress: Some("in_transit".into()),
+                    }),
+                    ..Default::default()
+                },
+            },
+        )))
+        .await
+        .unwrap();
+    let Response::Crm { data } = result else {
+        panic!("agent sample result")
+    };
+    let activity = saved(*data);
+    saved(
+        crm_ok(
+            &pipe,
+            crm::Command::SaveActivity {
+                id: Some(activity),
+                input: crm::ActivityInput {
+                    contact_id: id.clone(),
+                    event_type: "sample".into(),
+                    occurred_at: 1_760_000_000,
+                    summary: "样品已寄出".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await,
+    );
+    let result = crm_ok(
+        &pipe,
+        crm::Command::SampleWorkspace {
+            keyword: "DC226".into(),
+            status: "in_transit".into(),
+            offset: 0,
+            by_batch: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(result, crm::Result::SampleWorkspace { rows, counts, .. }
+        if rows.len() == 1 && rows[0].contact_id == id && rows[0].quantity == Some(2)
+           && rows[0].summary == "样品已寄出" && counts == [("in_transit".into(), 1)])
+    );
 }

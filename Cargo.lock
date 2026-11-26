@@ -1216,6 +1216,7 @@ version = "1.1.5"
 dependencies = [
  "ftw-ipc",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tokio",

@@ -1,10 +1,12 @@
 pub mod agent;
 pub mod crm;
 pub mod data;
+pub mod diagnostics;
 pub mod fields;
 pub mod inbox;
 pub mod mail;
 mod profile;
+pub mod receipt;
 pub mod views;
 mod windows;
 
@@ -39,10 +41,43 @@ pub enum Operation {
         command: Box<mail::Command>,
     },
     Agent(Box<mail::AgentCommand>),
+    RegisteredAgentMail {
+        token: mail::Secret,
+        command: Box<mail::AgentCommand>,
+    },
     Inbox(Box<inbox::Command>),
     AgentInbox(Box<inbox::AgentCommand>),
+    RegisteredAgentInbox {
+        token: mail::Secret,
+        command: Box<inbox::AgentCommand>,
+    },
     AgentCrm(Box<agent::Command>),
+    RegisteredAgentCrm {
+        token: mail::Secret,
+        command: Box<agent::Command>,
+    },
+    AgentCollaboration {
+        token: mail::Secret,
+        command: Box<agent::Collaboration>,
+    },
     Data(Box<data::Command>),
+}
+
+impl Operation {
+    pub fn diagnostic_group(&self) -> &'static str {
+        match self {
+            Self::Health => "health",
+            Self::Changes => "changes",
+            Self::Crm(_) => "crm",
+            Self::Mail(_) | Self::DesktopMail { .. } => "mail",
+            Self::Inbox(_) => "inbox",
+            Self::Agent(_) | Self::RegisteredAgentMail { .. } => "agent_mail",
+            Self::AgentInbox(_) | Self::RegisteredAgentInbox { .. } => "agent_inbox",
+            Self::AgentCrm(_) | Self::RegisteredAgentCrm { .. } => "agent_crm",
+            Self::AgentCollaboration { .. } => "agent_collaboration",
+            Self::Data(_) => "data",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

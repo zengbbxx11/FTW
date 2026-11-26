@@ -5,18 +5,18 @@ use ftw_ipc::{
     views::{Filter, Logic, Operator},
 };
 use serde_json::Value;
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::{HashMap, HashSet};
 
 pub struct Catalog(HashMap<String, Kind>);
 
-pub async fn catalog(pool: &SqlitePool, actor: Actor<'_>) -> Result<Catalog> {
+pub(super) async fn catalog_on(db: &mut SqliteConnection, actor: Actor<'_>) -> Result<Catalog> {
     let desktop = matches!(actor.source, Source::Manual);
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT id,kind FROM crm_fields WHERE NOT archived AND (? OR agent_access<>'hidden')",
     )
     .bind(desktop)
-    .fetch_all(pool)
+    .fetch_all(db)
     .await?;
     let mut fields = HashMap::new();
     for (id, kind) in rows {

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Archive, ArrowDown, ArrowLeft, ArrowUp, Pencil, Plus, RotateCcw, SlidersHorizontal } from 'lucide-react'
 import { request } from './api'
 import { Empty, Field, Problem } from './components'
 import { fieldColors, fieldEntries, fieldKinds, type CustomField, type FieldChoice, type FieldColor,
@@ -172,37 +173,42 @@ export function FieldManager({ back, backLabel = '返回客户' }: { back: () =>
       cache.invalidateQueries({ queryKey: ['contact-fields'] })]),
   })
   const list = fields.data?.fields.filter(field => showArchived ? field.archived : !field.archived) ?? []
-  return <>
-    <div className="page-heading"><h1>客户字段</h1><div className="row-actions">
-      <button className="button" onClick={back}>{backLabel}</button>
-      {!edit && <button className="button primary" onClick={() => setEdit('new')}>新增字段</button>}
-    </div></div>
-    {edit && <DefinitionEditor key={edit === 'new' ? 'new' : edit.id}
-      field={edit === 'new' ? undefined : edit} close={() => setEdit(null)} />}
+  return <div className="field-workspace">
+    <header className="page-heading"><div><h1>客户字段</h1><p>设置字段类型、默认值和 Agent 访问权限</p></div><div className="row-actions">
+      <button className="button" onClick={back}><ArrowLeft aria-hidden="true" />{backLabel}</button>
+      {!edit && <button className="button primary" onClick={() => setEdit('new')}><Plus aria-hidden="true" />新增字段</button>}
+    </div></header>
+    <div className="field-manager-layout" data-editing={Boolean(edit)}>
     <section className="panel">
-      <div className="section-heading"><h2>自定义字段</h2>
-        <label><input type="checkbox" checked={showArchived} onChange={event => setShowArchived(event.target.checked)} /> 显示已归档字段</label>
+      <div className="section-heading"><h2><SlidersHorizontal aria-hidden="true" />自定义字段</h2>
+        <div className="row-actions" role="group" aria-label="字段记录状态">
+          <button type="button" className="button" aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>在用字段</button>
+          <button type="button" className="button" aria-pressed={showArchived} onClick={() => setShowArchived(true)}><Archive aria-hidden="true" />已归档</button>
+        </div>
       </div>
       {fields.isError && <Problem error={fields.error} />}
       {operation.isError && <Problem error={operation.error} />}
       {fields.isPending && <Empty>正在读取字段…</Empty>}
-      {fields.data && (list.length ? <ul className="record-list">{list.map((field, index) => {
+      {fields.data && (list.length ? <ul className="record-list field-manager-list">{list.map((field, index) => {
         const target = { id: field.id, expected_revision: field.revision }
-        return <li key={field.id}><div><strong className="custom-field-value" data-field-color={field.color}>{field.name}</strong>
+        return <li key={field.id} data-active={edit !== 'new' && edit?.id === field.id}><div><strong className="custom-field-value" data-field-color={field.color}>{field.name}</strong>
           <small> {fieldKinds[field.kind]} · {accessLabels[field.agent_access]}</small></div>
           <div className="row-actions">
             {!field.archived && <>
-              <button className="button" disabled={Boolean(edit)} onClick={() => setEdit(field)}>编辑</button>
-              <button className="button" aria-label={'上移 ' + field.name} disabled={operation.isPending || index === 0} onClick={() => operation.mutate({ ...target, direction: -1 })}>上移</button>
-              <button className="button" aria-label={'下移 ' + field.name} disabled={operation.isPending || index === list.length - 1} onClick={() => operation.mutate({ ...target, direction: 1 })}>下移</button>
+              <button className="button" disabled={Boolean(edit)} onClick={() => setEdit(field)}><Pencil aria-hidden="true" />编辑</button>
+              <button className="button" aria-label={'上移 ' + field.name} disabled={operation.isPending || index === 0} onClick={() => operation.mutate({ ...target, direction: -1 })}><ArrowUp aria-hidden="true" />上移</button>
+              <button className="button" aria-label={'下移 ' + field.name} disabled={operation.isPending || index === list.length - 1} onClick={() => operation.mutate({ ...target, direction: 1 })}><ArrowDown aria-hidden="true" />下移</button>
             </>}
             <button className="button" disabled={operation.isPending || Boolean(edit)} onClick={() => operation.mutate({ ...target, archived: !field.archived })}>
-              {field.archived ? '恢复' : '归档'}
+              {field.archived ? <><RotateCcw aria-hidden="true" />恢复</> : <><Archive aria-hidden="true" />归档</>}
             </button>
           </div></li>
       })}</ul> : <Empty>{showArchived ? '没有已归档字段。' : '尚无自定义字段。'}</Empty>)}
     </section>
-  </>
+    {edit && <DefinitionEditor key={edit === 'new' ? 'new' : edit.id}
+      field={edit === 'new' ? undefined : edit} close={() => setEdit(null)} />}
+    </div>
+  </div>
 }
 
 function ColorSelect({ value, change }: { value: FieldColor; change: (color: FieldColor) => void }) {
@@ -250,11 +256,11 @@ function DefinitionEditor({ field, close }: { field?: CustomField; close: () => 
     update('options', options)
   }
   function submit(event: FormEvent) { event.preventDefault(); save.mutate() }
-  return <form className="panel" onSubmit={submit}>
+  return <form className="panel field-definition" onSubmit={submit}>
     <h2>{field ? '编辑字段' : '新增字段'}</h2>
     <fieldset disabled={save.isPending}>
       <div className="form-grid">
-        <Field label="字段名称"><input value={draft.name} maxLength={96} onChange={event => update('name', event.target.value)} required /></Field>
+        <Field label="字段名称"><input autoFocus value={draft.name} maxLength={96} onChange={event => update('name', event.target.value)} required /></Field>
         <Field label="字段类型"><select disabled={Boolean(field)} value={draft.kind} onChange={event =>
           setDraft(current => ({ ...current, kind: event.target.value as FieldKind, options: [], default_value: null }))}>
           {Object.entries(fieldKinds).map(([id,label]) => <option key={id} value={id}>{label}</option>)}

@@ -6,10 +6,12 @@ const before = { epoch: 'old', domains: { contacts: 8, activity: 2, leads: 0, ma
 
 test('uses the previous revision to update exactly the affected views', () => {
   const customerWrite = { ...before, domains: { ...before.domains, contacts: 9 } }
-  assert.deepEqual(changedQueryKeys(before, customerWrite), new Set(['contacts', 'contact', 'lead']))
+  assert.deepEqual(changedQueryKeys(before, customerWrite), new Set(['contacts', 'contact', 'contact-history', 'lead', 'sample-workspace', 'customer-files', 'audit', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics']))
   assert.deepEqual(changedQueryKeys(customerWrite, customerWrite), new Set())
   const activityWrite = { ...customerWrite, domains: { ...customerWrite.domains, activity: 3 } }
-  assert.deepEqual(changedQueryKeys(customerWrite, activityWrite), new Set(['contacts', 'contact', 'activities', 'dashboard']))
+  assert.deepEqual(changedQueryKeys(customerWrite, activityWrite), new Set(['contacts', 'contact', 'activities', 'dashboard', 'sample-workspace', 'global-search']))
+  const leadWrite = { ...before, domains: { ...before.domains, leads: 1 } }
+  assert.deepEqual(changedQueryKeys(before, leadWrite), new Set(['leads', 'lead', 'contact', 'global-search', 'dashboard']))
 })
 
 test('refreshes mail on approval expiration and all profile views on restore', () => {

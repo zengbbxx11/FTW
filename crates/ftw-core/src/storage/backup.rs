@@ -1,6 +1,9 @@
 use super::{schema_version, MIGRATOR};
 use crate::{mail::attachments, CoreError};
-use ftw_ipc::{data::Backup, display_path};
+use ftw_ipc::{
+    data::{Backup, Result as DataReply},
+    display_path,
+};
 use libsqlite3_sys::{
     sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_step, SQLITE_DONE, SQLITE_OK,
 };
@@ -34,13 +37,20 @@ pub async fn before_migration(
 }
 
 pub async fn create(pool: &SqlitePool, root: &Path, reason: &str) -> Result<PathBuf, CoreError> {
+    let mut source = pool.acquire().await?;
+    create_from(&mut source, root, reason).await
+}
+
+async fn create_from(
+    source: &mut SqliteConnection,
+    root: &Path,
+    reason: &str,
+) -> Result<PathBuf, CoreError> {
     let directory = root.join("backups");
     fs::create_dir_all(&directory).map_err(backup_error)?;
     let name = format!("workbench-{reason}-{}", Uuid::new_v4());
     let partial = directory.join(format!("{name}.partial"));
-    let mut source = pool.acquire().await?;
-    let written = copy_to(&mut source, &partial).await;
-    drop(source);
+    let written = copy_to(source, &partial).await;
     let result = async {
         written?;
         let mut snapshot = SqliteConnection::connect_with(
@@ -68,6 +78,25 @@ pub async fn create(pool: &SqlitePool, root: &Path, reason: &str) -> Result<Path
     Ok(destination)
 }
 
+pub async fn create_manual(pool: &SqlitePool, root: &Path) -> Result<PathBuf, CoreError> {
+    let mut source = pool.acquire().await?;
+    let snapshot = create_from(&mut source, root, "manual").await?;
+    let filename = snapshot.file_name().ok_or_else(invalid)?.to_string_lossy();
+    if let Err(error) = sqlx::query(
+        "INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation)
+        VALUES (?,'desktop-user','manual','backup',?,'create')",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(filename.as_ref())
+    .execute(&mut *source)
+    .await
+    {
+        let _ = fs::remove_file(&snapshot);
+        return Err(error.into());
+    }
+    Ok(snapshot)
+}
+
 pub fn list(root: &Path) -> Result<Vec<Backup>, CoreError> {
     let path = root.join("backups");
     let entries = match fs::read_dir(path) {
@@ -83,42 +112,27 @@ pub fn list(root: &Path) -> Result<Vec<Backup>, CoreError> {
             continue;
         }
         let metadata = entry.metadata().map_err(backup_error)?;
-        let created_at = metadata
+        let modified = metadata
             .modified()
             .ok()
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |time| time.as_secs() as i64);
-        rows.push(Backup {
-            filename,
-            bytes: metadata.len(),
-            created_at,
-        });
+            .unwrap_or_default();
+        rows.push((
+            modified,
+            Backup {
+                filename,
+                bytes: metadata.len(),
+                created_at: modified.as_secs() as i64,
+            },
+        ));
     }
-    rows.sort_by(|a, b| {
-        b.created_at
-            .cmp(&a.created_at)
-            .then_with(|| a.filename.cmp(&b.filename))
-    });
-    Ok(rows)
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.filename.cmp(&b.1.filename)));
+    Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
 pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<String, CoreError> {
     let directory = root.join("backups");
-    if !valid_name(filename) {
-        return Err(invalid());
-    }
-    let input = directory.join(filename);
-    if !fs::symlink_metadata(&input)
-        .map_err(backup_error)?
-        .file_type()
-        .is_file()
-    {
-        return Err(invalid());
-    }
-    let mut original = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new().filename(&input).read_only(true),
-    )
-    .await?;
+    let mut original = open_snapshot(&directory, filename).await?;
     let stage = directory.join(format!("restore-{}.partial", Uuid::new_v4()));
     let result = async {
         validate(&mut original).await?;
@@ -145,8 +159,9 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
             sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation)
                  VALUES (?,'desktop-user','manual','backup',?,'restore')")
                 .bind(Uuid::new_v4().to_string()).bind(filename).execute(&mut staging).await?;
-            let backup = create(pool, root, "before-restore").await?;
             let mut destination = pool.acquire().await?;
+            // Keep the single workspace connection between the safety copy and activation.
+            let backup = create_from(&mut destination, root, "before-restore").await?;
             copy(&mut staging, &mut destination).await?;
             Ok::<_,CoreError>(display_path(&backup))
         }.await;
@@ -158,26 +173,71 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
     result
 }
 
+pub async fn inspect(root: &Path, filename: &str) -> Result<DataReply, CoreError> {
+    let directory = root.join("backups");
+    let mut snapshot = open_snapshot(&directory, filename).await?;
+    let schema_version = validate(&mut snapshot).await?;
+    let customers = if schema_version >= 2 {
+        let sql = if schema_version >= 13 {
+            "SELECT count(*) FROM contacts WHERE merged_into IS NULL"
+        } else {
+            "SELECT count(*) FROM contacts"
+        };
+        sqlx::query_scalar(sql).fetch_one(&mut snapshot).await?
+    } else {
+        0
+    };
+    let mut mail_records = 0;
+    for (version, sql) in [
+        (3, "SELECT count(*) FROM email_messages"),
+        (4, "SELECT count(*) FROM inbox_messages"),
+    ] {
+        if schema_version >= version {
+            mail_records += sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(&mut snapshot)
+                .await?;
+        }
+    }
+    let objects = referenced_objects(&mut snapshot).await?;
+    let source = directory.join("mail-objects");
+    for (sha, size) in &objects {
+        attachments::read_object(&source, sha, *size as usize)
+            .await
+            .map_err(backup_error)?;
+    }
+    Ok(DataReply::BackupInspection {
+        filename: filename.to_owned(),
+        schema_version,
+        customers,
+        mail_records,
+        objects: objects.len(),
+    })
+}
+
+async fn open_snapshot(directory: &Path, filename: &str) -> Result<SqliteConnection, CoreError> {
+    if !valid_name(filename) {
+        return Err(invalid());
+    }
+    let input = directory.join(filename);
+    if !fs::symlink_metadata(&input)
+        .map_err(backup_error)?
+        .file_type()
+        .is_file()
+    {
+        return Err(invalid());
+    }
+    Ok(SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(&input).read_only(true),
+    )
+    .await?)
+}
+
 async fn copy_objects(
     db: &mut SqliteConnection,
     source: &Path,
     destination: &Path,
 ) -> Result<(), CoreError> {
-    let available: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='mail_assets' AND type='table')",
-    )
-    .fetch_one(&mut *db)
-    .await?;
-    if !available {
-        return Ok(());
-    }
-    let objects: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT sha256,size FROM mail_assets
-        UNION SELECT full_sha256,full_size FROM inbox_messages WHERE full_sha256 IS NOT NULL",
-    )
-    .fetch_all(db)
-    .await?;
-    for (sha, size) in objects {
+    for (sha, size) in referenced_objects(db).await? {
         let bytes = attachments::read_object(source, &sha, size as usize)
             .await
             .map_err(backup_error)?;
@@ -186,6 +246,27 @@ async fn copy_objects(
             .map_err(backup_error)?;
     }
     Ok(())
+}
+
+async fn referenced_objects(db: &mut SqliteConnection) -> Result<Vec<(String, i64)>, CoreError> {
+    let available: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='mail_assets' AND type='table')",
+    )
+    .fetch_one(&mut *db)
+    .await?;
+    if !available {
+        return Ok(Vec::new());
+    }
+    let documents: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='customer_documents' AND type='table')")
+        .fetch_one(&mut *db).await?;
+    let mut query = String::from(
+        "SELECT sha256,size FROM mail_assets
+        UNION SELECT full_sha256,full_size FROM inbox_messages WHERE full_sha256 IS NOT NULL",
+    );
+    if documents {
+        query.push_str(" UNION SELECT sha256,size FROM customer_documents");
+    }
+    Ok(sqlx::query_as(&query).fetch_all(db).await?)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -197,7 +278,7 @@ fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.'))
 }
 
-async fn validate(db: &mut SqliteConnection) -> Result<(), CoreError> {
+async fn validate(db: &mut SqliteConnection) -> Result<i64, CoreError> {
     let integrity: String = sqlx::query_scalar("PRAGMA quick_check")
         .fetch_one(&mut *db)
         .await?;
@@ -219,7 +300,7 @@ async fn validate(db: &mut SqliteConnection) -> Result<(), CoreError> {
             return Err(invalid());
         }
     }
-    Ok(())
+    Ok(applied.last().ok_or_else(invalid)?.0)
 }
 
 async fn copy_to(source: &mut SqliteConnection, path: &Path) -> Result<(), CoreError> {

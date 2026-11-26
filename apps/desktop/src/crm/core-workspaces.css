@@ -1,0 +1,59 @@
+.customer-mail-context { display: flex; gap: .4rem; align-items: center; margin: 0 0 .65rem; color: var(--ftw-muted); font-size: .79rem; }
+.customer-mail-context svg { color: var(--ftw-accent); }
+.editor-progress { display: grid; gap: .45rem; }
+.editor-progress li { display: flex; gap: .35rem; align-items: center; color: var(--ftw-muted); }
+.editor-progress li[data-complete="true"] svg { color: var(--ftw-accent); }
+.contact-editor .editor-channel-tools button { gap: .35rem; }
+.contact-editor .editor-guide h2:not(:first-child) { margin-top: .95rem; }
+
+.followup-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: .8rem; align-items: start; }
+.followup-workspace .followup-layout:has(.followup-detail) { grid-template-columns: minmax(0, 1fr) minmax(15rem, min(30%, 25rem)); }
+.followup-search { margin-block: .7rem; }
+.followup-search svg { width: .9rem; height: .9rem; flex: none; }
+.followup-workspace .followup-list { display: grid; gap: .15rem; margin-top: .65rem; }
+.followup-list > li {
+  display: grid;
+  grid-template-columns: 7rem 2.25rem minmax(0, 1fr);
+  gap: .62rem;
+  margin: 0;
+  padding: .65rem .45rem;
+  border-inline-start: 0;
+  border-bottom: 1px solid var(--ftw-border);
+}
+.followup-list > li[data-selected="true"] { background: var(--ftw-accent-soft); border-radius: .4rem; }
+.followup-list time { color: var(--ftw-muted); padding-top: .38rem; font-size: .72rem; }
+.followup-event .section-heading { margin-bottom: .1rem; }
+.followup-event .row-actions .text-button { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
+.followup-event .row-actions .text-button svg { width: .87rem; height: .87rem; flex: none; }
+.followup-event small, .followup-customer small { display: block; color: var(--ftw-muted); }
+.followup-event .long-text { margin-top: .35rem; }
+.followup-icon { display: grid; place-items: center; width: 2.15rem; height: 2.15rem; flex: none; border-radius: .6rem; color: var(--ftw-accent); background: #e1f2f1; }
+.followup-icon svg { width: 1rem; height: 1rem; }
+.followup-icon:is([data-type="sample"],[data-type="meeting"]) { background: #f0eafa; color: #684aae; }
+.followup-icon:is([data-type="email_received"],[data-type="call"]) { background: #e4effc; color: #276299; }
+.followup-scoped .followup-list > li { grid-template-columns: 1.6rem minmax(0,1fr); gap: .4rem; }
+.followup-scoped .followup-list time { grid-column: 2; padding-top: 0; }
+.followup-scoped .followup-icon { width: 1.6rem; height: 1.6rem; }
+.followup-detail h2 { font-size: .97rem; }
+.followup-customer { display: flex; align-items: center; gap: .55rem; margin-bottom: .55rem; padding: .6rem 0; }
+.followup-note { white-space: pre-wrap; overflow-wrap: anywhere; margin-block: .65rem; padding: .6rem; border-radius: .38rem; background: var(--ftw-bg); font-size: .82rem; }
+.followup-picker-item { display: grid; width: 100%; gap: .14rem; padding: .4rem .5rem; text-align: start; border-radius: .4rem; }
+.followup-picker-item:hover { background: var(--ftw-accent-soft); }
+.followup-picker-item small { color: var(--ftw-muted); }
+
+.field-manager-layout { display: grid; gap: .8rem; align-items: start; }
+.field-manager-layout[data-editing="true"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
+.field-manager-layout .section-heading h2 { display: flex; align-items: center; gap: .35rem; }
+.field-manager-layout [aria-pressed="true"], .field-manager-list li[data-active="true"] { color: var(--ftw-accent-hover); background: var(--ftw-accent-soft); }
+.field-manager-list li { border-radius: .35rem; padding-inline: .25rem; }
+.field-manager-list small { display: block; margin-top: .2rem; color: var(--ftw-muted); font-size: .75rem; }
+.field-definition h2, .saved-view-editor h2 { margin-bottom: .65rem; }
+.saved-view-manager { max-height: 24rem; overflow: auto; }
+.saved-view-manager .record-list > li { padding: .45rem; }
+@media (max-width: 1050px) {
+  .field-manager-layout[data-editing="true"], .followup-workspace .followup-layout:has(.followup-detail) { grid-template-columns: 1fr; }
+}
+@media (max-width: 650px) {
+  .followup-workspace .followup-list > li { grid-template-columns: auto minmax(0,1fr); }
+  .followup-workspace .followup-list time { grid-column: 2; padding-top: 0; }
+}

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 
-export type Account = { id: string; name: string; email: string; host?: string; port?: number; security?: 'tls' | 'starttls'; username?: string; daily_limit?: number; signature?: string }
+export type Account = { id: string; name: string; email: string; host?: string; port?: number; security?: 'tls' | 'starttls'; username?: string; daily_limit?: number; signature?: string; is_default?: boolean }
 export type Asset = { id: string; filename: string; sha256: string; size: number; content_type: string; agent_allowed: boolean }
 export function chooseMailAssets() { return invoke<Asset[]>('choose_mail_assets') }
 
@@ -14,6 +14,7 @@ export const states = {
   draft: '草稿', pending_approval: '待人工审批', approved: '已批准',
   queued: '等待发送', sending: '发送中', smtp_accepted: 'SMTP 已接受', failed: '发送失败', delivery_unknown: '发送结果未知',
 } as const
+export type DraftFolder = 'drafts' | 'submissions' | 'accepted' | 'queue' | 'failed' | 'unknown' | 'bounced'
 
 export type DraftRow = {
   id: string; contact_id: string; account_id: string; recipient: string; subject: string
@@ -23,8 +24,27 @@ export type DraftRow = {
 export type Draft = DraftRow & {
   account_active: boolean; sender: string; body: string; attachments: { asset_id: string | null; filename: string; size: number; sha256: string }[]
   approval_attempt: { id: string; revision: number; state: 'waiting' | 'approved' | 'cancelled' | 'failed' | 'interrupted'; outcome: string | null } | null
-  expires_at: number | null; outcome: string | null; thread_id: string | null; has_reply: boolean
+  expires_at: number | null; outcome: string | null; thread_id: string | null; has_reply: boolean; reply_to_inbox_id?: string
 }
+
+export type CustomerMailFile = {
+  origin: 'inbox' | 'outbound' | 'document'; message_id: string; document_id?: string; index: number; filename: string;
+  content_type: string | null; size: number | null; sha256: string | null;
+  contact_id: string; contact_name: string; subject: string; occurred_at: number
+  created_by?: string; created_by_name?: string; source?: 'manual' | 'agent'
+}
+
+export const mailPurposes = {
+  first_outreach: '首次开发信', outreach_followup: '开发跟进', quote_communication: '报价沟通',
+  sample_communication: '样品沟通', other_business: '其他业务邮件',
+} as const
+export type Purpose = keyof typeof mailPurposes
+export type TemplateInput = { name: string; purpose: Purpose; subject: string; body: string }
+export type Template = TemplateInput & { id: string; revision: number; archived_at: number | null }
+export type TemplatePreview = { kind: 'rendered_template'; subject: string; body: string; missing: string[] }
+
+export function importCustomerDocuments(contactId: string) { return invoke<number | null>('import_customer_documents', { contactId }) }
+export function exportCustomerDocument(id: string, filename: string) { return invoke<boolean>('export_customer_document', { id, filename }) }
 
 type AccountInput = { name: string; email: string; host: string; port: number; security: 'tls' | 'starttls'; username: string; password: string }
 
@@ -32,38 +52,92 @@ export type AgentMailPolicy = {
   revision: number; mode: 'manual' | 'disabled' | 'automatic'; accounts: string[]; purposes: string[]
   daily_limit: number; task_limit: number; interval_seconds: number
 }
-export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean }
+export const collaborationScopes = {
+  read_crm: '查询 CRM 业务资料',
+  write_crm: '创建与更新 CRM 业务资料',
+  read_mail: '读取邮件、账户和同步收件箱',
+  create_drafts: '起草和按人工审批发信',
+  manage_fields: '创建字段和维护已共享字段（排序、归档及恢复）',
+  archive_contacts: '归档或恢复客户',
+  merge_contacts: '合并重复客户',
+  import_customers: '导入客户 CSV',
+  export_customers: '导出客户 CSV',
+  manage_views: '管理共享视图及其顺序',
+  edit_activities: '编辑跟进和样品记录',
+  read_documents: '读取客户文档',
+  upload_documents: '导入客户文档',
+  edit_drafts: '编辑邮件草稿',
+  read_audit: '查看客户字段变更',
+  read_tasks: '查看该 Agent 的操作和邮件任务',
+  read_mail_attachments: '读取邮件附件内容',
+  suggest_reply_links: '提交回复关联建议',
+  manage_mail_tasks: '取消本客户端未发送任务或准备重试',
+  manage_templates: '新建、编辑、归档和恢复邮件模板',
+  edit_leads: '补充待审核候选客户资料',
+  manage_companies: '维护公司档案和联系人归属',
+  update_customer_batches: '批量修改客户阶段、等级和样品状态',
+  export_mail_reports: '导出邮件开发统计',
+  review_leads: '核验调查证据、处理候选和转正已人工复核的候选',
+  confirm_reply_links: '确认发件人唯一匹配已核实邮箱的来信关联',
+} as const
+export type CollaborationScope = keyof typeof collaborationScopes
+export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean; collaboration_scopes?: CollaborationScope[] }
 
 export type AgentMailSettings = {
   kind: 'agent_mail_settings'; policy: AgentMailPolicy; automatic_available: boolean
   agents: RegisteredAgent[]
+  require_registered_crm?: boolean
+  require_registered_mail?: boolean
   review: { id: string; state: 'waiting' | 'saved' | 'cancelled' | 'failed'; outcome: string | null } | null
 }
 
 export type MailCommand =
+  | { action: 'list_templates'; purpose: Purpose | ''; offset: number; archived: boolean }
+  | { action: 'get_template'; id: string }
+  | { action: 'save_template'; id: string | null; expected_revision: number | null; input: TemplateInput }
+  | { action: 'set_template_archive'; id: string; expected_revision: number; archived: boolean }
+  | { action: 'render_template'; id: string; contact_id: string }
+  | { action: 'preview_template'; input: TemplateInput; contact_id: string }
   | { action: 'agent_mail_settings' | 'list_assets' }
+  | { action: 'list_suppression'; offset: number }
   | { action: 'set_asset_access'; id: string; allowed: boolean }
   | { action: 'save_draft_with_assets'; id: string | null; input: DraftInput; asset_ids: string[] }
+  | { action: 'update_draft'; id: string; expected_revision: number; input: DraftInput; asset_ids: string[] | null }
   | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy; agent_ids: string[] }
   | { action: 'cancel_mail_policy_review'; id: string }
   | { action: 'register_mail_agent'; name: string; token: string }
+  | { action: 'set_agent_collaboration'; id: string; scopes: CollaborationScope[] }
+  | { action: 'set_registered_crm_required'; required: boolean }
+  | { action: 'set_registered_mail_required'; required: boolean }
   | { action: 'revoke_mail_agent'; id: string }
   | { action: 'list_accounts' }
   | ({ action: 'save_account' } & AccountInput)
   | { action: 'update_account'; input: Omit<AccountInput, 'password'> & { id: string; password: string | null } }
   | { action: 'delete_account'; id: string }
+  | { action: 'set_default_sender'; id: string }
   | { action: 'set_account_preferences'; id: string; daily_limit: number; signature: string }
   | { action: 'replace_password'; id: string; password: string }
   | { action: 'test_account' | 'get_draft' | 'request_approval' | 'open_approval' | 'send_approved'; id: string }
-  | { action: 'list_drafts'; contact_id: string | null; offset: number }
+  | { action: 'list_drafts'; contact_id: string | null; offset: number; folder?: DraftFolder; keyword?: string }
+  | { action: 'queue_summary'; contact_id: string | null }
+  | { action: 'file_workspace'; contact_id: string | null; keyword: string; direction: string; offset: number; document_id?: string }
+  | { action: 'preview_customer_image'; id: string; offset: number }
   | { action: 'save_draft'; id: string | null; input: DraftInput }
+  | { action: 'create_reply_draft'; input: { inbox_message_id: string; subject: string | null; body: string }; asset_ids: string[] }
   | { action: 'set_suppression'; target: string; blocked: boolean }
 
 type MailResult =
+  | { kind: 'document_chunk'; id: string; content_base64: string; offset: number; next_offset: number | null; size: number; sha256: string }
   | AgentMailSettings
+  | { kind: 'templates'; rows: Template[]; has_more: boolean }
+  | { kind: 'template'; record: Template }
+  | TemplatePreview
   | { kind: 'assets'; rows: Asset[] }
+  | { kind: 'suppression'; rows: string[]; has_more: boolean }
   | { kind: 'accounts'; rows: Account[] }
   | { kind: 'drafts'; rows: DraftRow[]; has_more: boolean }
+  | { kind: 'queue_summary'; queue: number; accepted: number; failed: number; unknown: number }
+  | { kind: 'file_workspace'; rows: CustomerMailFile[]; has_more: boolean }
   | { kind: 'draft'; record: Draft }
   | { kind: 'saved'; id: string }
   | { kind: 'approval_opened'; id: string; attempt_id: string }
@@ -79,12 +153,17 @@ export async function mailCall<Kind extends MailResult['kind']>(
 }
 
 const mailErrorLabels: Record<string, string> = {
+  invalid_template_purpose: '请选择有效的邮件用途。',
+  invalid_template_variable: '模板含有未知或未闭合的变量，请使用右侧列出的变量。',
+  template_revision_conflict: '该模板已变更，请重新打开后再编辑。',
+  mail_unresolved_template: '主题或正文含未替换的模板变量，请补齐后再提交。',
   agent_policy_cancelled: '用户取消了 Windows 核验。',
   agent_policy_verification_failed: 'Windows 未能验证登录账户。请使用当前 Windows 登录密码，PIN 无法用于此窗口。',
   mail_agent_not_authorized: '这个 Agent 已登记。请在发送模式中勾选它的自动发信权限。',
   mail_agent_selection_required: '请至少选择一个允许自动发信的 Agent。',
   agent_policy_review_expired: '权限确认已过期，请重新发起。',
   agent_policy_changed: '权限设置已更新，请重新打开后再保存。',
+  mail_revision_conflict: '草稿已被其他操作更新。请保留所需内容，关闭编辑后重新打开最新草稿。',
   agent_policy_invalid: '请检查发送限额、发件邮箱和授权用途。',
   agent_send_history_unavailable: '发信安全账本不可用，自动发送保持关闭。',
   agent_automatic_unavailable: '当前版本尚未开放自动发送。',
@@ -128,6 +207,11 @@ const mailErrorLabels: Record<string, string> = {
   approval_interrupted: '审批过程被中断，可重新发起审批。',
   approval_required: '需在 FTW 工作台人工批准这封草稿。',
   mail_link_changed: '来信归属已经变化。请核对当前结果后再关联。',
+  mail_reply_link_required: '请先核对这封业务来信的客户关联。',
+  mail_reply_header_missing: '这封来信缺少可用于原会话回复的邮件标识。',
+  mail_reply_context_changed: '原会话或客户地址已变化，请回到来信重新起草。',
+  mail_reply_purpose_invalid: '会话回复须使用已获授权的跟进或业务用途。',
+  mail_link_human_review_required: '这封来信需要在工作台人工核对关联。',
   approval_already_open: '已有一个邮件审批对话框正在等待确认。',
   approval_expired: '批准已过期，请重新审核。',
   approval_snapshot_changed: '邮件内容已变化，请重新审核。',
@@ -140,6 +224,9 @@ const mailErrorLabels: Record<string, string> = {
   attachment_not_available: '附件不存在，或尚未授权给 Agent。',
   attachment_picker_failed: '无法打开 Windows 文件选择窗口。',
   smtp_rejected: 'SMTP 服务器明确拒绝了提交。',
+  cancelled_before_submission: '发送前已取消。',
+  mail_job_action_unavailable: '邮件任务状态已变化，请刷新后核对。',
+  document_preview_unavailable: '此文件可另存查看。',
   smtp_result_unknown: 'SMTP 提交结果未知，需要先核对邮箱记录。',
   interrupted_during_submission: '发送过程被中断，结果未知。',
 }

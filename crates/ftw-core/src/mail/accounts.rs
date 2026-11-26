@@ -59,6 +59,31 @@ impl MailService {
         Ok(Reply::Saved { id: input.id })
     }
 
+    pub(super) async fn set_default_sender(&self, id: String) -> Result<Reply> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = sqlx::query(
+            "INSERT INTO app_settings(key,value) SELECT 'default_sender_id',id FROM email_accounts
+             WHERE id=? AND archived_at IS NULL ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        )
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(Failure::Code("mail_not_found"));
+        }
+        audit(
+            &mut tx,
+            Source::Manual,
+            "email_account",
+            &id,
+            "set_default_sender",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
     pub(super) async fn delete_account(&self, id: String) -> Result<Reply> {
         let _delivery = self
             .delivery
@@ -80,6 +105,10 @@ impl MailService {
         reset_approvals(&mut tx, &id).await?;
         remove_imap(&mut tx, &id).await?;
         policy::remove_account(&mut tx, &id).await?;
+        sqlx::query("DELETE FROM app_settings WHERE key='default_sender_id' AND value=?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
         audit(&mut tx, Source::Manual, "email_account", &id, "delete").await?;
         tx.commit().await?;
         Ok(Reply::Saved { id })

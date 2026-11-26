@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { CustomField, FieldDefinition, FieldEntry, FieldPatch, FieldValues } from './fieldTypes'
+import type { CustomField, FieldDefinition, FieldEntry, FieldPatch, FieldValue, FieldValues } from './fieldTypes'
 import type { CellTarget, Filter, SavedView, ViewInput } from './viewTypes'
 
 export const PAGE_SIZE = 20
@@ -136,14 +136,29 @@ export type LeadInput = {
 
 export type Lead = {
   id: string
+  record_revision: number
+  data_epoch: string
   input: LeadInput
   review_status: LeadStatus
   promoted_contact_id: string | null
   source: string
+  created_at: number
 }
+
+export type LeadVersion = { revision: number; epoch: string }
 
 export type LeadRow = Pick<LeadInput, 'display_name' | 'company_name' | 'country_region' | 'email'> &
   Pick<Lead, 'id' | 'review_status' | 'source'>
+
+type LeadWorkspaceRow = LeadRow & Pick<LeadInput, 'website_url' | 'business_summary'> & { evidence_count: number }
+export type LeadEvidenceInput = { subject: string; url: string; note: string; observed_at: number | null }
+export type EvidenceStatus = 'pending' | 'verified' | 'rejected'
+export type LeadEvidence = LeadEvidenceInput & {
+  id: string; source: string; request_id: string | null; created_at: number; status: EvidenceStatus
+  reviewed_at: number | null; revision: number
+  review_source?: 'manual' | 'agent'
+  candidate?: string
+}
 
 export type ActivityInput = {
   counts_as_contact?: boolean | null
@@ -155,36 +170,70 @@ export type ActivityInput = {
   channel: string
   followup_category: string
   customer_feedback: string
+  sample?: { model: string; quantity: number | null; batch_ref?: string; progress?: string }
 }
 
-export type Activity = ActivityInput & { id: string; contact_name: string; source: string }
+export type Activity = ActivityInput & { id: string; revision: number; contact_name: string; source: string }
+type ContactRevision = {
+  revision: number; actor_id: string; actor_name: string; source: string; occurred_at: number
+  fields: { field: string; before: string | number | null; after: string | number | null }[]
+}
+type CustomFieldChange = {
+  revision: number; field_id: string; field_name: string; actor_id: string; actor_name: string
+  source: string; task_id: string | null; before: FieldValue | null; after: FieldValue | null; occurred_at: number
+}
 export type Duplicate = { id: string; entity: 'contact' | 'lead'; display_name: string; reason: string }
 
 export type AgentChange = {
   id: string; contact_id: string; contact_name: string; field: string; previous_value: string;
   current_value: string; proposed_value: string; request_id: string; state: string; created_at: number
+  conflict: boolean; archived: boolean
+  evidence_kind: 'research' | 'inferred' | 'unverified' | null
+  evidence_url: string | null; evidence_note: string | null
+}
+
+export type SampleRow = {
+  id: string; contact_id: string; contact_name: string; company_name: string; country_region: string;
+  status: string; model: string; quantity: number | null; summary: string; details: string; feedback: string; occurred_at: number | null
+  batch_ref: string; events: number | null; activity_id: string | null
 }
 
 export type QualityIssue = {
-  category: string; contact_id: string; contact_name: string; other_id: string | null; other_name: string | null; detail: string
+  category: string; contact_id: string; contact_name: string; other_id: string | null; other_name: string | null; detail: string; draft_id: string | null
 }
+
+export type CompanyContact = Pick<ContactRow, 'id' | 'display_name' | 'email' | 'stage' | 'last_contact_at'> & {
+  mail_status: Outreach['status']
+  country_region: string; branch: string
+}
+export type CompanyProfileInput = { name: string; website: string; notes: string; aliases: string[] }
+export type CompanyProfile = CompanyProfileInput & CellTarget
 
 export type StateOption = { field: string; code: string; label: string; aliases: string[] }
 
 type Result =
   | { kind: 'views'; views: SavedView[] }
   | { kind: 'cells_updated'; count: number }
+  | { kind: 'bulk_contacts'; count: number; fingerprint: string }
   | { kind: 'fields'; fields: CustomField[] }
   | { kind: 'field_values'; record: FieldValues }
   | { kind: 'state_catalog'; options: StateOption[] }
-  | { kind: 'agent_changes'; rows: AgentChange[]; has_more: boolean }
-  | { kind: 'customer_quality'; rows: QualityIssue[]; counts: Array<[string, number]>; has_more: boolean }
+  | { kind: 'agent_changes'; rows: AgentChange[]; has_more: boolean; total: number; pending: number; applied: number; conflicts: number }
+  | { kind: 'sample_workspace'; rows: SampleRow[]; counts: Array<[string, number]>; has_more: boolean }
+  | { kind: 'customer_quality'; rows: QualityIssue[]; counts: Array<[string, number]>; active_customers: number; has_more: boolean }
+  | { kind: 'company_contacts'; rows: CompanyContact[]; total: number; contacted: number; has_more: boolean; profile: CompanyProfile | null; branch: string }
+  | { kind: 'company_profiles'; rows: CompanyProfile[]; has_more: boolean }
   | { kind: 'customer_stats'; active: number; priority: number; sample: number; in_progress: number; won: number }
   | { kind: 'contacts'; rows: ContactRow[]; has_more: boolean }
+  | { kind: 'contact_preview'; rows: ContactRow[]; total: number }
   | { kind: 'contact'; record: Contact }
   | { kind: 'leads'; rows: LeadRow[]; has_more: boolean }
+  | { kind: 'lead_workspace'; rows: LeadWorkspaceRow[]; has_more: boolean }
+  | { kind: 'lead_evidence'; rows: LeadEvidence[]; total: number; verified: number; pending: number; has_more: boolean; epoch: string }
   | { kind: 'lead'; record: Lead; duplicates: Duplicate[] }
   | { kind: 'activities'; rows: Activity[]; has_more: boolean }
+  | { kind: 'contact_history'; rows: ContactRevision[]; has_more: boolean }
+  | { kind: 'custom_field_history'; rows: CustomFieldChange[]; has_more: boolean }
   | { kind: 'saved'; id: string }
   | { kind: 'duplicates'; matches: Duplicate[] }
 
@@ -194,30 +243,50 @@ type Command =
   | { action: 'move_view'; id: string; expected_revision: number; direction: -1 | 1 }
   | { action: 'archive_view'; id: string; expected_revision: number; archived: boolean }
   | { action: 'update_cells'; targets: CellTarget[]; field: string; value: string }
+  | { action: 'preview_bulk_contacts'; query: ContactQuery }
+  | { action: 'update_matching_contacts'; query: ContactQuery; fingerprint: string; field: string; value: string }
   | { action: 'list_fields'; include_archived?: boolean }
   | { action: 'save_field'; definition: FieldDefinition }
   | { action: 'archive_field'; id: string; expected_revision: number; archived: boolean }
   | { action: 'move_field'; id: string; expected_revision: number; direction: -1 | 1 }
   | { action: 'get_field_values'; contact_id: string }
   | { action: 'patch_field_values'; patch: FieldPatch }
-  | { action: 'create_contact_with_fields'; input: ContactInput; allow_duplicate: boolean; entries: FieldEntry[] }
+  | { action: 'create_contact_with_fields'; input: ContactInput; allow_duplicate: boolean; entries: FieldEntry[]; company?: CellTarget }
   | { action: 'state_catalog' }
   | { action: 'save_contact_checked'; id: string; input: ContactInput; allow_duplicate: boolean; expected_revision: number; expected_epoch: string }
   | { action: 'customer_stats' }
-  | { action: 'customer_quality'; category: string; offset: number }
+  | { action: 'customer_quality'; category: string; keyword?: string; offset: number }
+  | { action: 'company_contacts'; id: string; offset: number }
+  | { action: 'associate_company'; anchor: CellTarget; contact: CellTarget }
+  | { action: 'find_company_profiles'; keyword: string }
+  | { action: 'save_company_profile'; anchor: CellTarget; profile: CellTarget | null; input: CompanyProfileInput; include_group: boolean }
+  | { action: 'set_company_membership'; contact: CellTarget; profile: CellTarget | null; branch: string }
   | { action: 'merge_contacts'; primary: CellTarget; secondary: CellTarget }
-  | { action: 'list_agent_changes'; offset: number; pending: boolean }
+  | { action: 'list_agent_changes'; offset: number; pending: boolean; scope?: '' | 'pending' | 'applied' | 'conflict' }
+  | { action: 'sample_workspace'; keyword: string; status: string; offset: number; by_batch?: boolean }
   | { action: 'resolve_agent_change'; id: string; accept: boolean }
   | { action: 'list_contacts'; query: ContactQuery }
+  | { action: 'preview_contacts'; query: ContactQuery }
   | { action: 'get_contact' | 'get_lead'; id: string }
+  | { action: 'list_lead_evidence'; lead_id: string; offset: number }
+  | { action: 'add_lead_evidence'; lead_id: string; input: LeadEvidenceInput }
+  | { action: 'list_contact_evidence'; contact_id: string; offset: number }
+  | { action: 'add_contact_evidence'; contact_id: string; input: LeadEvidenceInput }
+  | { action: 'review_lead_evidence'; id: string; revision: number; epoch: string; status: EvidenceStatus }
   | { action: 'save_contact'; id: string | null; input: ContactInput; allow_duplicate: boolean }
   | { action: 'set_archived'; id: string; archived: boolean }
+  | { action: 'set_contact_archive'; target: CellTarget; archived: boolean }
   | { action: 'list_leads'; offset: number; review_status: string }
-  | { action: 'save_lead'; id: string | null; input: LeadInput; allow_duplicate: boolean }
-  | { action: 'set_lead_review'; id: string; rejected: boolean }
-  | { action: 'promote_lead'; id: string; allow_duplicate: boolean }
-  | { action: 'list_activities'; contact_id: string | null; event_type: string; offset: number }
+  | { action: 'lead_workspace'; offset: number; review_status: string; keyword: string; source: string }
+  | { action: 'save_lead'; id: string | null; input: LeadInput; allow_duplicate: boolean; expected: LeadVersion | null }
+  | { action: 'set_lead_review'; id: string; rejected: boolean; expected: LeadVersion }
+  | { action: 'promote_lead'; id: string; allow_duplicate: boolean; expected: LeadVersion }
+  | { action: 'list_activities'; contact_id: string | null; event_type: string; offset: number; keyword?: string; source?: string }
+  | { action: 'get_activity'; id: string }
   | { action: 'save_activity'; id: string | null; input: ActivityInput }
+  | { action: 'update_activity'; id: string; expected_revision: number; input: ActivityInput }
+  | { action: 'contact_history'; id: string; offset: number }
+  | { action: 'custom_field_history'; id: string; offset: number }
 
 export type WriteResult = Extract<Result, { kind: 'saved' | 'duplicates' }>
 
@@ -243,6 +312,11 @@ const fieldLabels: Record<string, string> = {
   stage: '客户阶段', method_kind: '渠道类型', method_value: '联系账号', method_label: '渠道备注',
   duplicate_method: '存在重复的联系渠道', primary_method: '每种渠道只能选一个主要账号',
   website_url: '网站须为有效的 HTTP 或 HTTPS 地址', source_urls: '来源网址须为有效的 HTTP 或 HTTPS 地址',
+  company_aliases: '公司别名最多 20 个且不得重复', company_branch: '分支名称',
+  evidence_subject: '证据主题', evidence_url: '来源网址须为有效的 HTTP 或 HTTPS 地址',
+  evidence_note: '证据说明', evidence_observed_at: '调查时间', evidence_status: '证据核验状态',
+  lead_promotion_review_required: '请先由人工在候选档案中保存已复核的资料',
+  contact_method_verification_required: '请由人工核实联系方式',
   email: '邮箱地址', description: '描述', intent_quantity: '意向数量', product_text: '型号或品类',
   requirement: '采购要求', occurred_at: '发生时间', summary: '跟进摘要', details: '跟进详情',
   notes: '备注', research_notes: '调查备注', business_summary: '业务摘要', confidence: '置信度须为 0 到 100',
@@ -266,10 +340,18 @@ export function errorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = String(error.code)
     const detail = 'detail' in error ? String(error.detail) : ''
-    if (code === 'crm_revision_conflict') return '这位客户已由其他操作更新。本次修改仍在表单中，请核对最新资料后再保存。'
+    if (code === 'crm_revision_conflict') return '这条记录已由其他操作更新。本次修改仍在表单中，请核对最新资料后再保存。'
+    if (detail === 'field_in_use_by_view') return '此字段仍用于在用视图的筛选、排序或分组。请先调整该视图的配置，再归档字段。'
     if (detail === 'merge_open_mail') return '待归档客户仍有草稿、审批或发送任务，请先处理这些邮件。'
+    if (detail === 'company_identity_conflict') return '所选客户已有不同的公司或地区。请在客户资料中核对后再关联。'
+    if (detail === 'company_incomplete') return '请先在当前客户资料中补全公司和国家或地区。'
+    if (detail === 'company_contact') return '该客户已经在当前公司中。'
+    if (detail === 'company_membership_conflict' || detail === 'company_profile_required') return '此联系人已关联独立公司档案。请从其公司工作区核对当前关联。'
     if (detail === 'contact_already_merged') return '这条记录已合并，请打开保留的客户。'
     if (detail === 'agent_change_superseded') return '这个字段在发生冲突后又被修改。请核对最新值后在客户详情中编辑。'
+    if (detail === 'bulk_scope_changed') return '匹配客户或资料版本已变化，未执行修改。请重新选择全部匹配客户。'
+    if (detail === 'agent_email_already_assigned') return '该邮箱已关联另一位客户。请先核对客户身份。'
+    if (detail === 'agent_detail_overwrite' || detail === 'agent_interest_ambiguous') return '产品已有相关资料。请在客户详情中核对原记录。'
     if (code === 'crm_invalid_field') {
       return '请检查：' + (fieldLabels[detail] ?? detail)
     }
@@ -280,6 +362,14 @@ export function errorMessage(error: unknown): string {
 }
 
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' })
+const recentDate = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+const historicalDate = new Intl.DateTimeFormat('sv-SE', { year: 'numeric', month: '2-digit', day: '2-digit' })
+
+export function shortDate(epoch: number | null) {
+  if (epoch === null) return '—'
+  const date = new Date(epoch * 1000)
+  return (date.getFullYear() === new Date().getFullYear() ? recentDate : historicalDate).format(date)
+}
 
 export function dateLabel(epoch: number | null) {
   return epoch === null ? '—' : dateFormatter.format(new Date(epoch * 1000))
