@@ -1,6 +1,6 @@
 # FTW 客户管理样板验收
 
-当前整体状态见[功能与 UI 实施盘点](IMPLEMENTATION_STATUS.md)。
+本页记录客户管理样板及各阶段的隔离验证。当前功能、人工与 Agent 协同和待发布验收范围分别见[功能与 UI 实施盘点](IMPLEMENTATION_STATUS.md)、[双向协同记录](HUMAN_AGENT_PARITY.md)和[发布验收用例](../ACCEPTANCE_TESTS.md)。
 
 2026-11-24 · Windows 10 x64（10.0.19042.870）· Tauri / WebView2
 

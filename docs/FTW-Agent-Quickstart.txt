@@ -4,7 +4,7 @@ FTW · Codex 和 WorkBuddy 接入说明（Windows）
 
 完整解压 ZIP，双击根目录的 workbench.exe。在「系统状态」查看实际数据目录。
 把同一目录里 ftw-mcp.exe 的绝对路径分别填入 Codex 和 WorkBuddy。保留 workbench.exe、ftw-core.exe、ftw-mcp.exe 和 portable.flag 在同一目录。MCP 会按需启动 Core。
-例如测试包解压到 D:\FTW-验收，则两边都填 D:\FTW-验收\ftw-mcp.exe。样本版根目录自带 8 位客户；acceptance\workspace 是另一个空工作区。迁移目录后要更新两个客户端的 EXE 路径。
+例如工作台解压到 D:\FTW-验收，则日常使用时两边都填 D:\FTW-验收\ftw-mcp.exe。如果通过 acceptance\Start-FTW-Acceptance.cmd 打开隔离工作台，测试期间改填 D:\FTW-验收\acceptance\workspace\ftw-mcp.exe。该工作区可以导入 acceptance\sample-customers.csv 的 4 条虚构客户。迁移目录后要更新两个客户端的 EXE 路径。
 请使用本机 Windows 桌面客户端和本地任务，同一个 Windows 账户下的两个客户端可以共用这份数据。
 
 2. Codex 桌面
@@ -31,20 +31,21 @@ FTW · Codex 和 WorkBuddy 接入说明（Windows）
 
 保存后查看 ftw 状态。显示已连接后开启新的本地任务。
 
-4. 用一句话验证，查客户和邮件草稿可先用人工审批模式
+4. 先验证连接，再启用需要的协作权限
 
 把下句分别粘贴给 Codex 和 WorkBuddy：
   请调用 FTW MCP 的 list_customers，搜索「验收样本」，列出返回的客户姓名和阶段。本次仅查询。若工具不可用，请报告连接错误。
 
-样本版会返回 8 位。正式工作区则用一位你已知的客户姓名核对。能读到正确数据后，打开同目录 FTW-Agent-Workflows.txt，把相应任务段落复制到对话里。工作台可在人和 Agent 之间交接处理。
+导入验收 CSV 后应找到 4 位样本客户。正式工作区用一位你已知的客户姓名核对。启用 CRM 登记限制时，先为当前客户端传入令牌并开通读取权限。能读到正确数据后，打开同目录 FTW-Agent-Workflows.txt，复制需要的任务段落。工作台可在人和 Agent 之间交接处理。
 
 5. 邮件设置和交接
 
 • 草稿前先在 FTW「邮件中心 → 发件账户」配置 SMTP 并点「测试 SMTP」。只想验收 CRM 时可跳过。样本包里的联系人均为虚构，发信测试请用你授权的测试收件地址。
 • 逐封审核：Agent 写草稿并提交审核 → 用户在 FTW「邮件中心 → 邮件草稿」核对并点「人工批准」 → 用户点「发送已批准版本」，或回到 Agent 明确要求发送这一封批准的草稿 → 查看 SMTP 结果。审批随草稿修订生效，通常 30 分钟内提交。超期或改稿后重新审核。
 • 允许 Agent 自动发信时，在「邮件中心 → Agent 发信权限」分别登记 Codex 和 WorkBuddy，每个客户端用自己的令牌。首次设置时界面预选可用 Agent、发件邮箱、用途和最大限额。检查范围并点击「保存发送权限」后生效。
-• 自动发信令牌只传给对应本机 MCP 进程的 FTW_AGENT_TOKEN 环境变量。Codex 可在对应的 MCP 条目设置 env_vars = ["FTW_AGENT_TOKEN"]，从已为该 Codex 进程设置的环境转发。WorkBuddy 使用该客户端提供的本地凭据注入方式向 STDIO 进程传入相同变量名。令牌值应由各客户端自己的启动环境或本地凭据功能提供。能安全注入后再用自动发信，普通接入、查客户、起草和逐封审批均可先做。避免把令牌写入 JSON/TOML 明文配置、项目文件或对话。
-• 收件：在「邮件中心 → 收件设置」配置 IMAP 并点「测试 IMAP」。同步后可让 Agent 查回复，也可由用户在「待核对归属」处理归属不明的来信。
+• 登记令牌只传给对应本机 MCP 进程的 FTW_AGENT_TOKEN 环境变量。Codex 可在对应的 MCP 条目设置 env_vars = ["FTW_AGENT_TOKEN"]，从已为该 Codex 进程设置的环境转发。WorkBuddy 使用客户端支持的本地凭据注入方式向 STDIO 进程传入相同变量名。令牌值由各客户端自己的启动环境或本地凭据功能提供。避免把令牌写入 JSON/TOML 明文配置、项目文件或对话。
+• 在同一页面的「Agent 协作权限」按客户端保存需要的 CRM、邮件、视图、文件、审计或其他业务权限。发送授权另外保存。完整客户建档和按来信起草回复需要已登记客户端及相应协作权限。
+• 收件时在「邮件中心 → 收件设置」配置 IMAP 并点「测试 IMAP」。同步后可让 Agent 查回复及同步状态，或从已确认的业务来信起草原会话回复。归属有歧义的来信在「待核对归属」处理。
 
 6. 常见情况
 
@@ -53,3 +54,5 @@ FTW · Codex 和 WorkBuddy 接入说明（Windows）
 • 发件账户为空：在同一份 FTW 配置 SMTP，再查 list_email_accounts。
 • 需要人工批准或授权失败：在 FTW 查看草稿修订、发信模式、Agent 授权、发件账户和用途。权限由 FTW 执行。
 • 发件结果未知：先核对发件记录或邮箱服务商记录，暂停重发。SMTP 已接受仅表示服务器接受提交；查客户回复还要查看 IMAP 同步情况。
+• 换设备后邮箱认证失败：在新设备重新录入并测试 SMTP 和 IMAP 凭据。MCP 命令应指向新设备当前使用的工作台目录。
+• 需要反馈故障时，在「系统状态 → 导出诊断报告」保存 JSON。窗口无法打开时，双击便携目录的 FTW-Diagnostics.cmd 获取报告。查看报告后随出错时间、所用页面或工具及复现步骤一并反馈。

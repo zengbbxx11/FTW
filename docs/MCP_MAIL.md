@@ -1,10 +1,24 @@
-# 通过 MCP 使用 FTW 代发邮件
+# FTW MCP 客户开发、邮件和协作
 
 桌面邮件中心将收件、草稿与审批、SMTP 已接受、发送队列、发送失败、提交结果未知和退信分开查询。收发件搜索按主题与地址在 Core 中筛选，再返回当前页。已发未见回复入口打开原有 CRM 视图，记录仍以最后一次有效的 IMAP 同步为准。
 
 工作台、Core 和 MCP 三个 EXE 放在同一目录。便携模式用同一个 `portable.flag` 和数据目录。MCP 适配器按需启动 Core，工作台可以在 Agent 查客户和写草稿时关闭。进行人工审核时需要打开工作台。
 
 第一次使用可先看便携包根目录的中文接入说明，再复制任务模板到 Codex 或 WorkBuddy。 [接入说明](FTW-Agent-Quickstart.txt) · [任务模板](FTW-Agent-Workflows.txt)
+
+## 从发现客户到持续跟进
+
+Agent 用宿主中已获准的搜索或资料来源发现潜在客户。FTW 负责现有资料查重、调查证据、客户身份、联系资格和后续业务记录。
+
+| 阶段 | MCP 工具和业务结果 |
+| --- | --- |
+| 查重和沉淀线索 | 用 `search_workbench`、`list_customers` 和 `list_lead_candidates` 查已有资料。有地址时用 `check_customer_outreach` 查看精确邮箱、同域线索、开发历史和禁止联系状态。用 `create_lead_candidate` 与 `add_lead_evidence` 保留待核实资料、来源和日期。 |
+| 建档和管理 | 授权后用 `create_customer_profile` 在同一事务写入联系人、联系渠道、产品兴趣和共享可写属性。已有客户先读 `get_customer`，再用 `update_customer` 或 `set_customer_field_values` 提交增量变更。候选转正可走 `review_lead_candidate` 的预复核流程。 |
+| 起草和发信 | 用 `create_email_draft` 或模板渲染创建草稿。用户选择持续授权时调用 `send_authorized_email`，选择逐封模式时调用 `request_email_approval` 并在工作台批准后用 `send_approved_email`。入队后用 `get_email_draft` 或获准的 `get_mail_task` 读回实际结果。 |
+| 收信和原会话回复 | 用 `sync_mailbox` 同步，`get_mailbox_sync_status` 核对进度与时间，`list_inbox` 和 `get_email_thread` 查会话。确认来信归属后用 `create_reply_draft`，再走相应发送模式。 |
+| 跟进和交接 | 用 `add_customer_activity` 记录电话、样品、客户反馈等独立沟通，用 `get_customer_timeline` 查看同一时间线。FTW 自动归档收发邮件事件。用共享视图继续处理客户，用 `list_agent_runs` 或获准的审计工具查询自己的操作和结果。 |
+
+工具返回版本、数据纪元或请求回执时，将这些值用于后续写入和状态核对。交接时保留客户或候选 ID、草稿或作业 ID，以及待核对事项。工作台可直接接续同一资料。[桌面与 Agent 能力范围](ui-review/HUMAN_AGENT_PARITY.md#当前协同范围)
 
 ## Codex 与 WorkBuddy
 
@@ -74,7 +88,7 @@ Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启�
 | `set_company_membership` | `request_id`、`contact`、`change`。加入公司、修改分支或解除关联。要求 `manage_companies`。 |
 | `create_company_contact` | `request_id`、`profile`、`input`，可附 `entries` 及 `allow_duplicate`。要求 `manage_companies` 与 `write_crm`。 |
 | `create_customer` | `request_id`、`display_name`，可附公司、国家、邮箱、网站、来源和备注 |
-| `create_customer_profile` | `request_id`、`input`（完整客户表单，可包含多种 `methods`、`interests` 和采购信息）、可选 `entries`（共享可写自定义字段）。要求已登记的 `write_crm`。Core 在同一事务创建档案和属性，返回重复线索供核对。 |
+| `create_customer_profile` | `request_id`、`input`（完整客户表单，可包含多种 `methods`、`interests` 和采购信息）、可选 `entries`（共享可写自定义字段）。要求已登记的 `write_crm`。Core 在同一事务创建档案和属性，返回重复线索供核对。[字段合约](CRM_API.md#json-schema) |
 | `update_customer` | `request_id`、`contact_id`，可传 `expected_revision` 和 `expected_epoch` 保护并发。可更新阶段、等级、语言、需求、样品状态及备注。可附 `evidence` 或显式传 `review_only: true` |
 | `suggest_customer_detail` | `request_id`、`contact_id`、`expected_revision`、`expected_epoch`、`detail`、`evidence`。提出联系方式或产品兴趣的补充或更正，等待桌面用户采纳 |
 | `add_customer_activity` | `request_id`、`contact_id`、`event_type`、`occurred_at`（UTC Unix 秒）、`summary`，可附正文、渠道及 `counts_as_contact`。样品记录可附 `sample: { "model": "DC226", "quantity": 2, "batch_ref": "PILOT-1", "progress": "evaluating" }`。数量为 1 至 1,000,000 的整数。相同客户的同一批次沿用同一编号 |
@@ -229,7 +243,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 `read_crm` 和 `write_crm` 分别控制基础查询和写入。开启 CRM 登记限制后，`update_customer` 要求从 `get_customer` 取得的 `expected_revision` 和 `expected_epoch`。`read_mail` 控制邮件查询与 IMAP 同步，`create_drafts` 控制创建草稿和人工审批发信流程。冲突后先读取当前版本，再由调用方比对并决定是否重试。SMTP 的结果继续以队列记录为准。
 
-在工作台协作权限中启用「补充待审核候选客户资料」后，Agent 可以用 `update_lead_candidate` 提交增量更新。`patch` 支持姓名、公司、地区、邮箱、网站、业务摘要、调查备注及置信度。省略字段保留原值，`add_source_urls` 追加网址并记录其来源。把 `get_lead_candidate` 的 `record_revision` 和 `data_epoch` 分别传入 `expected.revision` 和 `expected.epoch`。身份信息触发查重时，返回待核对的 `duplicates`。使用同一请求编号和参数可读取原写入回执。拒绝、重新审核和转正由桌面执行。
+在工作台协作权限中启用「补充待审核候选客户资料」后，Agent 可以用 `update_lead_candidate` 提交增量更新。`patch` 支持姓名、公司、地区、邮箱、网站、业务摘要、调查备注及置信度。省略字段保留原值，`add_source_urls` 追加网址并记录其来源。把 `get_lead_candidate` 的 `record_revision` 和 `data_epoch` 分别传入 `expected.revision` 和 `expected.epoch`。身份信息触发查重时，返回待核对的 `duplicates`。候选的拒绝、重新审核和转正使用独立的 `review_lead_candidate` 权限边界，转正须先由桌面用户复核保存。
 
 ## Agent 发信权限
 
@@ -239,7 +253,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 分别登记 Codex、WorkBuddy 或其他 Agent，每次登记领取一个独立令牌。可以先完成所有登记，再在发送模式中勾选允许自动发信的 Agent 并保存。新登记身份仅持有令牌，未获授权时不能自动发信。用现有 stdio 配置运行 `ftw-mcp.exe`，将 FTW 一次性展示的令牌提供给该 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。Codex、WorkBuddy 或其他支持标准 MCP stdio 的客户端调用同一工具。令牌属于本机工作台，不要粘贴到 Agent 对话、项目配置、提交或日志中。Core 保存令牌摘要，撤销立即阻止其新的自动发送。
 
-`send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`，禁止模式下 Agent 仍可创建草稿和读邮件。
+`send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。用途为 `first_outreach`、`outreach_followup`、`quote_communication`、`sample_communication` 或 `other_business`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`。禁止发送模式下，草稿和邮件查询继续按相应协作权限执行。
 
 便携复制整个停用后的数据目录时保留 `agent-send-safety.sqlite`。业务备份恢复会撤销已登记 Agent、关闭自动授权并冻结旧的待发送任务。安全账本留在同一数据目录，防止业务数据回退后重复提交。
 
@@ -251,7 +265,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 ## 目录、图片和完整邮件
 
-独立客户资料通过工作台的 Windows 文件选择器导入或另存，存放在同一便携数据目录并随备份保存。资料作为客户文件管理，Agent 可用发件附件继续由工作台单独管理。
+独立客户资料通过工作台的文件选择器或 MCP 文档上传工具导入，存放在同一便携数据目录并随备份保存。客户文档按客户和文件 ID 管理。发件素材通过工作台的「Agent 可用附件」单独授权。
 
 客户文件、收件和发件附件中的 PDF 可以通过 Windows 文件选择器另存，也可以作为附件发送。Core 按记录编号读取原始文件，已有目标文件保留原内容。
 
