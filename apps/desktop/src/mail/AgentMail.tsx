@@ -5,8 +5,12 @@ import { Field } from '../crm/components'
 import { chooseMailAssets, mailCall, mailError, mailPurposes as purposes, type Account, type AgentMailPolicy, type MailCommand, type RegisteredAgent } from './api'
 
 type SettingsCommand = Extract<MailCommand, {
-  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access' | 'set_agent_paused'
+  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access' | 'set_agent_paused' | 'enable_local_agent' | 'disable_local_agent'
 }>
+
+function newAgentToken() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')
+}
 
 export function AgentMail({ manageSuppression, showRecords }: { manageSuppression: () => void; showRecords: () => void }) {
   const [name, setName] = useState('')
@@ -33,6 +37,11 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
       if (command.action === 'revoke_mail_agent') dismissToken(command.id)
       if (command.action === 'set_agent_mail_policy') setPolicyNotice('发送权限已保存并生效。')
       if (command.action === 'set_agent_paused') setPolicyNotice(command.paused ? 'Agent 已暂停。' : 'Agent 已恢复。')
+      if (command.action === 'enable_local_agent') {
+        dismissToken(command.id)
+        setPolicyNotice('本机直接连接已开启。正常启动本地 MCP 客户端即可使用。')
+      }
+      if (command.action === 'disable_local_agent') setPolicyNotice('本机直接连接已关闭。')
       await Promise.all([cache.invalidateQueries({ queryKey: ['agent-mail-settings'] }),
         cache.invalidateQueries({ queryKey: ['mail-assets'] })])
     },
@@ -45,10 +54,16 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
     setRegistering(true)
     setRegistrationError('')
     try {
-      const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('')
+      const token = newAgentToken()
       const result = await mailCall({ action: 'register_mail_agent', name: name.trim(), token }, 'saved')
       setTokens(previous => ({ ...previous, [result.id]: token }))
       setName('')
+      try {
+        await mailCall({ action: 'enable_local_agent', id: result.id, token }, 'saved')
+        setPolicyNotice('Agent 已登记并开启本机直接连接。')
+      } catch (error) {
+        setRegistrationError(`Agent 已登记，但本机连接未启用：${mailError(error)}。可在列表中重试。`)
+      }
       await cache.invalidateQueries({ queryKey: ['agent-mail-settings'] })
     } catch (error) {
       setRegistrationError(mailError(error))
@@ -96,23 +111,28 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
     <div className="agent-administration">
       <section className="panel">
         <h2><Bot aria-hidden="true" />Agent 登记</h2>
-        <p className="muted">登记的 Agent 可共同管理共享业务。每个客户端使用自己的令牌，自动发信范围在上方单独保存。</p>
+        <p className="muted">登记后即可在本机直接连接，无需反复输入令牌。当前 Windows 用户的本地 MCP 客户端会共享所选 Agent 身份；自动发信范围仍由上方设置控制。</p>
         <form className="agent-register" onSubmit={register}>
           <Field label="Agent 名称"><input required maxLength={80} placeholder="例如 WorkBuddy" value={name} onChange={event => setName(event.target.value)} /></Field>
-          <button className="button primary" disabled={registering || !name.trim()}><Bot aria-hidden="true" />{registering ? '登记中…' : '登记 Agent'}</button>
+          <button className="button primary" disabled={registering || !name.trim()}><Bot aria-hidden="true" />{registering ? '登记中…' : '登记并启用本机连接'}</button>
         </form>
         {registrationError && <p className="alert error" role="alert">{registrationError}</p>}
         {current?.agents.length ? <ul className="record-list agent-list">{current.agents.map(agent => <li key={agent.id}>
           <strong>{agent.name}</strong>
           <span className="customer-status">{agent.revoked ? '已撤销' : agent.paused ? '已暂停' : current.policy.mode === 'automatic' && agent.automatic ? '可自动发信' : '已登记'}</span>
+          {agent.local_default && !agent.revoked && <span className="customer-status">本机直接连接</span>}
           <small>{agent.last_seen_at ? `最近连接 ${new Date(agent.last_seen_at * 1000).toLocaleString()}` : '尚未连接'}</small>
+          {!agent.revoked && <button className="text-button" disabled={change.isPending} onClick={() => {
+            if (agent.local_default) change.mutate({ action: 'disable_local_agent', id: agent.id })
+            else change.mutate({ action: 'enable_local_agent', id: agent.id, token: newAgentToken() })
+          }}>{agent.local_default ? '关闭本机直接连接' : '启用本机直接连接'}</button>}
           {!agent.revoked && <button className="text-button" disabled={change.isPending}
             onClick={() => change.mutate({ action: 'set_agent_paused', id: agent.id, paused: !agent.paused })}>
             {agent.paused ? '恢复接入' : '暂停接入'}
           </button>}
           {!agent.revoked && <button className="text-button" disabled={change.isPending}
             onClick={() => change.mutate({ action: 'revoke_mail_agent', id: agent.id })}>撤销身份</button>}
-          {tokens[agent.id] && !agent.revoked && <AgentToken token={tokens[agent.id]} dismiss={() => dismissToken(agent.id)} />}
+          {tokens[agent.id] && !agent.revoked && <details className="w-full"><summary>高级：手动使用令牌</summary><AgentToken token={tokens[agent.id]} dismiss={() => dismissToken(agent.id)} /></details>}
         </li>)}</ul> : <p className="muted">尚未登记 Agent。</p>}
       </section>
     <section className="panel">

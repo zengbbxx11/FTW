@@ -28,7 +28,7 @@ Agent 用宿主中已获准的搜索或资料来源发现潜在客户。FTW 负�
 codex mcp add ftw -- "D:\FTW-Portable\ftw-mcp.exe"
 ```
 
-对 WorkBuddy，在 MCP 管理中添加本地 stdio 服务，命令填相同的 EXE 绝对路径，参数留空。以下 JSON 仅适用于支持从启动环境展开变量的版本；先在工作台登记 Agent，并按照[接入说明](FTW-Agent-Quickstart.txt)将令牌提供给启动环境。不要将令牌明文写入配置。两个客户端可各自启动一个适配器，适配器共享同一数据目录的 Core。
+对 WorkBuddy，在 MCP 管理中添加本地 stdio 服务，命令填相同的 EXE 绝对路径，参数留空。先在工作台登记 Agent 并开启本机直接连接，按[接入说明](FTW-Agent-Quickstart.txt)操作；无需将令牌写入配置。两个客户端可各自启动适配器，共享同一数据目录的 Core。
 
 ```json
 {
@@ -36,8 +36,7 @@ codex mcp add ftw -- "D:\FTW-Portable\ftw-mcp.exe"
     "ftw": {
       "type": "stdio",
       "command": "D:\\FTW-Portable\\ftw-mcp.exe",
-      "args": [],
-      "env": { "FTW_AGENT_TOKEN": "${FTW_AGENT_TOKEN}" }
+      "args": []
     }
   }
 }
@@ -131,7 +130,7 @@ Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启�
 | `query_customers` | 与 Core 客户视图相同的 `filter`、`order`、`page_size` 等查询参数 |
 | `check_customer_outreach` | `recipient` |
 | `send_authorized_email` | `draft_id`、`revision`、`purpose`、`task_id`、`request_id` |
-| `list_email_assets` | 空对象，需要 MCP 启动环境中的已登记令牌 |
+| `list_email_assets` | 空对象，需要有效的已登记 Agent 身份 |
 | `attach_email_assets` | `draft_id`、`revision`、`asset_ids` |
 | `fetch_inbox_message` | `message_id` |
 | `read_inbox_body` | `message_id`、可选 `offset` |
@@ -194,7 +193,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 ## 人工与 Agent 协作权限
 
-在「邮件中心 → Agent 发信权限」登记客户端并把各自的令牌传给 MCP 进程。登记后可直接使用共享业务操作，页面显示最近连接时间，并支持暂停、恢复和撤销。业务请求必须提供有效登记令牌。已登记用户升级后沿用原令牌，未登记客户端需先登记。持续发信独立使用已保存的账户、用途和限额。凭据、Agent 接入管理、解除拒发和恢复旧备份由桌面处理。
+在「邮件中心 → Agent 发信权限」登记客户端并开启本机直接连接。当前 Windows 用户的本地 MCP 客户端共享所选 Agent 身份；若需区分客户端，也可为不同进程使用各自的 `FTW_AGENT_TOKEN`。页面显示最近连接时间，并支持暂停、恢复和撤销。持续发信独立使用已保存的账户、用途和限额。凭据、Agent 接入管理、解除拒发和恢复旧备份由桌面处理。
 
 ### 批量客户更新与质量检查
 
@@ -269,7 +268,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 「发件账户」支持编辑 SMTP 配置和删除账户。删除后停止该账户的收发并清除当前凭据，保留历史邮件和草稿。修改发件邮箱地址后需重新配置 IMAP 和选择该邮箱的 Agent 授权。
 
-分别登记 Codex、WorkBuddy 或其他 Agent，每次登记领取一个独立令牌。可以先完成所有登记，再在发送模式中勾选允许自动发信的 Agent 并保存。登记生效后即可使用普通业务，自动发信由已保存的发送规则决定。用现有 stdio 配置运行 `ftw-mcp.exe`，将 FTW 一次性展示的令牌提供给该 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。Codex、WorkBuddy 或其他支持标准 MCP stdio 的客户端调用同一工具。令牌属于本机工作台，不要粘贴到 Agent 对话、项目配置、提交或日志中。Core 保存令牌摘要，撤销立即阻止其新的自动发送。
+在工作台登记 Agent 并开启本机直接连接，可让当前 Windows 用户的本地 MCP 客户端共享该身份。需要自动发信时，在发送模式中勾选允许的 Agent、账户和用途并保存限额。若需区分客户端，可使用各自的 `FTW_AGENT_TOKEN` 启动环境；明确提供的令牌优先于本机默认身份。令牌不要粘贴到 Agent 对话、明文配置、提交或日志中。Core 保存令牌摘要并验证每次操作，暂停或撤销立即阻止后续访问。
 
 `send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。用途为 `first_outreach`、`outreach_followup`、`quote_communication`、`sample_communication` 或 `other_business`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`。禁止发送模式下，可信 Agent 仍可起草和查询邮件。
 

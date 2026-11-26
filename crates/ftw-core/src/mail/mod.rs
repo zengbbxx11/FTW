@@ -96,6 +96,7 @@ pub struct MailService {
     diagnostics: Option<ftw_ipc::diagnostics::Log>,
     ledger: Option<ledger::Ledger>,
     object_root: Option<std::path::PathBuf>,
+    data_root: Option<std::path::PathBuf>,
     prompt: Arc<Mutex<()>>,
     imap: Arc<Mutex<()>>,
     delivery: Arc<Mutex<()>>,
@@ -122,6 +123,7 @@ impl MailService {
             diagnostics: None,
             ledger: None,
             object_root: None,
+            data_root: None,
             prompt: Arc::new(Mutex::new(())),
             imap: Arc::new(Mutex::new(())),
             delivery: Arc::new(Mutex::new(())),
@@ -140,6 +142,7 @@ impl MailService {
     }
 
     pub async fn with_send_ledger(mut self, data: &std::path::Path) -> Self {
+        self.data_root = Some(data.to_path_buf());
         self.object_root = Some(data.join("mail-objects"));
         let path = data.join("agent-send-safety.sqlite");
         let required = sqlx::query_scalar::<_, bool>(
@@ -464,6 +467,8 @@ impl MailService {
             }
             Command::CancelMailPolicyReview { id } => self.cancel_policy_review(id).await,
             Command::RegisterMailAgent { name, token } => self.register_agent(name, &token.0).await,
+            Command::EnableLocalAgent { id, token } => self.enable_local_agent(id, &token.0).await,
+            Command::DisableLocalAgent { id } => self.disable_local_agent(id).await,
             Command::RevokeMailAgent { id } => self.revoke_mail_agent(id).await,
             Command::SetAgentPaused { id, paused } => self.set_agent_paused(id, paused).await,
             Command::ListAccounts => self.accounts(true).await,

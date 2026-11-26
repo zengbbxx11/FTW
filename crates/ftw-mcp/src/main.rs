@@ -739,6 +739,7 @@ struct Ftw {
     dev_root: Option<PathBuf>,
     access: Mutex<()>,
     agent_token: Option<String>,
+    local_data: PathBuf,
 }
 
 #[tool_router(router = tool_router)]
@@ -2171,15 +2172,19 @@ impl Ftw {
             dev_root,
             access: Mutex::new(()),
             agent_token: env::var("FTW_AGENT_TOKEN").ok(),
+            local_data: profile.data,
         })
     }
 
     fn mail_agent_token(&self) -> Result<ftw_ipc::mail::Secret, ToolFailure> {
         self.agent_token
-            .clone()
+            .as_ref()
+            .filter(|value| !value.is_empty() && value.as_str() != "${FTW_AGENT_TOKEN}")
+            .cloned()
+            .or_else(|| ftw_ipc::local_agent::load(&self.local_data).ok())
             .map(ftw_ipc::mail::Secret)
             .ok_or_else(|| {
-                ToolFailure::new("mail_agent_unregistered", "mail_agent_unregistered: configure FTW_AGENT_TOKEN in the MCP launch environment.", None)
+                ToolFailure::new("mail_agent_unregistered", "mail_agent_unregistered: enable local Agent access in FTW, or configure FTW_AGENT_TOKEN.", None)
             })
     }
 

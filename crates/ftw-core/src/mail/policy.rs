@@ -19,7 +19,12 @@ impl MailService {
         let mut connection = self.pool.acquire().await?;
         expire_review(&mut connection).await?;
         let policy = current(&mut connection).await?;
-        let agents = agents(&mut connection).await?;
+        let mut agents = agents(&mut connection).await?;
+        if let Some(id) = self.local_agent_id(&mut connection).await? {
+            if let Some(agent) = agents.iter_mut().find(|agent| agent.id == id) {
+                agent.local_default = true;
+            }
+        }
         let review = sqlx::query(
             "SELECT id,state,outcome FROM mail_agent_reviews ORDER BY rowid DESC LIMIT 1",
         )
@@ -61,6 +66,78 @@ impl MailService {
         Ok(Reply::Saved { id })
     }
 
+    async fn local_agent_id(&self, db: &mut SqliteConnection) -> Result<Option<String>> {
+        let Some(token) = self
+            .data_root
+            .as_deref()
+            .and_then(|data| ftw_ipc::local_agent::load(data).ok())
+        else {
+            return Ok(None);
+        };
+        let Ok(digest) = digest(&token) else {
+            return Ok(None);
+        };
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM mail_agent_clients WHERE token_digest=? AND NOT revoked",
+        )
+        .bind(digest)
+        .fetch_optional(db)
+        .await?)
+    }
+
+    pub(super) async fn enable_local_agent(&self, id: String, token: &str) -> Result<Reply> {
+        let data = self
+            .data_root
+            .as_deref()
+            .ok_or(Failure::Code("local_agent_storage_unavailable"))?;
+        let token_digest = digest(token)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let changed =
+            sqlx::query("UPDATE mail_agent_clients SET token_digest=? WHERE id=? AND NOT revoked")
+                .bind(token_digest)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+        if changed.rows_affected() != 1 {
+            return Err(Failure::Code("mail_not_found"));
+        }
+        ftw_ipc::local_agent::store(data, token)
+            .map_err(|_| Failure::Code("local_agent_storage_unavailable"))?;
+        audit(
+            &mut tx,
+            Source::Manual,
+            "mail_agent_settings",
+            &id,
+            "enable_local_agent",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
+    pub(super) async fn disable_local_agent(&self, id: String) -> Result<Reply> {
+        let data = self
+            .data_root
+            .as_deref()
+            .ok_or(Failure::Code("local_agent_storage_unavailable"))?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if self.local_agent_id(&mut tx).await?.as_deref() != Some(id.as_str()) {
+            return Err(Failure::Code("mail_not_found"));
+        }
+        ftw_ipc::local_agent::remove(data)
+            .map_err(|_| Failure::Code("local_agent_storage_unavailable"))?;
+        audit(
+            &mut tx,
+            Source::Manual,
+            "mail_agent_settings",
+            &id,
+            "disable_local_agent",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
     pub(super) async fn set_agent_paused(&self, id: String, paused: bool) -> Result<Reply> {
         let mut tx = self.pool.begin().await?;
         let changed =
@@ -91,6 +168,7 @@ impl MailService {
 
     pub(super) async fn revoke_mail_agent(&self, id: String) -> Result<Reply> {
         let mut tx = self.pool.begin().await?;
+        let was_local = self.local_agent_id(&mut tx).await?.as_deref() == Some(id.as_str());
         let changed = sqlx::query(
             "UPDATE mail_agent_clients SET revoked=1,automatic=0 WHERE id=? AND NOT revoked",
         )
@@ -99,6 +177,12 @@ impl MailService {
         .await?;
         if changed.rows_affected() == 0 {
             return Err(Failure::Code("mail_not_found"));
+        }
+        if was_local {
+            if let Some(data) = self.data_root.as_deref() {
+                ftw_ipc::local_agent::remove(data)
+                    .map_err(|_| Failure::Code("local_agent_storage_unavailable"))?;
+            }
         }
         audit(
             &mut tx,
@@ -191,6 +275,7 @@ async fn agents(db: &mut SqliteConnection) -> Result<Vec<RegisteredAgent>> {
                 automatic: row.get("automatic"),
                 paused: row.get("paused"),
                 last_seen_at: row.get("last_seen_at"),
+                local_default: false,
             }))
             .fetch_all(db)
             .await?,
@@ -338,4 +423,80 @@ pub(super) async fn registered(db: &mut SqliteConnection, digest: Vec<u8>) -> Re
             .await?;
     }
     Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_agent_credential_is_encrypted_and_obeys_pause_and_revoke() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = crate::storage::open(directory.path(), directory.path())
+            .await
+            .unwrap();
+        let service = MailService::new(pool)
+            .await
+            .unwrap()
+            .with_send_ledger(directory.path())
+            .await;
+        let Reply::Saved { id } = service
+            .register_agent("WorkBuddy".into(), &"a".repeat(64))
+            .await
+            .unwrap()
+        else {
+            panic!("agent registration failed");
+        };
+        let token = "b".repeat(64);
+        service
+            .enable_local_agent(id.clone(), &token)
+            .await
+            .unwrap();
+        let file = std::fs::read(directory.path().join("local-agent.credential")).unwrap();
+        assert!(!file
+            .windows(token.len())
+            .any(|part| part == token.as_bytes()));
+        assert_eq!(ftw_ipc::local_agent::load(directory.path()).unwrap(), token);
+        assert_eq!(service.session_actor(&token).await.unwrap(), id);
+        let Reply::AgentMailSettings { agents, .. } = service.policy_settings().await.unwrap()
+        else {
+            panic!("agent settings unavailable");
+        };
+        assert!(agents
+            .iter()
+            .any(|agent| agent.id == id && agent.local_default));
+
+        let replacement = "c".repeat(64);
+        service
+            .enable_local_agent(id.clone(), &replacement)
+            .await
+            .unwrap();
+        assert_eq!(
+            ftw_ipc::local_agent::load(directory.path()).unwrap(),
+            replacement
+        );
+        assert!(matches!(
+            service.session_actor(&token).await,
+            Err(Failure::Code("mail_agent_unregistered"))
+        ));
+        service.set_agent_paused(id.clone(), true).await.unwrap();
+        assert!(matches!(
+            service.session_actor(&replacement).await,
+            Err(Failure::Code("mail_agent_paused"))
+        ));
+        service.set_agent_paused(id.clone(), false).await.unwrap();
+        service.disable_local_agent(id.clone()).await.unwrap();
+        assert!(ftw_ipc::local_agent::load(directory.path()).is_err());
+        assert_eq!(service.session_actor(&replacement).await.unwrap(), id);
+        service
+            .enable_local_agent(id.clone(), &replacement)
+            .await
+            .unwrap();
+        service.revoke_mail_agent(id.clone()).await.unwrap();
+        assert!(ftw_ipc::local_agent::load(directory.path()).is_err());
+        assert!(matches!(
+            service.session_actor(&replacement).await,
+            Err(Failure::Code("mail_agent_unregistered"))
+        ));
+    }
 }

@@ -1,9 +1,11 @@
 pub mod agent;
+pub mod credentials;
 pub mod crm;
 pub mod data;
 pub mod diagnostics;
 pub mod fields;
 pub mod inbox;
+pub mod local_agent;
 pub mod mail;
 mod profile;
 pub mod receipt;

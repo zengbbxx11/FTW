@@ -47,7 +47,7 @@ Core 打开 `data/workbench.db`，连接启用外键、WAL、FULL 同步和五�
 
 发送队列在入队和提交 SMTP 前复核适用的授权和快照，进入 SMTP 前先保存发送中状态。重启后把中断的发送标为结果未知。SMTP 接受后记录已发及客户时间线。IMAP 通过 UID 同步，按回复头和已知客户地址关联。线程回复保留原邮件引用，自动回复、退信和业务回复分别处理。[邮件工作流](MCP_MAIL.md#收件与后续跟进)
 
-发送安全账本 `agent-send-safety.sqlite` 与业务 SQLite 分开，恢复旧库时继续保留。客户文档和新版邮件附件共用本地对象存储，按文件 ID 及授权访问。移动便携数据时保留账本和对象，跨 Windows 用户或设备后重新输入 SMTP 与 IMAP 凭据。
+发送安全账本 `agent-send-safety.sqlite` 与业务 SQLite 分开，恢复旧库时继续保留。客户文档和新版邮件附件共用本地对象存储，按文件 ID 及授权访问。本机默认 Agent 由用户在工作台指定，令牌通过 Windows 用户级 DPAPI 加密后保存在 `data/local-agent.credential`；同一 Windows 用户下的本地 MCP 客户端共享这个 Agent 身份。Core 仍在每次操作时检查 Agent 状态与发信规则。移动便携数据时保留账本和对象，跨 Windows 用户或设备后重新输入 SMTP 与 IMAP 凭据，并重新启用本机 Agent 连接。
 
 ## 与 V1 规格的实现选择
 

@@ -253,6 +253,149 @@ fn core_rejects_a_read_only_lock_location() {
 
 use ftw_ipc::{crm, Operation};
 
+#[tokio::test]
+async fn local_mcp_connection_uses_the_desktop_authorized_identity() {
+    use ftw_ipc::mail;
+    use serde_json::{json, Value};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    async fn send(
+        input: &mut tokio::process::ChildStdin,
+        output: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        message: Value,
+    ) -> Value {
+        input
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+        let line = timeout(Duration::from_secs(10), output.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let mut core = CoreProcess::start(root);
+    core.ready(root).await;
+    let pipe = PipeEndpoint::for_data_directory(&root.join("data")).unwrap();
+    let original = "a".repeat(64);
+    let registered = pipe
+        .request(&Operation::Mail(Box::new(
+            mail::Command::RegisterMailAgent {
+                name: "WorkBuddy fixture".into(),
+                token: mail::Secret(original),
+            },
+        )))
+        .await
+        .unwrap();
+    let Response::Mail { data } = registered else {
+        panic!("registration failed")
+    };
+    let mail::Result::Saved { id } = *data else {
+        panic!("registration failed")
+    };
+
+    let mcp = Path::new(CORE).with_file_name("ftw-mcp.exe");
+    let mut child = tokio::process::Command::new(mcp)
+        .args(["--dev-root"])
+        .arg(root)
+        .env("FTW_AGENT_TOKEN", "${FTW_AGENT_TOKEN}")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+    let init = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"local-fixture","version":"1"}}})).await;
+    assert!(init.get("result").is_some());
+    input
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+        .await
+        .unwrap();
+    let request = |id| {
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+        "params":{"name":"get_workbench_context","arguments":{}}})
+    };
+    let before = send(&mut input, &mut output, request(2)).await;
+    assert_eq!(
+        before["result"]["structuredContent"]["code"],
+        "mail_agent_unregistered"
+    );
+
+    let token = "b".repeat(64);
+    let enabled = pipe
+        .request(&Operation::Mail(Box::new(
+            mail::Command::EnableLocalAgent {
+                id: id.clone(),
+                token: mail::Secret(token),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(enabled, Response::Mail { .. }));
+    let connected = send(&mut input, &mut output, request(3)).await;
+    assert_ne!(connected["result"]["isError"], true);
+    let context: Value =
+        serde_json::from_str(connected["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(context["agent"]["id"], id);
+
+    let customers = send(
+        &mut input,
+        &mut output,
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call",
+        "params":{"name":"list_customers","arguments":{}}}),
+    )
+    .await;
+    assert_ne!(customers["result"]["isError"], true);
+    let rows: Value =
+        serde_json::from_str(customers["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(rows["kind"], "contacts");
+
+    let mut restarted = tokio::process::Command::new(Path::new(CORE).with_file_name("ftw-mcp.exe"))
+        .args(["--dev-root"])
+        .arg(root)
+        .env_remove("FTW_AGENT_TOKEN")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut restarted_input = restarted.stdin.take().unwrap();
+    let mut restarted_output = BufReader::new(restarted.stdout.take().unwrap()).lines();
+    let init = send(&mut restarted_input, &mut restarted_output,
+        json!({"jsonrpc":"2.0","id":6,"method":"initialize",
+            "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"restart-fixture","version":"1"}}})).await;
+    assert!(init.get("result").is_some());
+    restarted_input
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+        .await
+        .unwrap();
+    let after_restart = send(&mut restarted_input, &mut restarted_output, request(7)).await;
+    assert_ne!(after_restart["result"]["isError"], true);
+    restarted.kill().await.unwrap();
+
+    let revoked = pipe
+        .request(&Operation::Mail(Box::new(mail::Command::RevokeMailAgent {
+            id,
+        })))
+        .await
+        .unwrap();
+    assert!(matches!(revoked, Response::Mail { .. }));
+    let denied = send(&mut input, &mut output, request(4)).await;
+    assert_eq!(
+        denied["result"]["structuredContent"]["code"],
+        "mail_agent_unregistered"
+    );
+    child.kill().await.unwrap();
+}
+
 async fn crm_call(pipe: &PipeEndpoint, command: crm::Command) -> Response {
     timeout(
         Duration::from_secs(5),

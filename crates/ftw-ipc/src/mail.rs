@@ -109,6 +109,8 @@ pub struct RegisteredAgent {
     pub paused: bool,
     #[serde(default)]
     pub last_seen_at: Option<i64>,
+    #[serde(default)]
+    pub local_default: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -210,6 +212,13 @@ pub enum Command {
     RegisterMailAgent {
         name: String,
         token: Secret,
+    },
+    EnableLocalAgent {
+        id: String,
+        token: Secret,
+    },
+    DisableLocalAgent {
+        id: String,
     },
     RevokeMailAgent {
         id: String,
