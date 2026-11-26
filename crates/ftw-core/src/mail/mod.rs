@@ -1,4 +1,5 @@
 mod accounts;
+mod agent_context;
 mod approval;
 pub(crate) mod attachments;
 mod authorized;
@@ -17,7 +18,6 @@ mod worker;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ftw_ipc::{
-    agent::{AccessArea, Scope},
     crm::Source,
     mail::{self, AgentCommand, Command, DraftInput, Result as Reply},
     Response,
@@ -197,29 +197,10 @@ impl MailService {
         response(self.desktop_call(command, owner).await)
     }
 
-    pub async fn agent(&self, command: AgentCommand) -> Response {
-        self.agent_session(None, command).await
-    }
-
-    pub async fn agent_session(&self, token: Option<&str>, command: AgentCommand) -> Response {
-        let scopes: Option<&[Scope]> = match &command {
-            AgentCommand::CreateDraft { .. }
-            | AgentCommand::RequestApproval { .. }
-            | AgentCommand::SendApproved { .. } => Some(&[Scope::CreateDrafts]),
-            AgentCommand::AttachDraftAssets { .. } => Some(&[Scope::EditDrafts]),
-            AgentCommand::ListTemplates { .. } => Some(&[Scope::ReadMail, Scope::ManageTemplates]),
-            AgentCommand::SendAuthorized { .. }
-            | AgentCommand::ListCustomers { .. }
-            | AgentCommand::GetCustomer { .. } => None,
-            _ => Some(&[Scope::ReadMail]),
-        };
-        let actor_id = if let Some(scopes) = scopes {
-            match self.session_actor(token, AccessArea::Mail, scopes).await {
-                Ok((actor, _)) => actor,
-                Err(error) => return response(Err(error)),
-            }
-        } else {
-            None
+    pub async fn agent_session(&self, token: &str, command: AgentCommand) -> Response {
+        let actor_id = match self.session_actor(token).await {
+            Ok(id) => id,
+            Err(error) => return response(Err(error)),
         };
         let result = match command {
             AgentCommand::ListTemplates { purpose, offset } => {
@@ -241,14 +222,14 @@ impl MailService {
                     .collaborate_crm(token, ftw_ipc::agent::Command::GetCustomer { id })
                     .await
             }
-            AgentCommand::ListAssets { token } => self.list_agent_assets(&token.0).await,
+            AgentCommand::ListAssets { .. } => self.list_assets(true).await,
             AgentCommand::AttachDraftAssets {
-                token,
+                token: _,
                 id,
                 revision,
                 asset_ids,
             } => {
-                self.attach_agent_assets(&token.0, &id, revision, &asset_ids)
+                self.attach_agent_assets(token, &id, revision, &asset_ids)
                     .await
             }
             AgentCommand::CheckOutreach { recipient } => self.outreach_check(&recipient).await,
@@ -278,10 +259,10 @@ impl MailService {
                     attachments: Vec::new(),
                     replace_attachments: false,
                 };
-                let caller = actor_id.as_deref();
+                let caller = Some(actor_id.as_str());
                 let actor = crate::crm::Actor {
                     source: Source::Agent,
-                    id: caller.unwrap_or("mcp"),
+                    id: &actor_id,
                     agent_run_id: request_id.as_deref(),
                 };
                 if let Some(request) = request_id.as_deref() {
@@ -296,7 +277,7 @@ impl MailService {
                     {
                         return reply;
                     }
-                    let result = self.save_with_assets(None, input, actor, None, None).await;
+                    let result = self.create_agent_draft(input, actor).await;
                     return crate::agent::finish_for(
                         &self.pool,
                         "create_email_draft",
@@ -306,16 +287,16 @@ impl MailService {
                     )
                     .await;
                 }
-                self.save_with_assets(None, input, actor, None, None).await
+                self.create_agent_draft(input, actor).await
             }
             AgentCommand::SendAuthorized {
-                token,
+                token: _,
                 id,
                 revision,
                 purpose,
                 task_id,
                 request_id,
-            } => match policy::digest(&token.0) {
+            } => match policy::digest(token) {
                 Ok(digest) => {
                     self.enqueue_authorized(authorized::Submission {
                         digest,
@@ -333,16 +314,56 @@ impl MailService {
                 if let Err(error) = self.agent_manual_allowed().await {
                     return response(Err(error));
                 }
-                self.request_approval(&id, Source::Agent).await
+                self.request_approval(
+                    &id,
+                    crate::crm::Actor {
+                        source: Source::Agent,
+                        id: &actor_id,
+                        agent_run_id: None,
+                    },
+                )
+                .await
             }
             AgentCommand::SendApproved { id } => {
                 if let Err(error) = self.agent_manual_allowed().await {
                     return response(Err(error));
                 }
-                self.enqueue(&id, Source::Agent).await
+                self.enqueue(
+                    &id,
+                    crate::crm::Actor {
+                        source: Source::Agent,
+                        id: &actor_id,
+                        agent_run_id: None,
+                    },
+                )
+                .await
             }
         };
         response(result)
+    }
+
+    async fn create_agent_draft(
+        &self,
+        mut input: DraftInput,
+        actor: crate::crm::Actor<'_>,
+    ) -> Result<Reply> {
+        if input.account_id.is_empty() {
+            input.account_id = sqlx::query_scalar(
+                "SELECT id FROM email_accounts WHERE archived_at IS NULL AND
+                 (id=(SELECT value FROM app_settings WHERE key='default_sender_id')
+                  OR (SELECT count(*) FROM email_accounts WHERE archived_at IS NULL)=1)",
+            )
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(Failure::Code("mail_sender_required"))?;
+        }
+        if input.recipient.is_empty() {
+            input.recipient = sqlx::query_scalar(
+                "SELECT value FROM contact_methods WHERE contact_id=?1 AND kind='email' AND
+                 (is_primary OR (SELECT count(*) FROM contact_methods WHERE contact_id=?1 AND kind='email')=1)",
+            ).bind(&input.contact_id).fetch_optional(&self.pool).await?.ok_or(Failure::Code("mail_recipient_required"))?;
+        }
+        self.save_with_assets(None, input, actor, None, None).await
     }
 
     async fn agent_manual_allowed(&self) -> Result<()> {
@@ -444,17 +465,7 @@ impl MailService {
             Command::CancelMailPolicyReview { id } => self.cancel_policy_review(id).await,
             Command::RegisterMailAgent { name, token } => self.register_agent(name, &token.0).await,
             Command::RevokeMailAgent { id } => self.revoke_mail_agent(id).await,
-            Command::SetRegisteredCrmRequired { required } => {
-                self.set_registration_required(AccessArea::Crm, required)
-                    .await
-            }
-            Command::SetRegisteredMailRequired { required } => {
-                self.set_registration_required(AccessArea::Mail, required)
-                    .await
-            }
-            Command::SetAgentCollaboration { id, scopes } => {
-                self.set_collaboration(&id, scopes).await
-            }
+            Command::SetAgentPaused { id, paused } => self.set_agent_paused(id, paused).await,
             Command::ListAccounts => self.accounts(true).await,
             Command::SaveAccount {
                 name,
@@ -599,9 +610,11 @@ impl MailService {
                 )
                 .await
             }
-            Command::RequestApproval { id } => self.request_approval(&id, Source::Manual).await,
+            Command::RequestApproval { id } => {
+                self.request_approval(&id, crate::crm::Actor::DESKTOP).await
+            }
             Command::OpenApproval { id } => self.open_approval(id).await,
-            Command::SendApproved { id } => self.enqueue(&id, Source::Manual).await,
+            Command::SendApproved { id } => self.enqueue(&id, crate::crm::Actor::DESKTOP).await,
             Command::SetSuppression { target, blocked } => {
                 let normalized = if target.contains('@') {
                     email_address(&target)?.to_ascii_lowercase()
@@ -914,7 +927,7 @@ impl MailService {
         Ok(Reply::Saved { id })
     }
 
-    async fn request_approval(&self, id: &str, source: Source) -> Result<Reply> {
+    async fn request_approval(&self, id: &str, actor: crate::crm::Actor<'_>) -> Result<Reply> {
         let mut tx = self.pool.begin().await?;
         let (state, subject, body): (String, String, String) = sqlx::query_as("SELECT d.state,d.subject,d.body_text FROM email_drafts d JOIN email_accounts a ON a.id=d.account_id WHERE d.id=? AND a.archived_at IS NULL")
             .bind(id)
@@ -928,7 +941,16 @@ impl MailService {
             "draft" => {
                 sqlx::query("UPDATE email_drafts SET state='pending_approval',updated_at=unixepoch() WHERE id=?")
                     .bind(id).execute(&mut *tx).await?;
-                audit(&mut tx, source, "email_draft", id, "request_approval").await?;
+                audit_as(
+                    &mut tx,
+                    actor.source,
+                    actor.id,
+                    "email_draft",
+                    id,
+                    "request_approval",
+                    None,
+                )
+                .await?;
             }
             "pending_approval" | "approved" => {}
             _ => return Err(Failure::Code("mail_read_only")),

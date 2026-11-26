@@ -137,6 +137,7 @@ async fn run() -> Result<(), CoreError> {
         | Response::Mail { .. }
         | Response::Inbox { .. }
         | Response::Changes { .. }
-        | Response::Data { .. } => Err(CoreError::Health("unexpected response".into())),
+        | Response::Data { .. }
+        | Response::AgentData { .. } => Err(CoreError::Health("unexpected response".into())),
     }
 }

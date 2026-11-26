@@ -1,47 +1,17 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Scope {
-    ReadCrm,
-    WriteCrm,
-    ReadMail,
-    CreateDrafts,
-    ManageFields,
-    ArchiveContacts,
-    MergeContacts,
-    ImportCustomers,
-    ExportCustomers,
-    ManageViews,
-    EditActivities,
-    ReadDocuments,
-    UploadDocuments,
-    EditDrafts,
-    ReadAudit,
-    ReadTasks,
-    ReadMailAttachments,
-    SuggestReplyLinks,
-    ManageMailTasks,
-    ManageTemplates,
-    EditLeads,
-    ManageCompanies,
-    UpdateCustomerBatches,
-    ExportMailReports,
-    ReviewLeads,
-    ConfirmReplyLinks,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AccessArea {
-    Crm,
-    Mail,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Collaboration {
+    Context,
+    Definitions {
+        kind: DefinitionKind,
+        known_version: Option<String>,
+    },
+    DraftStatuses {
+        ids: Vec<String>,
+    },
     Search {
         keyword: String,
         category: crate::data::SearchCategory,
@@ -98,6 +68,11 @@ pub enum Collaboration {
         request_id: String,
         input: Box<crate::crm::ContactInput>,
         entries: Vec<crate::fields::Entry>,
+    },
+    UpdateCustomerProfile {
+        request_id: String,
+        target: crate::views::CellTarget,
+        patch: Box<ProfilePatch>,
     },
     ImportCustomerCsv {
         csv: String,
@@ -226,6 +201,8 @@ pub enum Collaboration {
     },
     MailTask {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         offset: u32,
     },
     CustomerHistory {
@@ -238,57 +215,35 @@ pub enum Collaboration {
     },
 }
 
-impl Collaboration {
-    pub fn scope(&self) -> Option<Scope> {
-        Some(match self {
-            Self::Search { .. } => return None,
-            Self::CustomerQuality { .. } => Scope::ReadCrm,
-            Self::PreviewCustomerBatch { .. } | Self::UpdateCustomerBatch { .. } => {
-                Scope::UpdateCustomerBatches
-            }
-            Self::MailAnalytics { export, .. } => {
-                if *export {
-                    Scope::ExportMailReports
-                } else {
-                    Scope::ReadMail
-                }
-            }
-            Self::AuditWorkspace { .. } => Scope::ReadAudit,
-            Self::ReviewLead { .. } | Self::ReviewEvidence { .. } => Scope::ReviewLeads,
-            Self::ConfirmReplyLink { .. } => Scope::ConfirmReplyLinks,
-            Self::CreateReplyDraft { .. } => Scope::CreateDrafts,
-            Self::CreateCustomerProfile { .. } => Scope::WriteCrm,
-            Self::ImportCustomerCsv { .. } => Scope::ImportCustomers,
-            Self::ExportCustomerCsv { .. } => Scope::ExportCustomers,
-            Self::SetContactArchive { .. } => Scope::ArchiveContacts,
-            Self::MergeContacts { .. } => Scope::MergeContacts,
-            Self::SaveField { .. }
-            | Self::ArchivedFields
-            | Self::SetFieldArchive { .. }
-            | Self::MoveField { .. } => Scope::ManageFields,
-            Self::SaveView { .. }
-            | Self::ArchiveView { .. }
-            | Self::RestoreView { .. }
-            | Self::MoveView { .. }
-            | Self::ArchivedViews => Scope::ManageViews,
-            Self::ArchivedTemplates { .. } | Self::ManageTemplate { .. } => Scope::ManageTemplates,
-            Self::EditActivity { .. } => Scope::EditActivities,
-            Self::EditLead { .. } => Scope::EditLeads,
-            Self::ManageCompany { .. } => Scope::ManageCompanies,
-            Self::ListDocuments { .. } | Self::ReadDocument { .. } => Scope::ReadDocuments,
-            Self::UploadDocument { .. } | Self::UploadDocumentChunk { .. } => {
-                Scope::UploadDocuments
-            }
-            Self::EditDraft { .. } => Scope::EditDrafts,
-            Self::CustomerHistory { .. } | Self::CustomFieldHistory { .. } => Scope::ReadAudit,
-            Self::MailTask { .. } | Self::ListRuns { .. } => Scope::ReadTasks,
-            Self::UpdateMailJob { .. } => Scope::ManageMailTasks,
-            Self::ListSuppressions { .. } => Scope::ReadMail,
-            Self::ReadMailAttachment { .. } => Scope::ReadMailAttachments,
-            Self::ReviewReplies { .. }
-            | Self::ReplyCandidates { .. }
-            | Self::SuggestReplyLink { .. } => Scope::SuggestReplyLinks,
-        })
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DefinitionKind {
+    Fields,
+    States,
+    Views,
+}
+
+impl DefinitionKind {
+    pub fn domain(self) -> &'static str {
+        match self {
+            Self::Fields => "custom_fields",
+            Self::States => "configuration",
+            Self::Views => "crm_views",
+        }
+    }
+
+    pub fn version(self, versions: &crate::ChangeVersions) -> String {
+        let fields = if matches!(self, Self::Views) {
+            versions.domains["custom_fields"]
+        } else {
+            0
+        };
+        format!(
+            "{}:{}:{}",
+            versions.epoch,
+            versions.domains[self.domain()],
+            fields
+        )
     }
 }
 
@@ -483,6 +438,30 @@ pub struct ContactPatch {
     pub evidence: Option<Evidence>,
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilePatch {
+    pub display_name: Option<String>,
+    pub company_name: Option<String>,
+    pub country_region: Option<String>,
+    pub customer_type: Option<String>,
+    pub customer_source: Option<String>,
+    pub first_contact_channel: Option<String>,
+    pub bulk_order_status: Option<String>,
+    pub website_url: Option<String>,
+    pub alibaba_buyer_id: Option<String>,
+    pub dates: Option<ContactDates>,
+    pub methods: Option<Vec<crate::crm::Method>>,
+    pub interests: Option<Vec<crate::crm::Interest>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContactDates {
+    pub first_contact_at: Option<i64>,
+    pub last_contact_at: Option<i64>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -580,20 +559,4 @@ pub enum Command {
         request_id: String,
         input: crate::crm::ActivityInput,
     },
-}
-
-impl Command {
-    pub fn scope(&self) -> Scope {
-        match self {
-            Self::PatchFieldValues { .. }
-            | Self::CreateLead { .. }
-            | Self::AddContactEvidence { .. }
-            | Self::AddLeadEvidence { .. }
-            | Self::CreateCustomer { .. }
-            | Self::UpdateCustomer { .. }
-            | Self::SuggestCustomerDetail { .. }
-            | Self::AddActivity { .. } => Scope::WriteCrm,
-            _ => Scope::ReadCrm,
-        }
-    }
 }

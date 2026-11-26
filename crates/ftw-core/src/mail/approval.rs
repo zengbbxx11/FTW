@@ -103,7 +103,7 @@ impl MailService {
         Ok(())
     }
 
-    pub(super) async fn enqueue(&self, id: &str, source: Source) -> Result<Reply> {
+    pub(super) async fn enqueue(&self, id: &str, actor: crate::crm::Actor<'_>) -> Result<Reply> {
         let mut tx = self.pool.begin().await?;
         let (draft, revision, state) = snapshot(&mut tx, id).await?;
         if let Some((job_id, state)) = sqlx::query_as::<_, (String, String)>(
@@ -135,12 +135,21 @@ impl MailService {
         let job_id = new_id();
         let message_id = format!("<{job_id}@ftw.local>");
         sqlx::query("INSERT INTO email_outbox_jobs(id,draft_id,approval_id,revision,message_id_header,state,queued_source) VALUES (?,?,?,?,?,'queued',?)")
-            .bind(&job_id).bind(id).bind(approval).bind(revision).bind(message_id).bind(source.as_str()).execute(&mut *tx).await?;
+            .bind(&job_id).bind(id).bind(approval).bind(revision).bind(message_id).bind(actor.source.as_str()).execute(&mut *tx).await?;
         sqlx::query("UPDATE email_drafts SET state='queued', updated_at=unixepoch() WHERE id=?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        audit(&mut tx, source, "email_draft", id, "enqueue").await?;
+        super::audit_as(
+            &mut tx,
+            actor.source,
+            actor.id,
+            "email_draft",
+            id,
+            "enqueue",
+            None,
+        )
+        .await?;
         tx.commit().await?;
         Ok(Reply::Queued {
             id: id.to_owned(),
@@ -321,16 +330,29 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), b"existing content");
     }
 
+    async fn fixture_agent(service: &MailService) -> String {
+        let token = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
+        service
+            .register_agent("Fixture".into(), &token)
+            .await
+            .unwrap();
+        token
+    }
+
     async fn new_draft(service: &MailService, contact_id: String) -> String {
+        let token = fixture_agent(service).await;
         let result = service
-            .agent(AgentCommand::CreateDraft {
-                request_id: None,
-                contact_id,
-                account_id: "acct".into(),
-                recipient: "receiver@example.test".into(),
-                subject: "Approved test email".into(),
-                body: "Fixture body".into(),
-            })
+            .agent_session(
+                &token,
+                AgentCommand::CreateDraft {
+                    request_id: None,
+                    contact_id,
+                    account_id: "acct".into(),
+                    recipient: "receiver@example.test".into(),
+                    subject: "Approved test email".into(),
+                    body: "Fixture body".into(),
+                },
+            )
             .await;
         let Response::Mail { data } = result else {
             panic!("{result:?}")
@@ -343,7 +365,7 @@ mod tests {
 
     async fn submit_review(service: &MailService, draft: &str) -> (i64, String) {
         service
-            .request_approval(draft, Source::Agent)
+            .request_approval(draft, super::super::agent_actor())
             .await
             .unwrap();
         let mut connection = service.pool.acquire().await.unwrap();
@@ -356,7 +378,7 @@ mod tests {
         let (_directory, service, contact) = setup().await;
         let draft = new_draft(&service, contact.clone()).await;
         assert!(matches!(
-            service.agent(AgentCommand::SendApproved { id: draft.clone() }).await,
+            service.agent_session(&fixture_agent(&service).await, AgentCommand::SendApproved { id: draft.clone() }).await,
             Response::Error { code, .. } if code == "approval_required"
         ));
         let (old_revision, old_digest) = submit_review(&service, &draft).await;
@@ -394,8 +416,14 @@ mod tests {
             .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
-        let queued = service.enqueue(&draft, Source::Agent).await.unwrap();
-        let retried = service.enqueue(&draft, Source::Agent).await.unwrap();
+        let queued = service
+            .enqueue(&draft, super::super::agent_actor())
+            .await
+            .unwrap();
+        let retried = service
+            .enqueue(&draft, super::super::agent_actor())
+            .await
+            .unwrap();
         assert!(
             matches!((queued, retried), (Reply::Queued {job_id: a,..}, Reply::Queued {job_id:b,..}) if a==b)
         );
@@ -438,7 +466,7 @@ mod tests {
     #[tokio::test]
     async fn agent_reply_preserves_headers_and_customer_conversation() {
         use ftw_ipc::{
-            agent::{Collaboration, Scope},
+            agent::Collaboration,
             inbox,
             mail::{Command, ReplyDraftInput, Secret},
         };
@@ -451,7 +479,10 @@ mod tests {
             .record_approval(&original, revision, &hash, None)
             .await
             .unwrap();
-        service.enqueue(&original, Source::Manual).await.unwrap();
+        service
+            .enqueue(&original, crate::crm::Actor::DESKTOP)
+            .await
+            .unwrap();
         let (port, smtp) = fake_server(false).await;
         service
             .send_next_with(|_| Ok(test_transport(port)))
@@ -493,17 +524,6 @@ mod tests {
                 body: "Confirmed, here are the next steps.".into(),
             },
         };
-        assert!(matches!(service.collaborate(&token, request()).await,
-            Response::Error { code, .. } if code == "agent_collaboration_not_authorized"));
-        service
-            .desktop(
-                Command::SetAgentCollaboration {
-                    id: agent.clone(),
-                    scopes: vec![Scope::ReadMail, Scope::CreateDrafts],
-                },
-                0,
-            )
-            .await;
         let Response::Mail { data } = service.collaborate(&token, request()).await else {
             panic!("reply draft")
         };
@@ -541,11 +561,11 @@ mod tests {
             request_id: request_id.into(),
         };
         assert!(
-            matches!(service.agent_session(Some(&token), send("first_outreach", "reply-wrong-purpose")).await,
+            matches!(service.agent_session(&token, send("first_outreach", "reply-wrong-purpose")).await,
             Response::Error { code, .. } if code=="mail_reply_purpose_invalid")
         );
         let response = service
-            .agent_session(Some(&token), send("outreach_followup", "reply-send-1"))
+            .agent_session(&token, send("outreach_followup", "reply-send-1"))
             .await;
         assert!(
             matches!(&response, Response::Mail { data } if matches!(**data, Reply::Queued { .. })),
@@ -594,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn authorized_agent_and_desktop_sends_share_history_with_distinct_sources() {
         use ftw_ipc::{
-            agent::{Collaboration, Scope},
+            agent::Collaboration,
             data,
             mail::{Command, Secret},
         };
@@ -621,16 +641,6 @@ mod tests {
         let Reply::Saved { id: agent_id } = *data else {
             panic!("fixture registration result")
         };
-        let grant = service
-            .desktop(
-                Command::SetAgentCollaboration {
-                    id: agent_id.clone(),
-                    scopes: vec![Scope::ReadMail, Scope::ReadTasks],
-                },
-                0,
-            )
-            .await;
-        assert!(matches!(grant, Response::Mail { data } if matches!(*data, Reply::Saved { .. })));
         // Seed the result of workstation authorization without prompting Windows or contacting an external server.
         let mut tx = service.pool.begin().await.unwrap();
         sqlx::query(
@@ -657,8 +667,8 @@ mod tests {
             request_id: request.to_owned(),
         };
         let (queued, retried) = tokio::join!(
-            service.agent_session(Some(&token), submit(&first, "fixture-send-1")),
-            service.agent_session(Some(&token), submit(&first, "fixture-send-1")),
+            service.agent_session(&token, submit(&first, "fixture-send-1")),
+            service.agent_session(&token, submit(&first, "fixture-send-1")),
         );
         let job_id = |result: Response| match result {
             Response::Mail { data } => match *data {
@@ -670,7 +680,7 @@ mod tests {
         assert_eq!(job_id(queued), job_id(retried));
         let duplicate = new_draft(&service, contact_id.clone()).await;
         assert!(
-            matches!(service.agent_session(Some(&token), submit(&duplicate, "fixture-send-2")).await,
+            matches!(service.agent_session(&token, submit(&duplicate, "fixture-send-2")).await,
             Response::Error { code, .. } if code == "outreach_already_recorded")
         );
 
@@ -692,6 +702,7 @@ mod tests {
             .collaborate(
                 &token,
                 Collaboration::MailTask {
+                    agent_id: None,
                     task_id: "fixture-agent-task".into(),
                     offset: 0,
                 },
@@ -722,7 +733,7 @@ mod tests {
             panic!("desktop draft")
         };
         service
-            .request_approval(&manual, Source::Manual)
+            .request_approval(&manual, crate::crm::Actor::DESKTOP)
             .await
             .unwrap();
         let (snapshot, revision, _) = {
@@ -747,7 +758,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let agent_view = service
-            .agent_session(Some(&token), AgentCommand::GetDraft { id: manual })
+            .agent_session(&token, AgentCommand::GetDraft { id: manual })
             .await;
         assert!(
             matches!(agent_view, Response::Mail { data } if matches!(data.as_ref(), Reply::Draft { record }
@@ -784,25 +795,21 @@ mod tests {
             .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
-        let Reply::Queued { job_id, .. } = service.enqueue(&draft, Source::Agent).await.unwrap()
+        let Reply::Queued { job_id, .. } = service
+            .enqueue(&draft, super::super::agent_actor())
+            .await
+            .unwrap()
         else {
             panic!("expected queued fixture");
         };
-        let unrelated = crate::crm::Actor {
+        let peer = crate::crm::Actor {
             source: Source::Agent,
-            id: "unrelated-fixture",
+            id: "peer-fixture",
             agent_run_id: None,
         };
-        assert!(matches!(
-            service
-                .update_mail_job(unrelated, &job_id, MailJobAction::Cancel)
-                .await,
-            Err("mail_not_found")
-        ));
-
-        for _ in 0..2 {
+        for actor in [peer, crate::crm::Actor::DESKTOP] {
             let stopped = service
-                .update_mail_job(crate::crm::Actor::DESKTOP, &job_id, MailJobAction::Cancel)
+                .update_mail_job(actor, &job_id, MailJobAction::Cancel)
                 .await
                 .unwrap();
             assert!(
@@ -810,6 +817,16 @@ mod tests {
                 if draft_revision == revision + 1 && state == "cancelled")
             );
         }
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT actor_id FROM audit_logs WHERE entity_id=? AND operation='cancel_mail_job'"
+            )
+            .bind(&job_id)
+            .fetch_one(&service.pool)
+            .await
+            .unwrap(),
+            "peer-fixture"
+        );
         service
             .send_next_with(|_| panic!("cancelled job must not reach SMTP"))
             .await
@@ -836,7 +853,10 @@ mod tests {
             .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
-        service.enqueue(&draft, Source::Agent).await.unwrap();
+        service
+            .enqueue(&draft, super::super::agent_actor())
+            .await
+            .unwrap();
         let (port, fake) = fake_server(true).await;
         service
             .send_next_with(|_| Ok(test_transport(port)))
@@ -845,7 +865,7 @@ mod tests {
         assert!(fake.await.unwrap().contains("Fixture body"));
         let ended = MailService::new(service.pool.clone()).await.unwrap();
         assert!(
-            matches!(ended.enqueue(&draft, Source::Agent).await.unwrap(),
+            matches!(ended.enqueue(&draft, super::super::agent_actor()).await.unwrap(),
             Reply::Queued {state,..} if state == "delivery_unknown")
         );
         ended
@@ -869,7 +889,10 @@ mod tests {
             .record_approval(&draft, revision, &digest, None)
             .await
             .unwrap();
-        service.enqueue(&draft, Source::Agent).await.unwrap();
+        service
+            .enqueue(&draft, super::super::agent_actor())
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO suppression_list(normalized) VALUES ('example.test')")
             .execute(&service.pool)
             .await
@@ -896,7 +919,9 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            service.request_approval(&id, Source::Manual).await,
+            service
+                .request_approval(&id, crate::crm::Actor::DESKTOP)
+                .await,
             Err(Failure::Code("mail_unresolved_template"))
         ));
 
@@ -940,7 +965,10 @@ mod tests {
             .record_approval(&first, revision, &digest, None)
             .await
             .unwrap();
-        service.enqueue(&first, Source::Agent).await.unwrap();
+        service
+            .enqueue(&first, super::super::agent_actor())
+            .await
+            .unwrap();
         let (port, server) = fake_server(true).await;
         service
             .send_next_with(|_| Ok(test_transport(port)))
@@ -954,7 +982,10 @@ mod tests {
             .record_approval(&second, revision, &digest, None)
             .await
             .unwrap();
-        service.enqueue(&second, Source::Agent).await.unwrap();
+        service
+            .enqueue(&second, super::super::agent_actor())
+            .await
+            .unwrap();
         service
             .send_next_with(|_| panic!("account limit must be checked before connecting"))
             .await
@@ -981,7 +1012,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        service.enqueue(&queued, Source::Agent).await.unwrap();
+        service
+            .enqueue(&queued, super::super::agent_actor())
+            .await
+            .unwrap();
         let backup = crate::storage::backup::create(&service.pool, directory.path(), "manual")
             .await
             .unwrap();
@@ -994,7 +1028,9 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            service.enqueue(&approved, Source::Agent).await,
+            service
+                .enqueue(&approved, super::super::agent_actor())
+                .await,
             Err(Failure::Code("approval_required"))
         ));
         service
@@ -1063,7 +1099,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].approval_expired);
         assert!(matches!(
-            service.enqueue(&draft, Source::Agent).await,
+            service.enqueue(&draft, super::super::agent_actor()).await,
             Err(Failure::Code("approval_expired"))
         ));
         service.pool.close().await;

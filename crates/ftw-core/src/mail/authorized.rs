@@ -162,11 +162,12 @@ pub(super) async fn check_scope(
     {
         return Err(Failure::Code("agent_policy_not_authorized"));
     }
-    let grant: Option<bool> =
-        sqlx::query_scalar("SELECT automatic FROM mail_agent_clients WHERE id=? AND NOT revoked")
-            .bind(agent)
-            .fetch_optional(db)
-            .await?;
+    let grant: Option<bool> = sqlx::query_scalar(
+        "SELECT automatic FROM mail_agent_clients WHERE id=? AND NOT revoked AND NOT paused",
+    )
+    .bind(agent)
+    .fetch_optional(db)
+    .await?;
     match grant {
         Some(true) => {}
         Some(false) => return Err(Failure::Code("mail_agent_not_authorized")),

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
 import { DatabaseSync } from 'node:sqlite'
 import { promisify } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const target = path.resolve(process.argv[2] ?? 'target')
 const coreExe = path.join(target, 'debug', 'ftw-core.exe')
@@ -13,8 +15,12 @@ const profiles = path.resolve('.ftw-dev')
 await mkdir(profiles, { recursive: true })
 const profile = await mkdtemp(path.join(profiles, 'agent-protocol-'))
 
-async function exercise(protocol) {
-  const child = spawn(mcpExe, ['--dev-root', profile], { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] })
+let previousContact
+async function exercise(protocol, token) {
+  const env = { ...process.env }
+  delete env.FTW_AGENT_TOKEN
+  if (token) env.FTW_AGENT_TOKEN = token
+  const child = spawn(mcpExe, ['--dev-root', profile], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] })
   const reader = createInterface({ input: child.stdout })
   const responses = new Map()
   let number = 0
@@ -68,16 +74,19 @@ async function exercise(protocol) {
       'review_lead_candidate', 'review_customer_evidence', 'confirm_reply_link',
       'move_customer_field', 'move_customer_view',
       'create_customer_profile', 'create_reply_draft', 'get_mailbox_sync_status',
+      'get_workbench_context', 'get_workbench_definitions', 'get_customers_batch', 'create_customers_batch',
+      'add_customer_activities_batch', 'get_email_statuses', 'update_customer_profile', 'update_customers_batch',
     ].sort())
     assert.ok(tools.every(tool => tool.inputSchema.type === 'object'))
     assert.deepEqual(tools.find(tool => tool.name === 'save_email_template').inputSchema.required,
       ['request_id', 'input'])
-    const accounts = await send('tools/call', { name: 'list_email_accounts', arguments: {} })
-    assert.deepEqual(JSON.parse(accounts.result.content[0].text), { kind: 'accounts', rows: [] })
-    assert.deepEqual(accounts.result.structuredContent, { version: 1, operation: 'list_email_accounts',
-      status: 'accounts', success: true, retryable: false, requires_human: false })
-    const search = await send('tools/call', { name: 'search_workbench', arguments: { keyword: 'fixture' } })
-    assert.equal(search.result.structuredContent.code, 'mail_agent_unregistered')
+    if (!token) {
+      for (const name of ['list_customers', 'list_email_accounts', 'list_inbox', 'get_workbench_context']) {
+        const result = await send('tools/call', { name, arguments: {} })
+        assert.equal(result.result.structuredContent.code, 'mail_agent_unregistered')
+      }
+      return
+    }
     const db = new DatabaseSync(path.join(profile, 'data', 'workbench.db'))
     db.exec("INSERT OR IGNORE INTO mail_templates(id,name,purpose,subject,body) VALUES ('mcp-template-fixture','Fixture','first_outreach','Hello {{contact_name}}','Market: {{country_region}}')")
     db.close()
@@ -86,8 +95,26 @@ async function exercise(protocol) {
       assert.ok(!response.error && !response.result?.isError, JSON.stringify(response))
       return JSON.parse(response.result.content[0].text)
     }
+    const context = await call('get_workbench_context')
+    assert.equal(context.schema_version, 27)
+    assert.equal(context.agent.name, 'Fixture ' + protocol)
+    assert.deepEqual(context.sender_accounts, [])
+    const full = await call('get_workbench_definitions', { kind: 'states' })
+    assert.equal(full.version, context.definitions.states)
+    const unchanged = await call('get_workbench_definitions', { kind: 'states', known_version: full.version })
+    assert.equal(unchanged.unchanged, true)
+    assert.ok(JSON.stringify(unchanged).length < JSON.stringify(full).length)
+    if (previousContact) {
+      const record = (await call('get_customer', { contact_id: previousContact })).record
+      const result = await call('update_customer_profile', {
+        request_id: 'cross-agent-edit', target: { id: record.id, revision: record.record_revision, epoch: record.data_epoch },
+        patch: { company_name: 'Shared handoff fixture' },
+      })
+      assert.equal(result.id, previousContact)
+    }
     const customer = { request_id: 'fixture-' + protocol, display_name: 'MCP fixture ' + protocol, email: 'original-' + protocol + '@example.test' }
     const saved = await call('create_customer', customer)
+    previousContact = saved.id
     assert.equal(saved.kind, 'saved')
     assert.deepEqual(await call('create_customer', customer), saved)
     const conflict = await send('tools/call', { name: 'create_customer', arguments: { ...customer, display_name: 'changed' } })
@@ -163,6 +190,9 @@ async function exercise(protocol) {
     assert.equal((await call('get_customer', { contact_id: saved.id })).record.input.stage, 'won')
     const priority = await call('list_customers', { quick_view: 'priority', level: 'A', sample_status: 'in_transit' })
     assert.ok(priority.rows.some(row => row.id === saved.id))
+    const summary = priority.rows.find(row => row.id === saved.id)
+    assert.deepEqual(Object.keys(summary.mail_outreach), ['status'])
+    assert.ok(!('input' in summary) && !('custom_values' in summary))
     const views = await call('list_customer_views')
     const priorityView = views.views.find(view => view.id === 'priority')
     assert.equal(priorityView.config.query.quick_view, 'priority')
@@ -170,7 +200,8 @@ async function exercise(protocol) {
       filter: { type: 'rule', field: 'stage', operator: 'eq', value: 'won' } })
     assert.ok(sameView.rows.some(row => row.id === saved.id))
     const stale = await send('tools/call', { name: 'update_customer', arguments: {
-      request_id: 'stale-' + protocol, contact_id: saved.id, stage: 'contacted', expected_revision: contact.record.record_revision,
+      request_id: 'stale-' + protocol, contact_id: saved.id, stage: 'contacted',
+      expected_revision: contact.record.record_revision, expected_epoch: contact.record.data_epoch,
     } })
     assert.ok(stale.result?.isError, JSON.stringify(stale))
     assert.match(stale.result.content[0].text, /crm_revision_conflict/)
@@ -186,14 +217,17 @@ async function exercise(protocol) {
     assert.equal(timeline.rows[0].source, 'agent')
     assert.equal(timeline.rows[0].id, logged.id)
     assert.equal(timeline.rows[0].summary, activity.summary)
+    const batch = await call('add_customer_activities_batch', { items: [activity, { ...activity, request_id: 'missing-' + protocol, contact_id: 'missing' }] })
+    assert.equal(batch.rows[0].id, logged.id)
+    assert.equal(batch.rows[1].code, 'crm_not_found')
+    assert.equal((await call('get_email_statuses', { items: ['missing'] })).rows[0].code, 'mail_not_found')
     const sample = { model: 'DC226', quantity: 2 }
     await call('add_customer_activity', { ...activity, request_id: 'sample-' + protocol, event_type: 'sample', sample })
     const samples = await call('get_customer_timeline', { contact_id: saved.id, event_type: 'sample' })
     assert.deepEqual(samples.rows[0].sample, sample)
     const templates = await call('list_email_templates', { purpose: 'first_outreach' })
     assert.equal(templates.rows[0].id, 'mcp-template-fixture')
-    const templateDenied = await send('tools/call', { name: 'list_email_templates', arguments: { archived: true } })
-    assert.equal(templateDenied.result.structuredContent.code, 'mail_agent_unregistered')
+    assert.deepEqual((await call('list_email_templates', { archived: true })).rows, [])
     const rendered = await call('render_email_template', { template_id: templates.rows[0].id, contact_id: saved.id })
     assert.equal(rendered.subject, 'Hello ' + customer.display_name)
     assert.deepEqual(rendered.missing, ['country_region'])
@@ -211,16 +245,29 @@ async function exercise(protocol) {
   }
 }
 
+const core = spawn(coreExe, ['serve', '--dev-root', profile], { windowsHide: true, stdio: 'ignore' })
 try {
+  const health = await (async () => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try {
+        const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 1000 })
+        return JSON.parse(stdout)
+      } catch {
+        await delay(150)
+      }
+    }
+    throw new Error('Core did not start for the isolated MCP fixture')
+  })()
+  assert.equal(health.schemaVersion, 27)
   await exercise('2025-06-18')
-  await exercise('2025-11-25')
-} finally {
-  try {
-    const { stdout } = await promisify(execFile)(coreExe, ['health', '--dev-root', profile], { windowsHide: true, timeout: 3000 })
-    const health = JSON.parse(stdout)
-    process.kill(health.processId)
-    assert.equal(health.schemaVersion, 26)
-  } catch (error) {
-    if (error.code !== 1 && error.code !== 'ESRCH') throw error
+  for (const protocol of ['2025-06-18', '2025-11-25']) {
+    const token = randomBytes(32).toString('hex')
+    const db = new DatabaseSync(path.join(profile, 'data', 'workbench.db'))
+    db.prepare('INSERT INTO mail_agent_clients(id,name,token_digest) VALUES (?,?,?)')
+      .run(protocol, 'Fixture ' + protocol, createHash('sha256').update(token).digest())
+    db.close()
+    await exercise(protocol, token)
   }
+} finally {
+  core.kill()
 }

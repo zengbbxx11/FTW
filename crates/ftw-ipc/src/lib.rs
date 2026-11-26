@@ -117,6 +117,9 @@ pub enum Response {
     Data {
         data: Box<data::Result>,
     },
+    AgentData {
+        data: serde_json::Value,
+    },
     Error {
         code: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

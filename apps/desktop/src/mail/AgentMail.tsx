@@ -2,10 +2,10 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Ban, Bot, Check, CircleCheck, ClipboardCheck, FileUp, LockKeyhole, Mail, ShieldCheck } from 'lucide-react'
 import { Field } from '../crm/components'
-import { chooseMailAssets, collaborationScopes, mailCall, mailError, mailPurposes as purposes, type Account, type AgentMailPolicy, type CollaborationScope, type MailCommand, type RegisteredAgent } from './api'
+import { chooseMailAssets, mailCall, mailError, mailPurposes as purposes, type Account, type AgentMailPolicy, type MailCommand, type RegisteredAgent } from './api'
 
 type SettingsCommand = Extract<MailCommand, {
-  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access' | 'set_agent_collaboration' | 'set_registered_crm_required' | 'set_registered_mail_required'
+  action: 'set_agent_mail_policy' | 'revoke_mail_agent' | 'set_asset_access' | 'set_agent_paused'
 }>
 
 export function AgentMail({ manageSuppression, showRecords }: { manageSuppression: () => void; showRecords: () => void }) {
@@ -17,6 +17,7 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
   const cache = useQueryClient()
   const settings = useQuery({
     queryKey: ['agent-mail-settings'],
+    refetchInterval: 30_000,
     queryFn: () => mailCall({ action: 'agent_mail_settings' }, 'agent_mail_settings'),
   })
   const accounts = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
@@ -31,9 +32,7 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
     onSuccess: async (_, command) => {
       if (command.action === 'revoke_mail_agent') dismissToken(command.id)
       if (command.action === 'set_agent_mail_policy') setPolicyNotice('发送权限已保存并生效。')
-      if (command.action === 'set_agent_collaboration') setPolicyNotice('Agent 协作权限已保存。')
-      if (command.action === 'set_registered_crm_required') setPolicyNotice('CRM 访问模式已保存。')
-      if (command.action === 'set_registered_mail_required') setPolicyNotice('邮件访问模式已保存。')
+      if (command.action === 'set_agent_paused') setPolicyNotice(command.paused ? 'Agent 已暂停。' : 'Agent 已恢复。')
       await Promise.all([cache.invalidateQueries({ queryKey: ['agent-mail-settings'] }),
         cache.invalidateQueries({ queryKey: ['mail-assets'] })])
     },
@@ -97,7 +96,7 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
     <div className="agent-administration">
       <section className="panel">
         <h2><Bot aria-hidden="true" />Agent 登记</h2>
-        <p className="muted">Codex、WorkBuddy 和其他本地 MCP 客户端可分别登记，每个 Agent 使用自己的令牌。</p>
+        <p className="muted">登记的 Agent 可共同管理共享业务。每个客户端使用自己的令牌，自动发信范围在上方单独保存。</p>
         <form className="agent-register" onSubmit={register}>
           <Field label="Agent 名称"><input required maxLength={80} placeholder="例如 WorkBuddy" value={name} onChange={event => setName(event.target.value)} /></Field>
           <button className="button primary" disabled={registering || !name.trim()}><Bot aria-hidden="true" />{registering ? '登记中…' : '登记 Agent'}</button>
@@ -105,31 +104,17 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
         {registrationError && <p className="alert error" role="alert">{registrationError}</p>}
         {current?.agents.length ? <ul className="record-list agent-list">{current.agents.map(agent => <li key={agent.id}>
           <strong>{agent.name}</strong>
-          <span className="customer-status">{agent.revoked ? '已撤销' : current.policy.mode === 'automatic' && agent.automatic ? '可自动发信' : '已登记'}</span>
+          <span className="customer-status">{agent.revoked ? '已撤销' : agent.paused ? '已暂停' : current.policy.mode === 'automatic' && agent.automatic ? '可自动发信' : '已登记'}</span>
+          <small>{agent.last_seen_at ? `最近连接 ${new Date(agent.last_seen_at * 1000).toLocaleString()}` : '尚未连接'}</small>
+          {!agent.revoked && <button className="text-button" disabled={change.isPending}
+            onClick={() => change.mutate({ action: 'set_agent_paused', id: agent.id, paused: !agent.paused })}>
+            {agent.paused ? '恢复接入' : '暂停接入'}
+          </button>}
           {!agent.revoked && <button className="text-button" disabled={change.isPending}
             onClick={() => change.mutate({ action: 'revoke_mail_agent', id: agent.id })}>撤销身份</button>}
           {tokens[agent.id] && !agent.revoked && <AgentToken token={tokens[agent.id]} dismiss={() => dismissToken(agent.id)} />}
         </li>)}</ul> : <p className="muted">尚未登记 Agent。</p>}
       </section>
-    <section className="panel">
-      <h2><ShieldCheck aria-hidden="true" />Agent 协作权限</h2>
-      <p className="muted">按客户端授权共享操作。发信授权在上方单独管理。</p>
-      {current && <label className="agent-policy-choice"><input type="checkbox"
-        checked={current.require_registered_crm ?? false} disabled={change.isPending}
-        onChange={event => change.mutate({ action: 'set_registered_crm_required', required: event.target.checked })} />
-        <span>CRM 基础查询和写入仅允许已登记且获授权的 Agent</span>
-      </label>}
-      {current && <label className="agent-policy-choice"><input type="checkbox"
-        checked={current.require_registered_mail ?? false} disabled={change.isPending}
-        onChange={event => change.mutate({ action: 'set_registered_mail_required', required: event.target.checked })} />
-        <span>邮件读取和起草仅允许已登记且获授权的 Agent</span>
-      </label>}
-      <p className="muted">先保存各客户端的权限，再按需开启登记限制。已有客户端可在兼容模式下继续使用基础功能。</p>
-      {current?.agents.filter(agent => !agent.revoked).map(agent =>
-        <CollaborationEditor key={agent.id + JSON.stringify(agent.collaboration_scopes)} agent={agent} busy={change.isPending}
-          save={scopes => change.mutate({ action: 'set_agent_collaboration', id: agent.id, scopes })} />)}
-      {!current?.agents.some(agent => !agent.revoked) && <p className="muted">请先登记需要协作的 Agent。</p>}
-    </section>
     <section className="panel">
       <div className="section-heading"><h2>Agent 可用附件</h2><button className="button" disabled={importFiles.isPending}
         onClick={() => importFiles.mutate()}><FileUp aria-hidden="true" />导入 PDF 或图片</button></div>
@@ -144,24 +129,6 @@ export function AgentMail({ manageSuppression, showRecords }: { manageSuppressio
     </section>
     </div>
   </div>
-}
-
-function CollaborationEditor({ agent, busy, save }: {
-  agent: RegisteredAgent; busy: boolean; save: (scopes: CollaborationScope[]) => void
-}) {
-  const initial = agent.collaboration_scopes ?? []
-  const [scopes, setScopes] = useState(initial)
-  const changed = initial.length !== scopes.length || scopes.some(scope => !initial.includes(scope))
-  return <form className="inline-form" onSubmit={event => { event.preventDefault(); save(scopes) }}>
-    <fieldset disabled={busy}>
-      <legend>{agent.name}</legend>
-      <div className="agent-policy-pills">{(Object.keys(collaborationScopes) as CollaborationScope[]).map(scope =>
-        <label key={scope}><input type="checkbox" checked={scopes.includes(scope)}
-          onChange={event => setScopes(current => event.target.checked ? [...current, scope] : current.filter(item => item !== scope))} />
-          {collaborationScopes[scope]}</label>)}</div>
-    </fieldset>
-    <button type="submit" className="button" disabled={!changed || busy}>保存协作权限</button>
-  </form>
 }
 
 function AgentToken({ token, dismiss }: { token: string; dismiss: () => void }) {

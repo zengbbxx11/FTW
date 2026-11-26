@@ -34,7 +34,7 @@ pub async fn dispatch(
             agent_id,
             task_id,
             offset,
-        } => agent_runs::mail_jobs(pool, &agent_id, &task_id, offset).await,
+        } => agent_runs::mail_jobs(pool, Some(&agent_id), &task_id, offset).await,
         Command::UpdateMailJob { job_id, job_action } => {
             mail.update_mail_job(crate::crm::Actor::DESKTOP, &job_id, job_action)
                 .await

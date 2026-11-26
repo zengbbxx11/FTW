@@ -20,9 +20,6 @@ impl MailService {
         expire_review(&mut connection).await?;
         let policy = current(&mut connection).await?;
         let agents = agents(&mut connection).await?;
-        let (require_registered_crm, require_registered_mail) = sqlx::query_as(
-            "SELECT require_registered_crm,require_registered_mail FROM agent_collaboration_settings WHERE id=1")
-            .fetch_one(&mut *connection).await?;
         let review = sqlx::query(
             "SELECT id,state,outcome FROM mail_agent_reviews ORDER BY rowid DESC LIMIT 1",
         )
@@ -38,8 +35,6 @@ impl MailService {
             agents,
             review,
             automatic_available: self.ledger.is_some(),
-            require_registered_crm,
-            require_registered_mail,
         })
     }
 
@@ -60,6 +55,34 @@ impl MailService {
             "mail_agent_settings",
             &id,
             "register_agent",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Reply::Saved { id })
+    }
+
+    pub(super) async fn set_agent_paused(&self, id: String, paused: bool) -> Result<Reply> {
+        let mut tx = self.pool.begin().await?;
+        let changed =
+            sqlx::query("UPDATE mail_agent_clients SET paused=? WHERE id=? AND NOT revoked")
+                .bind(paused)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+        if changed.rows_affected() == 0 {
+            return Err(Failure::Code("mail_not_found"));
+        }
+        let operation = if paused {
+            "pause_agent"
+        } else {
+            "resume_agent"
+        };
+        audit(
+            &mut tx,
+            Source::Manual,
+            "mail_agent_settings",
+            &id,
+            operation,
         )
         .await?;
         tx.commit().await?;
@@ -160,14 +183,14 @@ impl MailService {
 
 async fn agents(db: &mut SqliteConnection) -> Result<Vec<RegisteredAgent>> {
     Ok(
-        sqlx::query("SELECT id,name,revoked,automatic,collaboration_scopes FROM mail_agent_clients ORDER BY name,id")
+        sqlx::query("SELECT id,name,revoked,automatic,paused,last_seen_at FROM mail_agent_clients ORDER BY name,id")
             .try_map(|row: sqlx::sqlite::SqliteRow| Ok(RegisteredAgent {
                 id: row.get("id"),
                 name: row.get("name"),
                 revoked: row.get("revoked"),
                 automatic: row.get("automatic"),
-                collaboration_scopes: serde_json::from_str(row.get("collaboration_scopes"))
-                    .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+                paused: row.get("paused"),
+                last_seen_at: row.get("last_seen_at"),
             }))
             .fetch_all(db)
             .await?,
@@ -297,9 +320,22 @@ fn encode(data: &[String]) -> Result<String> {
 }
 
 pub(super) async fn registered(db: &mut SqliteConnection, digest: Vec<u8>) -> Result<String> {
-    sqlx::query_scalar("SELECT id FROM mail_agent_clients WHERE token_digest=? AND NOT revoked")
-        .bind(digest)
-        .fetch_optional(db)
-        .await?
-        .ok_or(Failure::Code("mail_agent_unregistered"))
+    let (id, paused, recently_seen): (String, bool, bool) = sqlx::query_as(
+        "SELECT id,paused,coalesce(last_seen_at>unixepoch()-60,0)
+         FROM mail_agent_clients WHERE token_digest=? AND NOT revoked",
+    )
+    .bind(digest)
+    .fetch_optional(&mut *db)
+    .await?
+    .ok_or(Failure::Code("mail_agent_unregistered"))?;
+    if paused {
+        return Err(Failure::Code("mail_agent_paused"));
+    }
+    if !recently_seen {
+        sqlx::query("UPDATE mail_agent_clients SET last_seen_at=unixepoch() WHERE id=?")
+            .bind(&id)
+            .execute(db)
+            .await?;
+    }
+    Ok(id)
 }

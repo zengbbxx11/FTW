@@ -106,7 +106,9 @@ pub struct RegisteredAgent {
     #[serde(default)]
     pub automatic: bool,
     #[serde(default)]
-    pub collaboration_scopes: Vec<crate::agent::Scope>,
+    pub paused: bool,
+    #[serde(default)]
+    pub last_seen_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -212,15 +214,9 @@ pub enum Command {
     RevokeMailAgent {
         id: String,
     },
-    SetAgentCollaboration {
+    SetAgentPaused {
         id: String,
-        scopes: Vec<crate::agent::Scope>,
-    },
-    SetRegisteredCrmRequired {
-        required: bool,
-    },
-    SetRegisteredMailRequired {
-        required: bool,
+        paused: bool,
     },
     ListAccounts,
     SaveAccount {
@@ -532,10 +528,6 @@ pub enum Result {
         agents: Vec<RegisteredAgent>,
         review: Option<PolicyReview>,
         automatic_available: bool,
-        #[serde(default)]
-        require_registered_crm: bool,
-        #[serde(default)]
-        require_registered_mail: bool,
     },
     Accounts {
         rows: Vec<Account>,

@@ -157,12 +157,10 @@ async fn name_available(db: &mut SqliteConnection, id: &str, name: &str) -> Resu
 pub async fn save(pool: &SqlitePool, actor: Actor<'_>, mut input: Definition) -> Result<Reply> {
     let agent = matches!(actor.source, Source::Agent);
     let creating = input.id.is_none();
-    let required_access = if creating {
-        Access::Hidden
-    } else {
-        Access::Write
-    };
-    if agent && input.agent_access != required_access {
+    if agent && creating {
+        input.agent_access = Access::Write;
+    }
+    if agent && input.agent_access != Access::Write {
         return Err(Error::ReadOnly);
     }
     validation::text(&mut input.name, "field_name", 96, true)?;

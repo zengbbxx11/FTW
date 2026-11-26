@@ -62,13 +62,84 @@ async fn open_database(data: &Path) -> SqliteConnection {
 }
 
 #[tokio::test]
+async fn upgrading_preserves_agent_identity_and_allows_pause_and_resume() {
+    use ftw_ipc::{agent::Collaboration, mail};
+    use sha2::{Digest, Sha256};
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let data = root.join("data");
+    fs::create_dir(&data).unwrap();
+    let mut database = open_database(&data).await;
+    let mut previous = sqlx::migrate!("./migrations");
+    previous
+        .migrations
+        .to_mut()
+        .retain(|migration| migration.version <= 26);
+    previous.run(&mut database).await.unwrap();
+    let token = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
+    sqlx::query("INSERT INTO mail_agent_clients(id,name,token_digest,automatic) VALUES ('fixture','Existing Agent',?,1)")
+        .bind(Sha256::digest(token.as_bytes()).to_vec()).execute(&mut database).await.unwrap();
+    database.close().await.unwrap();
+
+    let mut core = CoreProcess::start(root);
+    assert_eq!(core.ready(root).await.schema_version, 27);
+    assert!(fs::read_dir(root.join("backups")).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".db")
+    }));
+    let pipe = PipeEndpoint::for_data_directory(&data).unwrap();
+    let context = Operation::AgentCollaboration {
+        token: mail::Secret(token),
+        command: Box::new(Collaboration::Context),
+    };
+    assert!(
+        matches!(pipe.request(&context).await.unwrap(), Response::AgentData { data }
+        if data["agent"]["id"] == "fixture")
+    );
+    let settings = pipe
+        .request(&Operation::Mail(Box::new(mail::Command::AgentMailSettings)))
+        .await
+        .unwrap();
+    assert!(
+        matches!(settings, Response::Mail {data} if matches!(data.as_ref(),
+        mail::Result::AgentMailSettings { agents, .. } if agents[0].automatic && agents[0].last_seen_at.is_some()))
+    );
+    for paused in [true, false] {
+        let command = mail::Command::SetAgentPaused {
+            id: "fixture".into(),
+            paused,
+        };
+        assert!(matches!(
+            pipe.request(&Operation::Mail(Box::new(command)))
+                .await
+                .unwrap(),
+            Response::Mail { .. }
+        ));
+        let response = pipe.request(&context).await.unwrap();
+        if paused {
+            assert!(matches!(response, Response::Error {code,..} if code == "mail_agent_paused"));
+            assert!(
+                matches!(pipe.request(&Operation::AgentCrm(Box::new(ftw_ipc::agent::Command::Fields))).await.unwrap(),
+                Response::Error {code,..} if code == "mail_agent_unregistered")
+            );
+        } else {
+            assert!(matches!(response, Response::AgentData { .. }));
+        }
+    }
+}
+
+#[tokio::test]
 async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     let directory = Builder::new().prefix("FTW 验收 ").tempdir().unwrap();
     let root = directory.path();
     let mut first = CoreProcess::start(root);
     let health = first.ready(root).await;
     assert_eq!(health.process_id, first.0.id());
-    assert_eq!(health.schema_version, 26);
+    assert_eq!(health.schema_version, 27);
     assert!(matches!(health.storage_mode, StorageMode::Development));
     assert!(health.data_root.contains("FTW 验收 "));
 
@@ -104,7 +175,7 @@ async fn only_one_core_opens_a_profile_and_settings_survive_restart() {
     database.close().await.unwrap();
 
     let mut restarted = CoreProcess::start(root);
-    assert_eq!(restarted.ready(root).await.schema_version, 26);
+    assert_eq!(restarted.ready(root).await.schema_version, 27);
     drop(restarted);
 
     let mut database = open_database(&data).await;
@@ -271,23 +342,8 @@ async fn independent_customer_documents_remain_downloadable_after_backup_restore
         )))
         .await
         .unwrap();
-    let Response::Mail { data } = sender else {
-        panic!("register document client")
-    };
-    let mail::Result::Saved { id: agent_id } = *data else {
-        panic!("register client result")
-    };
-    let grant = pipe
-        .request(&Operation::Mail(Box::new(
-            mail::Command::SetAgentCollaboration {
-                id: agent_id,
-                scopes: vec![agent::Scope::ReadDocuments, agent::Scope::UploadDocuments],
-            },
-        )))
-        .await
-        .unwrap();
     assert!(
-        matches!(grant, Response::Mail { data } if matches!(*data, mail::Result::Saved { .. }))
+        matches!(sender, Response::Mail { data } if matches!(*data, mail::Result::Saved { .. }))
     );
     let collaborate = |command| Operation::AgentCollaboration {
         token: mail::Secret(token.clone()),
@@ -764,7 +820,7 @@ async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
     original.close().await.unwrap();
 
     let mut core = CoreProcess::start(root);
-    assert_eq!(core.ready(root).await.schema_version, 26);
+    assert_eq!(core.ready(root).await.schema_version, 27);
     let snapshot = fs::read_dir(root.join("backups"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -797,6 +853,24 @@ async fn upgrading_m0_takes_a_readable_snapshot_before_changing_schema() {
     backup.close().await.unwrap();
 }
 
+async fn register_fixture_agent(pipe: &PipeEndpoint, name: &str) -> String {
+    let token =
+        uuid::Uuid::new_v4().simple().to_string() + &uuid::Uuid::new_v4().simple().to_string();
+    let response = pipe
+        .request(&Operation::Mail(Box::new(
+            ftw_ipc::mail::Command::RegisterMailAgent {
+                name: name.into(),
+                token: ftw_ipc::mail::Secret(token.clone()),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, Response::Mail { data } if matches!(*data, ftw_ipc::mail::Result::Saved { .. }))
+    );
+    token
+}
+
 async fn revisions(pipe: &PipeEndpoint) -> ftw_ipc::ChangeVersions {
     let Response::Changes { versions } = pipe.request(&Operation::Changes).await.unwrap() else {
         panic!("expected Core change versions")
@@ -812,6 +886,7 @@ async fn agent_detail_review_preserves_a_quantity_confirmed_after_the_proposal()
     let mut core = CoreProcess::start(dir.path());
     core.ready(dir.path()).await;
     let pipe = PipeEndpoint::for_data_directory(&dir.path().join("data")).unwrap();
+    let agent_token = register_fixture_agent(&pipe, "Shared fixture").await;
     let mut input = contact("Confirmed product details", "details@example.test");
     input.interests = vec![crm::Interest {
         id: None,
@@ -837,8 +912,9 @@ async fn agent_detail_review_preserves_a_quantity_confirmed_after_the_proposal()
         panic!("expected customer")
     };
     let result = pipe
-        .request(&Operation::AgentCrm(Box::new(
-            Command::SuggestCustomerDetail {
+        .request(&Operation::RegisteredAgentCrm {
+            token: ftw_ipc::mail::Secret(agent_token.clone()),
+            command: Box::new(Command::SuggestCustomerDetail {
                 request_id: "detail-conflict-test".into(),
                 id: id.clone(),
                 expected_revision: record.record_revision,
@@ -854,8 +930,8 @@ async fn agent_detail_review_preserves_a_quantity_confirmed_after_the_proposal()
                     url: Some("https://example.test/catalog".into()),
                     note: None,
                 },
-            },
-        )))
+            }),
+        })
         .await
         .unwrap();
     assert!(
@@ -863,8 +939,9 @@ async fn agent_detail_review_preserves_a_quantity_confirmed_after_the_proposal()
     );
 
     let result = pipe
-        .request(&Operation::AgentCrm(Box::new(
-            Command::SuggestCustomerDetail {
+        .request(&Operation::RegisteredAgentCrm {
+            token: ftw_ipc::mail::Secret(agent_token.clone()),
+            command: Box::new(Command::SuggestCustomerDetail {
                 request_id: "detail-correction-conflict".into(),
                 id: id.clone(),
                 expected_revision: record.record_revision,
@@ -880,8 +957,8 @@ async fn agent_detail_review_preserves_a_quantity_confirmed_after_the_proposal()
                     url: None,
                     note: None,
                 },
-            },
-        )))
+            }),
+        })
         .await
         .unwrap();
     assert!(
@@ -950,6 +1027,7 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
     let mut core = CoreProcess::start(dir.path());
     core.ready(dir.path()).await;
     let pipe = PipeEndpoint::for_data_directory(&dir.path().join("data")).unwrap();
+    let agent_token = register_fixture_agent(&pipe, "Shared fixture").await;
     let initial = revisions(&pipe).await;
     let mut input = contact("Shared CRM fixture", "shared@example.test");
     input.first_contact_at = Some(1_700_000_000);
@@ -957,12 +1035,13 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
     input.customer_level = "A | 展会".into();
     input.sample_status = "未寄样".into();
     let Response::Crm { data } = pipe
-        .request(&Operation::AgentCrm(Box::new(
-            ftw_ipc::agent::Command::CreateCustomer {
+        .request(&Operation::RegisteredAgentCrm {
+            token: ftw_ipc::mail::Secret(agent_token.clone()),
+            command: Box::new(ftw_ipc::agent::Command::CreateCustomer {
                 request_id: "r1-create".into(),
                 input,
-            },
-        )))
+            }),
+        })
         .await
         .unwrap()
     else {
@@ -989,8 +1068,9 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
         crm::Result::Contacts { rows, .. } if rows.is_empty())
     );
     let response = pipe
-        .request(&Operation::AgentCrm(Box::new(
-            ftw_ipc::agent::Command::UpdateCustomer {
+        .request(&Operation::RegisteredAgentCrm {
+            token: ftw_ipc::mail::Secret(agent_token.clone()),
+            command: Box::new(ftw_ipc::agent::Command::UpdateCustomer {
                 request_id: "r1-update".into(),
                 id: id.clone(),
                 expected_revision: Some(before.record_revision),
@@ -999,8 +1079,8 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
                     sample_status: Some("样品运输中".into()),
                     ..Default::default()
                 }),
-            },
-        )))
+            }),
+        })
         .await
         .unwrap();
     assert!(
@@ -1068,8 +1148,9 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
         );
     }
     let result = pipe
-        .request(&Operation::AgentCrm(Box::new(
-            ftw_ipc::agent::Command::AddActivity {
+        .request(&Operation::RegisteredAgentCrm {
+            token: ftw_ipc::mail::Secret(agent_token.clone()),
+            command: Box::new(ftw_ipc::agent::Command::AddActivity {
                 request_id: "structured-sample-test".into(),
                 input: crm::ActivityInput {
                     contact_id: id.clone(),
@@ -1084,8 +1165,8 @@ async fn agent_write_refreshes_customer_data_and_rejects_stale_desktop_save() {
                     }),
                     ..Default::default()
                 },
-            },
-        )))
+            }),
+        })
         .await
         .unwrap();
     let Response::Crm { data } = result else {

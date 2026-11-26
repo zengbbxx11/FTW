@@ -49,6 +49,8 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 
 MCP 的 `create_customer_profile` 与桌面共用上述原子创建规则，`input` 使用 [`ContactInput`](../crates/ftw-ipc/src/crm.rs)，附带的 `entries` 限 Agent 可写字段。后续读取和写入仍遵守字段的当前访问等级。客户字段历史可以区分人工和 Agent，受限字段的历史仅在桌面查看。
 
+MCP 的 `update_customer_profile` 只提交变动项和当前 `{id, revision, epoch}`。Core 读取当前档案并调用同一保存业务，沿用查重、字段校验和历史记录。`update_customer` 继续处理阶段、等级、备注等增量更新及待核对建议。[MCP 参数说明](MCP_MAIL.md#工具参数与结果)
+
 ## JSON Schema
 
 从 Rust 合约生成命令和响应结构，在项目根目录执行：

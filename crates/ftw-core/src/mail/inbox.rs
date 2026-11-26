@@ -101,15 +101,8 @@ impl MailService {
         response(result)
     }
 
-    pub async fn inbox_session(&self, token: Option<&str>, command: AgentCommand) -> Response {
-        if let Err(error) = self
-            .session_actor(
-                token,
-                ftw_ipc::agent::AccessArea::Mail,
-                &[ftw_ipc::agent::Scope::ReadMail],
-            )
-            .await
-        {
+    pub async fn inbox_session(&self, token: &str, command: AgentCommand) -> Response {
+        if let Err(error) = self.session_actor(token).await {
             return response(Err(error));
         }
         self.agent_inbox(command).await

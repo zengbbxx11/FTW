@@ -1,195 +1,93 @@
-use super::{
-    audit, check_text, file_workspace, policy, response, Failure, MailService, Reply, Result,
-};
+use super::agent_context::agent_data;
+use super::{check_text, file_workspace, policy, response, Failure, MailService, Reply, Result};
 use crate::crm::{self, Actor};
 use ftw_ipc::{
-    agent::{AccessArea, Collaboration, Command, Scope},
+    agent::{Collaboration, Command},
     crm::{Command as CrmCommand, Source},
     Response,
 };
 
 impl MailService {
-    pub(super) async fn set_collaboration(
-        &self,
-        id: &str,
-        mut scopes: Vec<Scope>,
-    ) -> Result<Reply> {
-        scopes.sort_unstable_by_key(|scope| *scope as u8);
-        scopes.dedup();
-        let encoded = serde_json::to_string(&scopes)
-            .map_err(|_| Failure::Code("invalid_agent_collaboration_scopes"))?;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let changed = sqlx::query(
-            "UPDATE mail_agent_clients SET collaboration_scopes=? WHERE id=? AND NOT revoked",
-        )
-        .bind(encoded)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if changed == 0 {
-            return Err(Failure::Code("mail_agent_unregistered"));
-        }
-        audit(
-            &mut tx,
-            Source::Manual,
-            "mail_agent_settings",
-            id,
-            "set_collaboration_scopes",
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(Reply::Saved { id: id.into() })
+    pub(super) async fn session_actor(&self, token: &str) -> Result<String> {
+        let mut db = self.pool.acquire().await?;
+        policy::registered(&mut db, policy::digest(token)?).await
     }
 
-    async fn registered_collaborator(&self, token: &str) -> Result<(String, Vec<Scope>)> {
-        let (id, encoded): (String, String) = sqlx::query_as(
-            "SELECT id,collaboration_scopes FROM mail_agent_clients WHERE token_digest=? AND NOT revoked")
-            .bind(policy::digest(token)?).fetch_optional(&self.pool).await?
-            .ok_or(Failure::Code("mail_agent_unregistered"))?;
-        let scopes: Vec<Scope> =
-            serde_json::from_str(&encoded).map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
-        Ok((id, scopes))
-    }
-
-    pub(super) async fn set_registration_required(
-        &self,
-        area: AccessArea,
-        required: bool,
-    ) -> Result<Reply> {
-        let (column, allowed, restricted) = match area {
-            AccessArea::Crm => (
-                "require_registered_crm",
-                "allow_legacy_crm",
-                "require_registered_crm",
-            ),
-            AccessArea::Mail => (
-                "require_registered_mail",
-                "allow_legacy_mail",
-                "require_registered_mail",
-            ),
-        };
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        sqlx::query(&format!(
-            "UPDATE agent_collaboration_settings SET {column}=? WHERE id=1"
-        ))
-        .bind(required)
-        .execute(&mut *tx)
-        .await?;
-        audit(
-            &mut tx,
-            Source::Manual,
-            "mail_agent_settings",
-            "profile",
-            if required { restricted } else { allowed },
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(Reply::Saved {
-            id: "profile".into(),
-        })
-    }
-
-    pub(super) async fn session_actor(
-        &self,
-        token: Option<&str>,
-        area: AccessArea,
-        accepted: &[Scope],
-    ) -> Result<(Option<String>, bool)> {
-        let statement = match area {
-            AccessArea::Crm => {
-                "SELECT require_registered_crm FROM agent_collaboration_settings WHERE id=1"
-            }
-            AccessArea::Mail => {
-                "SELECT require_registered_mail FROM agent_collaboration_settings WHERE id=1"
-            }
-        };
-        let required: bool = sqlx::query_scalar(statement).fetch_one(&self.pool).await?;
-        match (token, required) {
-            (Some(token), _) => {
-                let (id, scopes) = self.registered_collaborator(token).await?;
-                if required && !accepted.iter().any(|scope| scopes.contains(scope)) {
-                    return Err(Failure::Code("agent_collaboration_not_authorized"));
-                }
-                Ok((Some(id), required))
-            }
-            (None, false) => Ok((None, false)),
-            (None, true) => Err(Failure::Code("mail_agent_unregistered")),
-        }
-    }
-
-    pub async fn collaborate_crm(&self, token: Option<&str>, command: Command) -> Response {
-        let (actor, required) = match self
-            .session_actor(token, AccessArea::Crm, &[command.scope()])
-            .await
-        {
-            Ok(value) => value,
+    pub async fn collaborate_crm(&self, token: &str, command: Command) -> Response {
+        let id = match self.session_actor(token).await {
+            Ok(id) => id,
             Err(error) => return response(Err(error)),
         };
-        if required
-            && matches!(
-                &command,
-                Command::UpdateCustomer {
-                    expected_revision: None,
-                    ..
-                } | Command::UpdateCustomer {
-                    expected_epoch: None,
-                    ..
-                }
-            )
-        {
+        if matches!(
+            &command,
+            Command::UpdateCustomer {
+                expected_revision: None,
+                ..
+            } | Command::UpdateCustomer {
+                expected_epoch: None,
+                ..
+            }
+        ) {
             return response(Err(Failure::Code("agent_crm_revision_required")));
         }
-        crate::agent::crm_call(&self.pool, command, actor.as_deref()).await
+        crate::agent::crm_call(&self.pool, command, Some(&id)).await
     }
 
     pub async fn collaborate(&self, token: &str, command: Collaboration) -> Response {
         use ftw_ipc::agent::{CompanyChange, CustomerBatchChange, LeadDecision};
-        let (id, scopes) = match self.registered_collaborator(token).await {
-            Ok(collaborator) => collaborator,
+        let id = match self.session_actor(token).await {
+            Ok(id) => id,
             Err(error) => return response(Err(error)),
         };
-        let creates_contact = matches!(&command, Collaboration::ManageCompany { change, .. }
-            if matches!(change.as_ref(), CompanyChange::CreateContact { .. }));
-        let requires_crm_read = matches!(
-            &command,
-            Collaboration::PreviewCustomerBatch { .. }
-                | Collaboration::UpdateCustomerBatch { .. }
-                | Collaboration::MailAnalytics { .. }
-                | Collaboration::ReviewLead { .. }
-                | Collaboration::ReviewEvidence { .. }
-                | Collaboration::ConfirmReplyLink { .. }
-        );
-        let requires_crm_write = creates_contact
-            || matches!(
-                &command,
-                Collaboration::UpdateCustomerBatch { .. }
-                    | Collaboration::ReviewLead {
-                        decision: LeadDecision::Promote,
-                        ..
-                    }
-            );
-        let requires_mail_read = matches!(
-            &command,
-            Collaboration::MailAnalytics { .. }
-                | Collaboration::ConfirmReplyLink { .. }
-                | Collaboration::CreateReplyDraft { .. }
-        );
-        if command
-            .scope()
-            .is_some_and(|scope| !scopes.contains(&scope))
-            || (requires_crm_read && !scopes.contains(&Scope::ReadCrm))
-            || (requires_crm_write && !scopes.contains(&Scope::WriteCrm))
-            || (requires_mail_read && !scopes.contains(&Scope::ReadMail))
-        {
-            return response(Err(Failure::Code("agent_collaboration_not_authorized")));
-        }
         let actor = Actor {
             source: Source::Agent,
             id: &id,
             agent_run_id: None,
         };
         let mail = match command {
+            Collaboration::Context => return agent_data(self.agent_context(&id).await),
+            Collaboration::Definitions {
+                kind,
+                known_version,
+            } => {
+                return self.agent_definitions(&id, kind, known_version).await;
+            }
+            Collaboration::DraftStatuses { ids } => {
+                return agent_data(self.draft_statuses(ids).await)
+            }
+            Collaboration::UpdateCustomerProfile {
+                request_id,
+                target,
+                patch,
+            } => {
+                let operation = "update_customer_profile";
+                if let Err(reply) = crate::agent::claim_for(
+                    &self.pool,
+                    operation,
+                    &request_id,
+                    &(&target, &patch),
+                    Some(&id),
+                )
+                .await
+                {
+                    return reply;
+                }
+                let actor = Actor {
+                    agent_run_id: Some(&request_id),
+                    ..actor
+                };
+                let reply = crm::response(
+                    crm::contacts::patch_profile(&self.pool, target, *patch, actor).await,
+                );
+                return crate::agent::finish_for(
+                    &self.pool,
+                    operation,
+                    &request_id,
+                    reply,
+                    Some(&id),
+                )
+                .await;
+            }
             Collaboration::CreateCustomerProfile {
                 request_id,
                 input,
@@ -233,10 +131,8 @@ impl MailService {
                 offset,
             } => {
                 return data_response(
-                    crate::data::search::search_for_agent(
-                        &self.pool, &keyword, category, offset, &scopes,
-                    )
-                    .await,
+                    crate::data::search::search_for_agent(&self.pool, &keyword, category, offset)
+                        .await,
                 );
             }
             Collaboration::CustomerQuality {
@@ -244,19 +140,8 @@ impl MailService {
                 keyword,
                 offset,
             } => {
-                let include_mail = scopes.contains(&Scope::ReadMail);
-                if category.mail_related() && !include_mail {
-                    return response(Err(Failure::Code("agent_collaboration_not_authorized")));
-                }
                 return crm::response(
-                    crm::quality::list_scoped(
-                        &self.pool,
-                        category.as_str(),
-                        &keyword,
-                        offset,
-                        include_mail,
-                    )
-                    .await,
+                    crm::quality::list(&self.pool, category.as_str(), &keyword, offset).await,
                 );
             }
             Collaboration::PreviewCustomerBatch { query } => {
@@ -317,13 +202,7 @@ impl MailService {
             } => {
                 return data_response(
                     crate::data::audit_workspace::list_scoped(
-                        &self.pool,
-                        offset,
-                        &source,
-                        &entity,
-                        &keyword,
-                        days,
-                        Some(&scopes),
+                        &self.pool, offset, &source, &entity, &keyword, days, true,
                     )
                     .await,
                 );
@@ -827,8 +706,7 @@ impl MailService {
                 offset,
             } => {
                 return data_response(
-                    crate::data::agent_runs::list(&self.pool, filter, &keyword, offset, Some(&id))
-                        .await,
+                    crate::data::agent_runs::list(&self.pool, filter, &keyword, offset, None).await,
                 );
             }
             Collaboration::UpdateMailJob { job_id, job_action } => {
@@ -859,12 +737,22 @@ impl MailService {
                 self.save_with_assets(Some(id), input, actor, None, Some(expected_revision))
                     .await
             }
-            Collaboration::MailTask { task_id, offset } => {
+            Collaboration::MailTask {
+                task_id,
+                agent_id,
+                offset,
+            } => {
                 if let Err(error) = check_text(&task_id, 120) {
                     return response(Err(error));
                 }
                 return data_response(
-                    crate::data::agent_runs::mail_jobs(&self.pool, &id, &task_id, offset).await,
+                    crate::data::agent_runs::mail_jobs(
+                        &self.pool,
+                        agent_id.as_deref(),
+                        &task_id,
+                        offset,
+                    )
+                    .await,
                 );
             }
         };

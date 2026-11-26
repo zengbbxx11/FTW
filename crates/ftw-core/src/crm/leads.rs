@@ -371,21 +371,6 @@ pub async fn promote(
     if row.get::<&str, _>("review_status") != "pending" {
         return Err(Error::ReadOnly);
     }
-    if matches!(actor.source, Source::Agent) {
-        // The last saved identity must have been reviewed in the desktop form.
-        let human_checked: bool = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT source='manual' FROM audit_logs
-             WHERE entity='lead' AND entity_id=? AND operation IN ('create','update')
-             ORDER BY rowid DESC LIMIT 1),0)",
-        )
-        .bind(&id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if !human_checked || allow_duplicate {
-            return Err(Error::Invalid("lead_promotion_review_required"));
-        }
-    }
-
     let lead = input_from(&row)?;
     let methods = if lead.email.is_empty() {
         Vec::new()

@@ -28,6 +28,7 @@ pub fn guidance(code: &str) -> Guidance {
                 | "result_encoding_failed"
                 | "agent_collaboration_not_authorized"
                 | "mail_agent_unregistered"
+                | "mail_agent_paused"
                 | "mail_agent_not_authorized"
                 | "agent_policy_not_authorized"
                 | "lead_promotion_review_required"

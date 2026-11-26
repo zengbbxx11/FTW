@@ -14,7 +14,7 @@ Tauri 2 + React/TypeScript/Vite、Rust/Tokio Core、SQLite/SQLx、MCP stdio。Co
 
 ## 人工与 Agent 共用工作台
 
-桌面用户与 Codex、WorkBuddy 等 MCP 客户端共用同一数据目录和 Rust Core 业务规则。桌面和 MCP 都使用受支持的业务命令。人工审批、发送授权管理及凭据操作由工作台内的相应权限控制。Core 提交后的数据变更应反映到已打开的工作台，操作保留来源与审计。
+桌面用户与 Codex、WorkBuddy 等 MCP 客户端共用同一数据目录和 Rust Core 业务规则。桌面和 MCP 都使用受支持的业务命令。可信 Agent 凭有效登记令牌共享普通业务，工作台可以暂停、恢复和撤销接入。人工审批、发送授权管理及凭据操作由工作台内的相应权限控制。Core 提交后的数据变更应反映到已打开的工作台，操作保留来源与审计。
 
 ## 硬性安全底线
 

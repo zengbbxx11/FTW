@@ -145,7 +145,7 @@ pub(crate) async fn list(
 
 pub(crate) async fn mail_jobs(
     pool: &SqlitePool,
-    agent: &str,
+    agent: Option<&str>,
     task: &str,
     offset: u32,
 ) -> Result<Reply> {
@@ -159,7 +159,7 @@ pub(crate) async fn mail_jobs(
          JOIN contacts original ON original.id=d.contact_id JOIN contacts c ON c.id=coalesce(original.merged_into,original.id)
          LEFT JOIN email_messages e ON e.outbox_id=j.id
          LEFT JOIN bounced b ON b.outbox_id=j.id
-         WHERE j.agent_id=? AND j.task_id=? ORDER BY occurred_at DESC,j.id LIMIT 21 OFFSET ?");
+         WHERE (?1 IS NULL OR j.agent_id=?1) AND j.task_id=?2 ORDER BY occurred_at DESC,j.id LIMIT 21 OFFSET ?3");
     let mut rows = sqlx::query(&statement)
         .bind(agent)
         .bind(task)

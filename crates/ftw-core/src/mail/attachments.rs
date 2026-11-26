@@ -52,13 +52,6 @@ impl MailService {
         Ok(Reply::Assets { rows })
     }
 
-    pub(super) async fn list_agent_assets(&self, token: &str) -> Result<Reply> {
-        let mut db = self.pool.acquire().await?;
-        super::policy::registered(&mut db, super::policy::digest(token)?).await?;
-        drop(db);
-        self.list_assets(true).await
-    }
-
     pub(super) async fn attach_agent_assets(
         &self,
         token: &str,
@@ -67,18 +60,33 @@ impl MailService {
         ids: &[String],
     ) -> Result<Reply> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        super::policy::registered(&mut tx, super::policy::digest(token)?).await?;
+        let agent = super::policy::registered(&mut tx, super::policy::digest(token)?).await?;
         let assets = select(&mut tx, ids, true).await?;
         for asset in &assets {
             read_asset(self.objects()?, asset).await?;
         }
-        let changed = sqlx::query("UPDATE email_drafts SET asset_ids_json=?,attachments_json='[]',revision=revision+1,
-                updated_at=unixepoch() WHERE id=? AND source='agent' AND revision=? AND state='draft'")
-            .bind(serde_json::json!(ids).to_string()).bind(id).bind(revision).execute(&mut *tx).await?;
+        let changed = sqlx::query(
+            "UPDATE email_drafts SET asset_ids_json=?,attachments_json='[]',revision=revision+1,
+                updated_at=unixepoch() WHERE id=? AND revision=? AND state='draft'",
+        )
+        .bind(serde_json::json!(ids).to_string())
+        .bind(id)
+        .bind(revision)
+        .execute(&mut *tx)
+        .await?;
         if changed.rows_affected() != 1 {
             return Err(Failure::Code("approval_snapshot_changed"));
         }
-        audit(&mut tx, Source::Agent, "email_draft", id, "attach_assets").await?;
+        super::audit_as(
+            &mut tx,
+            Source::Agent,
+            &agent,
+            "email_draft",
+            id,
+            "attach_assets",
+            None,
+        )
+        .await?;
         tx.commit().await?;
         Ok(Reply::Saved { id: id.to_owned() })
     }

@@ -155,16 +155,11 @@ async function withMcp(token, work) {
 
 const token = randomBytes(32).toString('hex')
 const secondToken = randomBytes(32).toString('hex')
-const scopes = ['read_crm', 'write_crm', 'read_mail', 'create_drafts', 'manage_fields', 'manage_views',
-  'edit_activities', 'read_documents', 'upload_documents', 'edit_drafts', 'read_audit', 'read_tasks',
-  'archive_contacts', 'merge_contacts', 'import_customers', 'export_customers',
-  'read_mail_attachments', 'suggest_reply_links', 'manage_mail_tasks', 'manage_templates', 'edit_leads', 'manage_companies']
 const now = Math.floor(Date.now() / 1000)
 const crm = command => desktop('crm', command)
 const mail = command => desktop('mail', command)
 const template = { name: 'Parity Agent Template', purpose: 'first_outreach', subject: 'Hello {{contact_name}}', body: 'Parity template body' }
 const companyInput = { name: 'Parity Shared Company', website: '', notes: 'Initial company notes', aliases: ['Parity Shared Alias'] }
-const fixtureTarget = { id: 'fake', revision: 1, epoch: 'fake' }
 
 function openFixtureDb(path) {
   const db = new DatabaseSync(path)
@@ -266,21 +261,9 @@ async function verifyCompany(call, writableField, hiddenField) {
 
 try {
   await visible('客户管理', '.app-nav button')
-  const agent = await mail({ action: 'register_mail_agent', name: 'Codex Parity', token })
-  const secondaryAgent = await mail({ action: 'register_mail_agent', name: 'WorkBuddy Parity', token: secondToken })
-  await mail({ action: 'set_agent_collaboration', id: agent.id, scopes })
-  await mail({ action: 'set_agent_collaboration', id: secondaryAgent.id, scopes: ['read_crm'] })
-  await mail({ action: 'set_registered_crm_required', required: true })
-  await mail({ action: 'set_registered_mail_required', required: true })
 
   const account = 'parity-fixture-account'
   const dbpath = join(profile, 'data', 'workbench.db')
-  const db = openFixtureDb(dbpath)
-  // The account only enables draft validation. This test never queues network mail.
-  db.exec("INSERT INTO local_secrets(id,protected) VALUES('parity-fixture',X''); " +
-    "INSERT INTO email_accounts(id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,secret_ref) " +
-    "VALUES('parity-fixture-account','Parity fixture','sender@example.test','invalid.example.test',465,'tls','sender@example.test','parity-fixture')")
-  db.close()
 
   await click('.app-nav button', '客户管理')
   const humanName = 'Parity Human Customer'
@@ -292,38 +275,22 @@ try {
   await click('main button', '保存客户')
   await visible(humanName)
   await click('.app-nav button', '客户管理')
-  console.log('Desktop created a contact through the customer form')
+  console.log('Desktop started and created a contact before Agent registration')
 
+  const agent = await mail({ action: 'register_mail_agent', name: 'Codex Parity', token })
+  await mail({ action: 'register_mail_agent', name: 'WorkBuddy Parity', token: secondToken })
+  const db = openFixtureDb(dbpath)
+  // The account only enables draft validation. This test never queues network mail.
+  db.exec("INSERT INTO local_secrets(id,protected) VALUES('parity-fixture',X''); " +
+    "INSERT INTO email_accounts(id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,secret_ref) " +
+    "VALUES('parity-fixture-account','Parity fixture','sender@example.test','invalid.example.test',465,'tls','sender@example.test','parity-fixture')")
+  db.close()
   await withMcp(undefined, call => call('list_customers', {}, /mail_agent_unregistered/))
   await withMcp(secondToken, async call => {
-    await call('list_customers')
-    await call('create_customer', { request_id: 'parity-denied-create', display_name: 'Denied fixture' }, /agent_collaboration_not_authorized/)
-    await call('list_customer_documents', { contact_id: 'missing' }, /agent_collaboration_not_authorized/)
-    await call('list_email_drafts', {}, /agent_collaboration_not_authorized/)
-    await call('list_inbox', {}, /agent_collaboration_not_authorized/)
-    await call('read_email_attachment', { source: 'inbox', message_id: 'fixture', index: 0 }, /agent_collaboration_not_authorized/)
-    await call('export_customer_csv', { scope: 'active', fields: ['display_name'] }, /agent_collaboration_not_authorized/)
-    const archivedTarget = { id: 'denied', revision: 1, epoch: 'denied' }
-    await call('merge_customers', { primary: archivedTarget, secondary: archivedTarget }, /agent_collaboration_not_authorized/)
-    await call('list_email_templates', { archived: true }, /agent_collaboration_not_authorized/)
-    await call('save_email_template', { request_id: 'parity-template-denied', input: template }, /agent_collaboration_not_authorized/)
-    await call('update_lead_candidate', { lead_id: 'fixture', request_id: 'lead-edit-denied', expected: { revision: 1, epoch: 'fixture' },
-      patch: { research_notes: 'Denied' } }, /agent_collaboration_not_authorized/)
-    await call('list_archived_customer_views', {}, /agent_collaboration_not_authorized/)
-    await call('list_archived_customer_fields', {}, /agent_collaboration_not_authorized/)
-    await call('set_company_membership', { request_id: 'parity-company-denied', contact: fixtureTarget,
-      change: { action: 'unlink' } }, /agent_collaboration_not_authorized/)
-  })
-  await mail({ action: 'set_agent_collaboration', id: secondaryAgent.id, scopes: ['read_crm', 'manage_templates', 'manage_companies'] })
-  await withMcp(secondToken, async call => {
-    assert.deepEqual((await call('list_email_templates')).rows, [])
-    assert.deepEqual((await call('list_email_templates', { archived: true })).rows, [])
-    await call('list_inbox', {}, /agent_collaboration_not_authorized/)
-    await call('search_workbench', { keyword: 'Parity', category: 'mail' }, /agent_collaboration_not_authorized/)
     const found = await call('search_workbench', { keyword: humanName })
     assert.deepEqual(found.counts, { all: 1, customer: 1, mail: 0, activity: 0, file: 0 })
-    await call('create_company_contact', { request_id: 'parity-company-no-create-grant', profile: fixtureTarget,
-      input: { display_name: 'Denied company contact' } }, /agent_collaboration_not_authorized/)
+    assert.deepEqual((await call('list_inbox')).rows, [])
+    await call('create_customer', { request_id: 'parity-secondary-create', display_name: 'Secondary fixture' })
   })
 
   await withMcp(token, async call => {
@@ -382,7 +349,8 @@ try {
       kind: 'text', color: 'gray', agent_access: 'hidden', show_in_details: true, default_value: null, options: [] }
     const agentField = await call('save_customer_field_definition', definition)
     assert.ok((await crm({ action: 'list_fields', include_archived: false })).fields.some(row => row.id === agentField.id))
-    assert.ok(!(await call('list_customer_fields')).fields.some(row => row.id === agentField.id))
+    assert.ok((await call('list_customer_fields')).fields.some(row => row.id === agentField.id && row.agent_access === 'write'))
+    await crm({ action: 'save_field', definition: { ...definition, id: agentField.id, expected_revision: 1 } })
     await call('save_customer_field_definition', { ...definition, id: agentField.id, expected_revision: 1, agent_access: 'write' }, /crm_read_only/)
     const latest = (await call('get_customer_field_values', { contact_id: created.id })).record
     await crm({ action: 'patch_field_values', patch: { contact_id: created.id,
@@ -455,9 +423,12 @@ try {
       subject: 'Parity desktop draft', body: 'Synthetic message, never sent.' }
     const humanDraft = await mail({ action: 'save_draft', id: null, input: draft })
     assert.ok((await call('list_email_drafts', { contact_id: created.id })).rows.some(row => row.id === humanDraft.id))
-    const agentDraft = await call('create_email_draft', { ...draft, subject: 'Parity Agent draft', request_id: 'parity-draft-create' })
+    const agentDraft = await call('create_email_draft', { contact_id: draft.contact_id,
+      subject: 'Parity Agent draft', body: draft.body, request_id: 'parity-draft-create' })
     const opened = (await mail({ action: 'get_draft', id: agentDraft.id })).record
     assert.equal(opened.subject, 'Parity Agent draft')
+    assert.equal(opened.account_id, account)
+    assert.equal(opened.recipient, draft.recipient)
     await mail({ action: 'update_draft', id: agentDraft.id, expected_revision: opened.revision, asset_ids: null,
       input: { ...draft, subject: 'Parity desktop edited Agent draft' } })
     await call('edit_email_draft', { ...draft, draft_id: agentDraft.id, expected_revision: opened.revision }, /mail_revision_conflict/)
@@ -554,7 +525,7 @@ try {
       row.record.agent_id === agent.id && row.record.success === true && row.record.retryable === false))
     assert.ok((await call('list_agent_runs', { keyword: 'parity-stale-contact' })).rows.some(row =>
       row.record.success === false && row.record.retryable === true))
-    assert.deepEqual((await call('list_agent_runs', { keyword: 'WorkBuddy Parity' })).rows, [])
+    assert.ok((await call('list_agent_runs', { keyword: 'WorkBuddy Parity' })).rows.some(row => row.record.request_id === 'parity-secondary-create'))
 
     // Only terminal SMTP fixtures are inserted in the desktop profile. Loopback testing of live queue transitions is in Rust.
     const cases = openFixtureDb(dbpath)
@@ -762,7 +733,7 @@ try {
     assert.ok(auditLead.rows.some(row => row.entity_id === leadId && row.actor_name === 'Codex Parity' && row.task_id === leadChange.request_id))
     console.log('Lead candidate edits verified in both directions, including review protection, provenance and stale versions')
 
-    const companyLink = await verifyCompany(call, field.id, agentField.id)
+    await verifyCompany(call, field.id, agentField.id)
     const querySearch = (keyword, category = 'all') => call('search_workbench', { keyword, category })
     const assetsDb = openFixtureDb(dbpath)
     try {
@@ -777,17 +748,17 @@ try {
     assert.deepEqual(await querySearch(term), await desktop('data', { action: 'search', keyword: term, category: 'all', offset: 0 }))
     assert.ok((await querySearch('reply.pdf', 'file')).rows.some(row => row.target.record_type === 'inbox_attachment'))
     assert.ok((await querySearch('parity-agent-document.pdf', 'file')).rows.some(row => row.target.record_type === 'document'))
-    await mail({ action: 'set_agent_collaboration', id: secondaryAgent.id, scopes: ['read_crm', 'read_documents', 'manage_templates', 'manage_companies'] })
     await withMcp(secondToken, async read => {
-      const restricted = await read('search_workbench', { keyword: term })
-      assert.deepEqual(restricted.rows.map(row => row.target.record_type), ['activity'])
-      assert.deepEqual(restricted.counts, { all: 1, customer: 0, mail: 0, activity: 1, file: 0 })
-      assert.equal((await querySearch('Reply body.')).counts.mail, 1)
-      assert.equal((await read('search_workbench', { keyword: 'Reply body.' })).counts.all, 0)
-      assert.equal((await read('search_workbench', { keyword: 'reply.pdf', category: 'file' })).counts.file, 0)
-      assert.equal((await read('search_workbench', { keyword: 'parity-agent-document.pdf', category: 'file' })).counts.file, 1)
+      assert.deepEqual(await read('search_workbench', { keyword: term }), await querySearch(term))
+      assert.equal((await read('search_workbench', { keyword: 'reply.pdf', category: 'file' })).counts.file, 1)
+      assert.equal((await read('search_workbench', { keyword: privateFile, category: 'file' })).counts.file, 0)
+      const contact = (await read('get_customer', { contact_id: created.id })).record
+      await read('update_customer_profile', { request_id: 'parity-secondary-edit',
+        target: { id: contact.id, revision: contact.record_revision, epoch: contact.data_epoch },
+        patch: { alibaba_buyer_id: 'shared-buyer' } })
     })
-    console.log('Scoped search verified with desktop-equivalent results and hidden mail counts and attachment metadata')
+    assert.equal((await call('get_customer', { contact_id: created.id })).record.input.alibaba_buyer_id, 'shared-buyer')
+    console.log('Both registered Agents share search and can edit the same customer')
 
     const fieldVersion = (await call('list_customer_fields')).fields.find(row => row.id === field.id).revision
     await click('.app-nav button', '客户管理')
@@ -802,7 +773,8 @@ try {
       columns: [{ field: field.id, label: null, width: 150, hidden: false }] } })
     await call('set_customer_field_archived', { ...archiveField, request_id: 'parity-field-dependency' }, /field_in_use_by_view/)
     await crm({ action: 'archive_view', id: viewUsingField.id, expected_revision: 1, archived: true })
-    await desktop('crm', { action: 'archive_field', id: agentField.id, expected_revision: 1, archived: true })
+    const privateField = (await crm({ action: 'list_fields', include_archived: false })).fields.find(row => row.id === agentField.id)
+    await desktop('crm', { action: 'archive_field', id: agentField.id, expected_revision: privateField.revision, archived: true })
     await call('set_customer_field_archived', { ...archiveField, request_id: 'parity-field-hidden', field_id: agentField.id }, /crm_read_only/)
     const beforeArchive = (await call('get_customer_field_values', { contact_id: created.id })).record.entries.find(row => row.field_id === field.id)
     const archivedField = await call('set_customer_field_archived', archiveField)
@@ -831,28 +803,25 @@ try {
     assert.deepEqual((await call('query_customer_view', { view_id: viewUsingField.id })).rows.map(row => row.id), [created.id])
     console.log('Shared custom field archive and restore preserved values and view filters with field-level scope checks')
 
-    await mail({ action: 'set_agent_collaboration', id: agent.id, scopes: scopes.filter(scope => !['read_documents', 'manage_templates', 'edit_leads', 'manage_companies'].includes(scope)) })
-    await call('set_company_membership', companyLink, /agent_collaboration_not_authorized/)
-    await call('update_lead_candidate', leadChange, /agent_collaboration_not_authorized/)
-    await call('set_email_template_archived', archive, /agent_collaboration_not_authorized/)
-    await call('read_customer_document', { document_id: uploaded.id }, /agent_collaboration_not_authorized/)
+    await mail({ action: 'set_agent_paused', id: agent.id, paused: true })
+    await call('get_customer', { contact_id: created.id }, /mail_agent_paused/)
+    await mail({ action: 'set_agent_paused', id: agent.id, paused: false })
+    assert.equal((await call('get_customer', { contact_id: created.id })).record.id, created.id)
     await mail({ action: 'revoke_mail_agent', id: agent.id })
     await call('get_customer', { contact_id: created.id }, /mail_agent_unregistered/)
-    console.log('Registered access, separate grants and live revocation verified')
+    console.log('Registered access, pause, resume and revocation verified')
   })
   await click('.app-nav button', '邮件中心')
   await click('.mail-folders button', 'Agent 发信权限')
-  await visible('Agent 协作权限')
-  await visible('创建字段和维护已共享字段（排序、归档及恢复）', '.agent-administration label')
-  await click('.agent-administration .agent-policy-pills label', '维护公司档案和联系人归属')
-  await click('.agent-administration form button', '保存协作权限')
-  await visible('Agent 协作权限已保存')
-  await withMcp(secondToken, async call => {
-    await call('set_company_membership', { request_id: 'parity-company-ui-revoked', contact: fixtureTarget,
-      change: { action: 'unlink' } }, /agent_collaboration_not_authorized/)
-  })
-  assert.ok(await evaluate('Array.from(document.querySelectorAll(".agent-policy-choice input")).filter(input => input.checked).length >= 2'))
-  console.log('Desktop renders the collaboration editor and persisted registration settings')
+  await visible('Agent 登记')
+  await visible('最近连接', '.agent-administration')
+  await click('.agent-administration button', '暂停接入')
+  await visible('Agent 已暂停')
+  await withMcp(secondToken, call => call('get_workbench_context', {}, /mail_agent_paused/))
+  await click('.agent-administration button', '恢复接入')
+  await visible('Agent 已恢复')
+  await withMcp(secondToken, call => call('get_workbench_context'))
+  console.log('Desktop pause and resume control live MCP access')
 } finally {
   app.kill()
   try {

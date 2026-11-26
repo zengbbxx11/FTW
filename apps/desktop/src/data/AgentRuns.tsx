@@ -13,6 +13,7 @@ type OpenRecord = (kind: AgentRecordLink, id: string) => void
 const filters = { all: '全部记录', active: '队列处理中', recorded: '已有结果', attention: '需核对' } as const
 const operations: Record<string, { label: string; link?: AgentRecordLink }> = {
   create_customer: { label: '新建客户', link: 'contact' }, update_customer: { label: '补充客户资料', link: 'contact' },
+  update_customer_profile: { label: '更新客户档案', link: 'contact' },
   create_customer_profile: { label: '新建完整客户档案', link: 'contact' },
   create_lead: { label: '登记候选客户', link: 'lead' }, add_activity: { label: '添加跟进记录', link: 'activity' },
   update_lead_candidate: { label: '补充候选客户资料', link: 'lead' },

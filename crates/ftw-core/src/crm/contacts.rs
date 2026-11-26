@@ -323,6 +323,40 @@ pub(super) async fn record_on(db: &mut SqliteConnection, id: &str) -> Result<Con
     })
 }
 
+pub(crate) async fn patch_profile(
+    pool: &SqlitePool,
+    target: ftw_ipc::views::CellTarget,
+    patch: ftw_ipc::agent::ProfilePatch,
+    actor: Actor<'_>,
+) -> Result<Reply> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let record = record_on(&mut tx, &target.id).await?;
+    if record.record_revision != target.revision || record.data_epoch != target.epoch {
+        return Err(Error::Conflict(record.record_revision));
+    }
+    let mut input = record.input;
+    input.display_name = patch.display_name.unwrap_or(input.display_name);
+    input.company_name = patch.company_name.unwrap_or(input.company_name);
+    input.country_region = patch.country_region.unwrap_or(input.country_region);
+    input.customer_type = patch.customer_type.unwrap_or(input.customer_type);
+    input.customer_source = patch.customer_source.unwrap_or(input.customer_source);
+    input.first_contact_channel = patch
+        .first_contact_channel
+        .unwrap_or(input.first_contact_channel);
+    input.bulk_order_status = patch.bulk_order_status.unwrap_or(input.bulk_order_status);
+    input.website_url = patch.website_url.unwrap_or(input.website_url);
+    input.alibaba_buyer_id = patch.alibaba_buyer_id.unwrap_or(input.alibaba_buyer_id);
+    if let Some(dates) = patch.dates {
+        input.first_contact_at = dates.first_contact_at;
+        input.last_contact_at = dates.last_contact_at;
+    }
+    input.methods = patch.methods.unwrap_or(input.methods);
+    input.interests = patch.interests.unwrap_or(input.interests);
+    let reply = save(&mut tx, Some(target.id), input, false, actor).await?;
+    tx.commit().await?;
+    Ok(reply)
+}
+
 pub async fn save(
     connection: &mut SqliteConnection,
     id: Option<String>,

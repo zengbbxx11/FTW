@@ -1,78 +1,71 @@
 # FTW 外贸智能工作台
 
-FTW 是面向 Windows 10/11 x64 的本地外贸工作台。桌面用户和外部 Agent 通过同一个 Rust Core 使用客户、候选资料、邮件会话、跟进、样品和文件，变更会反映到已打开的工作台。当前源码的程序版本为 `1.1.5`，包含的最新数据库迁移版本为 `26`。正式便携 ZIP 和跨设备验收状态见[验收记录](docs/ACCEPTANCE_TESTS.md#已记录的验证)。
+FTW 是一款运行在 Windows 上的本地外贸工作台，用于管理客户、跟进沟通和邮件开发。你可以自己在桌面操作，也可以让 WorkBuddy、Codex 等支持 MCP 的 Agent 协助处理同一份业务资料。
+
+![FTW 客户管理界面](docs/ui-review/after/customers-1600.png)
+
+*客户管理界面，图中使用示例数据。*
+
+## 主要功能
+
+- **客户管理**：记录联系人、公司、联系方式、客户阶段、产品兴趣、样品进度、调查资料和自定义字段；支持视图、筛选、查重和跟进记录。
+- **邮件工作**：配置 SMTP 和 IMAP，管理邮件草稿、模板、发送记录、客户回复及邮件与客户的关联。
+- **Agent 协作**：通过本地 MCP 连接 WorkBuddy、Codex 等客户端，查询和维护客户资料、整理跟进记录、创建草稿，并按工作台中设置的权限发信。
+- **数据管理**：提供 CSV 导入导出、客户文件、备份恢复、操作审计和诊断报告。
 
 ## 开始使用
 
-1. 打开工作台，在「系统状态」确认数据目录。在「邮件中心 → 发件账户」配置 SMTP，在「收件设置」配置并测试 IMAP。仅使用 CRM 时可跳过邮箱配置。
-2. 人工或 Agent 通过各自的数据来源搜集潜在客户后，先在「客户管理」和「候选客户」查重。待核实的信息可录入候选和调查证据，正式客户可记录多种联系方式、产品兴趣、自定义属性和跟进。
-3. 从客户详情写邮件，或从已确认关联的业务来信回复原会话。通过 IMAP 同步后，在邮件中心和客户详情继续处理回复、样品和下一步沟通。
-4. 如需让 Codex 或 WorkBuddy 协作，用同一工作台的 `ftw-mcp.exe` 配置本地 MCP stdio。在「邮件中心 → Agent 发信权限」分别登记客户端，按需保存协作权限和发送模式，并将该客户端的登记令牌安全地传入其 MCP 进程的 `FTW_AGENT_TOKEN` 环境变量。持续授权发送按已保存的账户、用途、数量和间隔执行，也可选择逐封人工审批。[接入说明](docs/FTW-Agent-Quickstart.txt) · [任务模板](docs/FTW-Agent-Workflows.txt)
+### 运行工作台
 
-## 开发运行
+系统需要 Windows 10 或 Windows 11 x64，以及 Microsoft Edge WebView2 运行时。
 
-需要 Windows PowerShell 5.1、Node.js 24 或更高版本、npm、Rust x64 MSVC 工具链（含 rustfmt）、Visual Studio 2022 的 C++ x64 Build Tools、Windows SDK 和 WebView2 Evergreen Runtime。在项目根目录执行：
+将便携 ZIP 完整解压到可写目录，双击 `workbench.exe`。请保留同一目录下的 `ftw-core.exe`、`ftw-mcp.exe` 和 `portable.flag`。工作台的数据保存在便携目录的 `data` 文件夹，首次使用会自动创建。
+
+### 配置邮箱
+
+1. 在「邮件中心 → 发件账户」添加邮箱，填写邮箱服务商提供的 SMTP 地址、端口和登录信息，保存后测试连接。
+2. 在「邮件中心 → 收件设置」配置 IMAP 并测试连接，以同步和查看客户回复。
+3. 根据邮箱服务商的要求使用邮箱授权码或应用专用密码。只使用客户管理时可以暂不配置邮箱。
+
+邮件由 FTW 记录发送结果：SMTP 已接受表示服务器接受了提交，不等于已经投递到收件箱；发送结果未知时，应先核对记录再决定是否重试。
+
+### 连接 WorkBuddy
+
+1. 在 FTW「邮件中心 → Agent 发信权限 → Agent 登记」中登记 WorkBuddy，并保存本次显示的令牌。
+2. 在 WorkBuddy 的「专家·技能·连接器 → 连接器 → 自定义连接器」中打开 MCP 管理，添加或修改 `ftw`：传输方式选择本地 `stdio`，命令指向便携目录中的 `ftw-mcp.exe`，参数留空。
+3. 将登记令牌通过 MCP 启动环境中的 `FTW_AGENT_TOKEN` 提供给进程。不要将令牌粘贴到聊天或明文配置中。具体配置方法及常见问题见[接入说明](docs/FTW-Agent-Quickstart.txt)。
+4. 在 WorkBuddy 中新建本地任务，让它调用 FTW 查询客户。需要自动发信时，再由用户在 FTW 中选择允许的邮箱、用途和限额并保存授权；也可以使用逐封审批模式。
+
+便携包内还附有 `FTW-Agent-Workflows.txt`，提供可复制的客户调查、跟进及邮件任务示例。其他支持 MCP stdio 的客户端也可使用同一份工作台，具体接入方式见[接入说明](docs/FTW-Agent-Quickstart.txt)。
+
+## 备份与故障排查
+
+- 在「数据与审计」中创建和恢复备份。迁移便携工作台前，关闭 FTW 和 MCP 客户端，并完整复制工作台目录及其数据和备份。
+- 更换 Windows 用户或电脑后，需要重新输入并测试 SMTP、IMAP 凭据，并将 MCP 客户端的命令路径改为新位置。
+- 遇到问题时，在「系统状态」导出诊断报告；如果窗口无法打开，可双击便携目录中的 `FTW-Diagnostics.cmd`。分享报告前请先检查内容，再附上出错时间和操作步骤。
+
+## 从源码运行和构建
+
+开发环境需要 Windows PowerShell 5.1、Node.js 24 或更高版本、npm、Rust x64 MSVC 工具链、Visual Studio C++ x64 Build Tools、Windows SDK 和 WebView2。
+
+在项目根目录运行开发版：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\dev.ps1
 ```
 
-脚本构建 `ftw-core.exe` 和 `ftw-mcp.exe` 并启动 Tauri。工作台优先连接开发目录的现有 Core，必要时按需启动。开发数据位于 `.ftw-dev\workbench\data`，Core 日志位于 `.ftw-dev\workbench\logs\core.log`。
-
-可在单独的终端手动运行 Core，通过 Ctrl+C 退出：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\dev.ps1 -CoreOnly
-```
-
-Core 运行时，可以在另一个终端读取同一开发目录的健康状态（默认 Cargo 输出目录）：
-
-```powershell
-.\target\debug\ftw-core.exe health --dev-root (Join-Path $PWD '.ftw-dev\workbench')
-```
-
-联调开发版 MCP 时，让客户端使用同一个开发工作区。以下示例使用 Codex CLI 和默认 Cargo 输出目录，构建的两个程序需保留在同一目录。
-
-```powershell
-cargo build --locked -p ftw-core -p ftw-mcp
-codex mcp add ftw-dev -- (Join-Path $PWD 'target\debug\ftw-mcp.exe') --dev-root (Join-Path $PWD '.ftw-dev\workbench')
-```
-
-## 检查与无安装器构建
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\test.ps1
-```
-
-脚本安装锁定的 npm 依赖，执行 ESLint、TypeScript、Vite、Rust 格式、测试和构建。已安装 Clippy 时，在命令末尾追加 `-Clippy`。
+构建 Windows x64 便携版：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\build-portable.ps1
 ```
 
-脚本在 `.ftw-dev\packages` 生成 Windows x64 便携目录和 ZIP，并在终端输出 ZIP 的 SHA-256。整包解压到可写目录，运行 `workbench.exe`。保留三个 EXE 和 `portable.flag`，数据在同目录的 `data` 下。移除便携标志时，Core 使用 `%LOCALAPPDATA%\FTW`。迁移整目录前关闭工作台和 MCP 客户端，并等待按需 Core 退出或结束手动运行的 Core。
+构建完成后，便携目录和 ZIP 位于 `.ftw-dev\packages`；终端会显示 ZIP 路径和 SHA-256 校验值。
 
-ZIP 内的 `acceptance` 目录包含手工验收清单、四条虚构客户的 CSV 和 `Start-FTW-Acceptance.cmd`。双击验收入口会使用 `acceptance\workspace\data`，可从空工作区核查后再导入样本。
+## 更多文档
 
-## 工作台入口
-
-- 「客户管理」提供表格、看板、共享视图、字段管理、公司关联、样品进度和数据质量检查。查重后可在核对页选择要保留的客户档案。
-- 「候选客户」保留来源、证据及核验状态。「跟进记录」汇总人工记录、Agent 记录和邮件活动。
-- 「邮件中心」管理账户、签名、模板、草稿、审批、发送队列和收件会话。「待核对归属」用于处理无法可靠关联的来信。邮件工作流分别记录 SMTP 已接受、失败、提交结果未知、退信和业务回复。
-- 「Agent 任务」查看已记录的业务操作和发信批次。「数据与审计」提供客户文件、客户 CSV 预览与导入导出、备份恢复及操作审计。「Agent 数据变更」显示客户字段差异和待核对建议。
-- 「系统状态」显示 Core、数据库迁移、MCP 和邮箱配置情况，并提供「导出诊断报告」。窗口无法打开时，双击便携目录里的 `FTW-Diagnostics.cmd` 获取本地 JSON。反馈时附上报告、出错时间、所用页面或工具及复现步骤。[诊断报告范围](docs/ARCHITECTURE.md#故障诊断)
-
-## 升级与换设备
-
-关闭工作台和 MCP 客户端，确认旧 Core 退出，再成套替换三个 EXE。已有数据库需要迁移时，Core 会先生成一致性备份。移动便携工作台时，完整复制整个工作台目录，包括 `data`、`data\mail-objects`、`data\agent-send-safety.sqlite` 和已有的 `backups`，并更新 MCP 客户端中的 EXE 路径。更换 Windows 账户或设备后，在工作台重新输入 SMTP 和 IMAP 凭据并测试连接。通过工作台恢复业务备份后，按需重新登记 Agent 和保存发送权限。[存储与恢复](docs/ARCHITECTURE.md#sqlite-路径和迁移)
-
-## 文档
-
-- [Core 与存储设计](docs/ARCHITECTURE.md)
-- [Codex 和 WorkBuddy 中文接入说明](docs/FTW-Agent-Quickstart.txt) · [可复制的外贸任务模板](docs/FTW-Agent-Workflows.txt)
-- [邮件代发与 Codex、WorkBuddy 接入](docs/MCP_MAIL.md)
-- [CRM 接口与 JSON Schema](docs/CRM_API.md)
-- [Windows 验收用例与自动化测试入口](docs/ACCEPTANCE_TESTS.md)
-- [功能与 UI 实施盘点](docs/ui-review/IMPLEMENTATION_STATUS.md) · [人工与 Agent 协同范围及验证](docs/ui-review/HUMAN_AGENT_PARITY.md)
-- [变更记录](docs/CHANGELOG.md)
-- [V1 产品与技术基线](FTW_产品与技术规格书_V1.md)
+- [WorkBuddy 与 Codex 接入说明](docs/FTW-Agent-Quickstart.txt)
+- [Agent 外贸任务示例](docs/FTW-Agent-Workflows.txt)
+- [邮件与 MCP 工具说明](docs/MCP_MAIL.md)
+- [CRM 接口说明](docs/CRM_API.md)
+- [数据存储与系统架构](docs/ARCHITECTURE.md)

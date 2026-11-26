@@ -52,42 +52,13 @@ export type AgentMailPolicy = {
   revision: number; mode: 'manual' | 'disabled' | 'automatic'; accounts: string[]; purposes: string[]
   daily_limit: number; task_limit: number; interval_seconds: number
 }
-export const collaborationScopes = {
-  read_crm: '查询 CRM 业务资料',
-  write_crm: '创建与更新 CRM 业务资料',
-  read_mail: '读取邮件、账户和同步收件箱',
-  create_drafts: '起草和按人工审批发信',
-  manage_fields: '创建字段和维护已共享字段（排序、归档及恢复）',
-  archive_contacts: '归档或恢复客户',
-  merge_contacts: '合并重复客户',
-  import_customers: '导入客户 CSV',
-  export_customers: '导出客户 CSV',
-  manage_views: '管理共享视图及其顺序',
-  edit_activities: '编辑跟进和样品记录',
-  read_documents: '读取客户文档',
-  upload_documents: '导入客户文档',
-  edit_drafts: '编辑邮件草稿',
-  read_audit: '查看客户字段变更',
-  read_tasks: '查看该 Agent 的操作和邮件任务',
-  read_mail_attachments: '读取邮件附件内容',
-  suggest_reply_links: '提交回复关联建议',
-  manage_mail_tasks: '取消本客户端未发送任务或准备重试',
-  manage_templates: '新建、编辑、归档和恢复邮件模板',
-  edit_leads: '补充待审核候选客户资料',
-  manage_companies: '维护公司档案和联系人归属',
-  update_customer_batches: '批量修改客户阶段、等级和样品状态',
-  export_mail_reports: '导出邮件开发统计',
-  review_leads: '核验调查证据、处理候选和转正已人工复核的候选',
-  confirm_reply_links: '确认发件人唯一匹配已核实邮箱的来信关联',
-} as const
-export type CollaborationScope = keyof typeof collaborationScopes
-export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean; collaboration_scopes?: CollaborationScope[] }
+export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean; paused: boolean; last_seen_at: number | null }
 
 export type AgentMailSettings = {
   kind: 'agent_mail_settings'; policy: AgentMailPolicy; automatic_available: boolean
   agents: RegisteredAgent[]
-  require_registered_crm?: boolean
-  require_registered_mail?: boolean
+
+
   review: { id: string; state: 'waiting' | 'saved' | 'cancelled' | 'failed'; outcome: string | null } | null
 }
 
@@ -106,9 +77,7 @@ export type MailCommand =
   | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy; agent_ids: string[] }
   | { action: 'cancel_mail_policy_review'; id: string }
   | { action: 'register_mail_agent'; name: string; token: string }
-  | { action: 'set_agent_collaboration'; id: string; scopes: CollaborationScope[] }
-  | { action: 'set_registered_crm_required'; required: boolean }
-  | { action: 'set_registered_mail_required'; required: boolean }
+  | { action: 'set_agent_paused'; id: string; paused: boolean }
   | { action: 'revoke_mail_agent'; id: string }
   | { action: 'list_accounts' }
   | ({ action: 'save_account' } & AccountInput)
@@ -159,6 +128,7 @@ const mailErrorLabels: Record<string, string> = {
   mail_unresolved_template: '主题或正文含未替换的模板变量，请补齐后再提交。',
   agent_policy_cancelled: '用户取消了 Windows 核验。',
   agent_policy_verification_failed: 'Windows 未能验证登录账户。请使用当前 Windows 登录密码，PIN 无法用于此窗口。',
+  mail_agent_paused: '这个 Agent 已暂停接入。',
   mail_agent_not_authorized: '这个 Agent 已登记。请在发送模式中勾选它的自动发信权限。',
   mail_agent_selection_required: '请至少选择一个允许自动发信的 Agent。',
   agent_policy_review_expired: '权限确认已过期，请重新发起。',

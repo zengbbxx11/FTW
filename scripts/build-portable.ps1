@@ -73,11 +73,12 @@ terminal opened in this directory, Codex can be configured with:
   codex mcp add ftw -- (Join-Path $PWD 'ftw-mcp.exe')
 
 WorkBuddy uses the same executable in its local MCP settings.
-In Mail Center > Agent mail permissions, the user can configure and save
-standing authorization for registered agents.
-Register each Agent separately, select the Agents allowed to send, and supply
-each FTW_AGENT_TOKEN to the corresponding MCP process
-environment. Keep this token out of chat prompts, logs and project files.
+Register each trusted Agent under Mail Center > Agent mail permissions and
+supply its FTW_AGENT_TOKEN to the corresponding MCP process environment.
+Registered Agents share business records. You can pause, resume or revoke
+access from the Workbench. Save standing send authorization separately with
+the selected senders, purposes and limits. Keep tokens out of chat prompts,
+logs and project files.
 
 Use FTW Data and Audit for backups and restoration. Keep mail-objects with
 the matching backup database. Close Workbench and all MCP clients, and let

@@ -220,7 +220,7 @@ function ColorSelect({ value, change }: { value: FieldColor; change: (color: Fie
 function DefinitionEditor({ field, close }: { field?: CustomField; close: () => void }) {
   const [draft, setDraft] = useState<FieldDefinition>(() => ({
     id: field?.id ?? null, expected_revision: field?.revision ?? null, name: field?.name ?? '', kind: field?.kind ?? 'text',
-    color: field?.color ?? 'gray', agent_access: field?.agent_access ?? 'read', show_in_details: field?.show_in_details ?? true,
+    color: field?.color ?? 'gray', agent_access: field?.agent_access ?? 'write', show_in_details: field?.show_in_details ?? true,
     default_value: field?.default_value ?? null, options: field?.options ?? [],
   }))
   const cache = useQueryClient()

@@ -1,6 +1,6 @@
 FTW · 可直接粘贴给 Codex 或 WorkBuddy 的任务模板
 
-每次选择一段。把方括号中的内容换成实际目标。先按 FTW-Agent-Quickstart.txt 完成 MCP 接入。
+每次选择一段。把方括号中的内容换成实际目标。先按 FTW-Agent-Quickstart.txt 登记并连接 MCP。会话开始时可用 get_workbench_context 获取定义版本和发件规则，已有定义时把版本交给 get_workbench_definitions，按需更新。
 
 【1｜验证接入 / 查客户】
 请只用 FTW MCP 的 list_customers 搜索「[客户名称，已导入验收 CSV 时可填验收样本]」。列出返回的姓名、公司、阶段、客户等级和主要邮箱。若明确指定了某位客户，再用 get_customer 和 get_customer_timeline 给我最新联系记录。本次只查询。工具不可用时报告实际错误。

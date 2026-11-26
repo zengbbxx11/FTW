@@ -1,9 +1,6 @@
 use super::{audit_as, Failure, MailService, Result};
 use crate::crm::Actor;
-use ftw_ipc::{
-    crm::Source,
-    data::{MailJobAction, Result as Reply},
-};
+use ftw_ipc::data::{MailJobAction, Result as Reply};
 use sqlx::FromRow;
 
 pub(crate) const CANCELLED: &str = "cancelled_before_submission";
@@ -41,8 +38,8 @@ impl MailService {
         let job: Job = sqlx::query_as(&format!(
             "SELECT j.draft_id,j.revision,j.task_id, ({CAN_CANCEL}) can_cancel, ({CAN_REOPEN}) can_reopen
              FROM email_outbox_jobs j JOIN email_drafts d ON d.id=j.draft_id
-             WHERE j.id=? AND (? OR j.agent_id=?)"
-        )).bind(id).bind(matches!(actor.source, Source::Manual)).bind(actor.id)
+             WHERE j.id=?"
+        )).bind(id)
             .fetch_optional(&mut *tx).await?.ok_or(Failure::Code("mail_not_found"))?;
         let (operation, state, available) = match action {
             MailJobAction::Cancel => ("cancel_mail_job", "cancelled", job.can_cancel),

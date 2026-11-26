@@ -1,8 +1,5 @@
 use super::{audit_row, Reply, Result};
-use ftw_ipc::{
-    agent::Scope,
-    data::{AuditEntry, AuditTarget},
-};
+use ftw_ipc::data::{AuditEntry, AuditTarget};
 use sqlx::{Row, SqlitePool};
 
 pub(super) async fn list(
@@ -13,7 +10,7 @@ pub(super) async fn list(
     keyword: &str,
     days: u16,
 ) -> Result<Reply> {
-    list_scoped(pool, offset, source, entity, keyword, days, None).await
+    list_scoped(pool, offset, source, entity, keyword, days, false).await
 }
 
 pub(crate) async fn list_scoped(
@@ -23,7 +20,7 @@ pub(crate) async fn list_scoped(
     entity: &str,
     keyword: &str,
     days: u16,
-    scopes: Option<&[Scope]>,
+    shared_only: bool,
 ) -> Result<Reply> {
     let keyword = keyword.trim();
     if !matches!(source, "" | "manual" | "agent" | "system")
@@ -35,32 +32,24 @@ pub(crate) async fn list_scoped(
     {
         return Err("invalid_audit_filter");
     }
-    let allowed = if let Some(scopes) = scopes {
-        let mut entities = Vec::new();
-        if scopes.contains(&Scope::ReadCrm) {
-            entities.extend(["contact", "lead", "activity", "company"]);
-        }
-        if scopes.contains(&Scope::ReadMail) {
-            entities.extend([
-                "email_draft",
-                "email_outbox",
-                "inbox_message",
-                "suppression",
-            ]);
-            if scopes.contains(&Scope::ManageTemplates) {
-                entities.push("email_template");
-            }
-        }
-        if scopes.contains(&Scope::ReadDocuments) {
-            entities.push("customer_document");
-        }
-        if entities.is_empty() || (!entity.is_empty() && !entities.contains(&entity)) {
-            return Err("agent_collaboration_not_authorized");
-        }
-        Some(serde_json::to_string(&entities).map_err(|_| "invalid_audit_filter")?)
-    } else {
-        None
-    };
+    let allowed = shared_only.then(|| {
+        serde_json::json!([
+            "contact",
+            "lead",
+            "activity",
+            "company",
+            "email_draft",
+            "email_outbox",
+            "inbox_message",
+            "suppression",
+            "email_template",
+            "customer_document",
+            "custom_field",
+            "customer_view",
+            "customer_csv"
+        ])
+        .to_string()
+    });
     let mut tx = pool.begin().await.map_err(|_| "database_unavailable")?;
     let entities =
         sqlx::query_scalar("SELECT DISTINCT entity FROM audit_logs

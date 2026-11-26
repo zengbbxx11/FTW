@@ -37,7 +37,7 @@ impl MailService {
                 LEFT JOIN email_approvals a ON a.id=j.approval_id AND a.draft_id=j.draft_id AND a.revision=j.revision
                 JOIN mail_agent_policy p ON p.id=1
                 WHERE j.state='queued' AND (j.approval_id IS NOT NULL OR p.mode<>'automatic' OR p.revision<>j.policy_revision
-                    OR NOT EXISTS(SELECT 1 FROM mail_agent_clients c WHERE c.id=j.agent_id AND NOT c.revoked AND c.automatic)
+                    OR NOT EXISTS(SELECT 1 FROM mail_agent_clients c WHERE c.id=j.agent_id AND NOT c.revoked AND NOT c.paused AND c.automatic)
                     OR NOT EXISTS(SELECT 1 FROM email_outbox_jobs recent JOIN email_drafts other ON other.id=recent.draft_id
                         WHERE recent.agent_id IS NOT NULL AND other.account_id=d.account_id
                         AND recent.last_attempt_at>unixepoch()-p.interval_seconds))
