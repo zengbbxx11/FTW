@@ -363,6 +363,37 @@ mod tests {
         id
     }
 
+    #[tokio::test]
+    async fn local_agent_still_requires_user_send_authorization() {
+        let (directory, service, contact) = setup().await;
+        let service = service.with_send_ledger(directory.path()).await;
+        let draft = new_draft(&service, contact).await;
+        let submission = || AgentCommand::SendAuthorized {
+            token: ftw_ipc::mail::Secret(String::new()),
+            id: draft.clone(),
+            revision: 1,
+            purpose: "first_outreach".into(),
+            task_id: "local-fixture".into(),
+            request_id: "local-fixture-request".into(),
+        };
+        assert!(matches!(service.local_agent_session(submission()).await,
+            Response::Error { code, .. } if code == "agent_policy_not_authorized"));
+
+        let Reply::AgentMailSettings { mut policy, .. } = service.policy_settings().await.unwrap()
+        else {
+            panic!("agent settings unavailable");
+        };
+        policy.mode = "automatic".into();
+        policy.accounts = vec!["acct".into()];
+        policy.purposes = vec!["first_outreach".into()];
+        service
+            .change_policy(policy, Some(vec![ftw_ipc::agent::LOCAL_AGENT_ID.into()]))
+            .await
+            .unwrap();
+        assert!(matches!(service.local_agent_session(submission()).await,
+            Response::Mail { data } if matches!(*data, Reply::Queued { .. })));
+    }
+
     async fn submit_review(service: &MailService, draft: &str) -> (i64, String) {
         service
             .request_approval(draft, super::super::agent_actor())

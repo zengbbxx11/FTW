@@ -96,7 +96,6 @@ pub struct MailService {
     diagnostics: Option<ftw_ipc::diagnostics::Log>,
     ledger: Option<ledger::Ledger>,
     object_root: Option<std::path::PathBuf>,
-    data_root: Option<std::path::PathBuf>,
     prompt: Arc<Mutex<()>>,
     imap: Arc<Mutex<()>>,
     delivery: Arc<Mutex<()>>,
@@ -117,13 +116,13 @@ impl MailService {
         sqlx::query("UPDATE imap_sync_state SET outcome='interrupted' WHERE outcome='running'")
             .execute(&mut *tx)
             .await?;
+        policy::ensure_local_agent(&mut tx).await?;
         tx.commit().await?;
         Ok(Self {
             pool,
             diagnostics: None,
             ledger: None,
             object_root: None,
-            data_root: None,
             prompt: Arc::new(Mutex::new(())),
             imap: Arc::new(Mutex::new(())),
             delivery: Arc::new(Mutex::new(())),
@@ -142,7 +141,6 @@ impl MailService {
     }
 
     pub async fn with_send_ledger(mut self, data: &std::path::Path) -> Self {
-        self.data_root = Some(data.to_path_buf());
         self.object_root = Some(data.join("mail-objects"));
         let path = data.join("agent-send-safety.sqlite");
         let required = sqlx::query_scalar::<_, bool>(
@@ -201,7 +199,21 @@ impl MailService {
     }
 
     pub async fn agent_session(&self, token: &str, command: AgentCommand) -> Response {
-        let actor_id = match self.session_actor(token).await {
+        self.agent_session_as(policy::AgentIdentity::Token(token), command)
+            .await
+    }
+
+    pub async fn local_agent_session(&self, command: AgentCommand) -> Response {
+        self.agent_session_as(policy::AgentIdentity::Local, command)
+            .await
+    }
+
+    async fn agent_session_as(
+        &self,
+        identity: policy::AgentIdentity<'_>,
+        command: AgentCommand,
+    ) -> Response {
+        let actor_id = match self.identity_actor(identity).await {
             Ok(id) => id,
             Err(error) => return response(Err(error)),
         };
@@ -214,15 +226,15 @@ impl MailService {
             }
             AgentCommand::ListCustomers { query } => {
                 return self
-                    .collaborate_crm(
-                        token,
+                    .collaborate_crm_as(
+                        identity,
                         ftw_ipc::agent::Command::QueryCustomers { query: *query },
                     )
                     .await
             }
             AgentCommand::GetCustomer { id } => {
                 return self
-                    .collaborate_crm(token, ftw_ipc::agent::Command::GetCustomer { id })
+                    .collaborate_crm_as(identity, ftw_ipc::agent::Command::GetCustomer { id })
                     .await
             }
             AgentCommand::ListAssets { .. } => self.list_assets(true).await,
@@ -232,7 +244,7 @@ impl MailService {
                 revision,
                 asset_ids,
             } => {
-                self.attach_agent_assets(token, &id, revision, &asset_ids)
+                self.attach_agent_assets(identity, &id, revision, &asset_ids)
                     .await
             }
             AgentCommand::CheckOutreach { recipient } => self.outreach_check(&recipient).await,
@@ -299,20 +311,17 @@ impl MailService {
                 purpose,
                 task_id,
                 request_id,
-            } => match policy::digest(token) {
-                Ok(digest) => {
-                    self.enqueue_authorized(authorized::Submission {
-                        digest,
-                        id,
-                        revision,
-                        purpose,
-                        task: task_id,
-                        request: request_id,
-                    })
-                    .await
-                }
-                Err(error) => Err(error),
-            },
+            } => {
+                self.enqueue_authorized(authorized::Submission {
+                    identity,
+                    id,
+                    revision,
+                    purpose,
+                    task: task_id,
+                    request: request_id,
+                })
+                .await
+            }
             AgentCommand::RequestApproval { id } => {
                 if let Err(error) = self.agent_manual_allowed().await {
                     return response(Err(error));
@@ -467,8 +476,6 @@ impl MailService {
             }
             Command::CancelMailPolicyReview { id } => self.cancel_policy_review(id).await,
             Command::RegisterMailAgent { name, token } => self.register_agent(name, &token.0).await,
-            Command::EnableLocalAgent { id, token } => self.enable_local_agent(id, &token.0).await,
-            Command::DisableLocalAgent { id } => self.disable_local_agent(id).await,
             Command::RevokeMailAgent { id } => self.revoke_mail_agent(id).await,
             Command::SetAgentPaused { id, paused } => self.set_agent_paused(id, paused).await,
             Command::ListAccounts => self.accounts(true).await,

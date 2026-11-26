@@ -5,7 +5,6 @@ pub mod data;
 pub mod diagnostics;
 pub mod fields;
 pub mod inbox;
-pub mod local_agent;
 pub mod mail;
 mod profile;
 pub mod receipt;
@@ -62,6 +61,7 @@ pub enum Operation {
         token: mail::Secret,
         command: Box<agent::Collaboration>,
     },
+    LocalAgentCollaboration(Box<agent::Collaboration>),
     Data(Box<data::Command>),
 }
 
@@ -76,7 +76,9 @@ impl Operation {
             Self::Agent(_) | Self::RegisteredAgentMail { .. } => "agent_mail",
             Self::AgentInbox(_) | Self::RegisteredAgentInbox { .. } => "agent_inbox",
             Self::AgentCrm(_) | Self::RegisteredAgentCrm { .. } => "agent_crm",
-            Self::AgentCollaboration { .. } => "agent_collaboration",
+            Self::AgentCollaboration { .. } | Self::LocalAgentCollaboration(_) => {
+                "agent_collaboration"
+            }
             Self::Data(_) => "data",
         }
     }

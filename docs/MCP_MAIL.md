@@ -28,7 +28,7 @@ Agent 用宿主中已获准的搜索或资料来源发现潜在客户。FTW 负�
 codex mcp add ftw -- "D:\FTW-Portable\ftw-mcp.exe"
 ```
 
-对 WorkBuddy，在 MCP 管理中添加本地 stdio 服务，命令填相同的 EXE 绝对路径，参数留空。先在工作台登记 Agent 并开启本机直接连接，按[接入说明](FTW-Agent-Quickstart.txt)操作；无需将令牌写入配置。两个客户端可各自启动适配器，共享同一数据目录的 Core。
+对 WorkBuddy，在 MCP 管理中添加本地 stdio 服务，命令填相同的 EXE 绝对路径，参数留空。当前 Windows 用户的本地客户端无需登记或令牌，具体见[接入说明](FTW-Agent-Quickstart.txt)。两个客户端可各自启动适配器，共享同一数据目录的 Core。
 
 ```json
 {
@@ -78,7 +78,7 @@ Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启�
 | `add_customer_activities_batch` | 与 `add_customer_activity` 相同，包括独立的 `request_id`。 |
 | `get_email_statuses` | 草稿 ID 字符串。返回草稿版本、状态、作业 ID、结果和已知退信。 |
 
-每批 1 至 10 项，`rows` 按输入顺序返回，失败项有自己的错误代码，成功项独立保留。写入中断后用同一登记身份和原 `request_id` 重读回执。跨 Agent 接续时先用 `list_agent_runs`、`get_mail_task`、客户 ID 或草稿 ID 核对已有进度。确认 SMTP 结果未知的作业前暂停重发。
+每批 1 至 10 项，`rows` 按输入顺序返回，失败项有自己的错误代码，成功项独立保留。写入中断后用同一身份和原 `request_id` 重读回执。跨客户端接续时先用 `list_agent_runs`、`get_mail_task`、客户 ID 或草稿 ID 核对已有进度。确认 SMTP 结果未知的作业前暂停重发。
 
 | 工具 | 输入 |
 | --- | --- |
@@ -130,7 +130,7 @@ Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启�
 | `query_customers` | 与 Core 客户视图相同的 `filter`、`order`、`page_size` 等查询参数 |
 | `check_customer_outreach` | `recipient` |
 | `send_authorized_email` | `draft_id`、`revision`、`purpose`、`task_id`、`request_id` |
-| `list_email_assets` | 空对象，需要有效的已登记 Agent 身份 |
+| `list_email_assets` | 空对象，读取用户允许 Agent 使用的附件 |
 | `attach_email_assets` | `draft_id`、`revision`、`asset_ids` |
 | `fetch_inbox_message` | `message_id` |
 | `read_inbox_body` | `message_id`、可选 `offset` |
@@ -193,7 +193,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 ## 人工与 Agent 协作权限
 
-在「邮件中心 → Agent 发信权限」登记客户端并开启本机直接连接。当前 Windows 用户的本地 MCP 客户端共享所选 Agent 身份；若需区分客户端，也可为不同进程使用各自的 `FTW_AGENT_TOKEN`。页面显示最近连接时间，并支持暂停、恢复和撤销。持续发信独立使用已保存的账户、用途和限额。凭据、Agent 接入管理、解除拒发和恢复旧备份由桌面处理。
+当前 Windows 用户的本地 MCP 客户端无需登记，共享“本机 Agent”身份。页面显示最近连接时间，并支持暂停或恢复本机接入。持续发信独立使用已保存的账户、用途和限额。凭据、发送授权管理、解除拒发和恢复旧备份由桌面处理。
 
 ### 批量客户更新与质量检查
 
@@ -250,7 +250,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 | `list_reply_review` | 可选 `offset`。查询桌面的回复待确认列表。 |
 | `get_reply_link_candidates` | `message_id`。返回已有候选客户和建议来源。 |
 | `suggest_reply_link` | `message_id` 和 `contact_id`。把候选提交到桌面待确认界面。 |
-| `list_agent_runs` | 可选 `filter`、`keyword` 和 `offset`。返回所有已登记客户端的业务请求和邮件批次，包括 `success`、`retryable` 与 `requires_human`。 |
+| `list_agent_runs` | 可选 `filter`、`keyword` 和 `offset`。返回 Agent 的业务请求和邮件批次，包括 `success`、`retryable` 与 `requires_human`。 |
 | `update_mail_job` | `job_id` 和 `action`（`cancel` 或 `reopen`）。取消尚未提交的邮件，或为明确失败的邮件准备新草稿版本。 |
 | `list_contact_suppressions` | 可选 `offset`。读取拒发的地址和域名。 |
 
@@ -264,15 +264,15 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 ## Agent 发信权限
 
-从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式。登记和撤销身份即时生效。首次设置时界面预选持续授权、现有 Agent、邮箱、用途及最高限额，用户在工作台保存后生效，Core 记录操作并执行所选范围。已有权限设置不会因升级改变。安全账本不可用时，工作台保留人工审批和禁止两种模式。
+从「邮件中心 → Agent 发信权限」可以查看和切换人工审批、禁止 Agent 发送与持续授权模式，暂停和恢复本机接入即时生效。用户在工作台选择“本机 Agent”、邮箱、用途和限额并保存后生效，Core 记录操作并执行所选范围。已有权限设置不会因升级改变。安全账本不可用时，工作台保留人工审批和禁止两种模式。
 
 「发件账户」支持编辑 SMTP 配置和删除账户。删除后停止该账户的收发并清除当前凭据，保留历史邮件和草稿。修改发件邮箱地址后需重新配置 IMAP 和选择该邮箱的 Agent 授权。
 
-在工作台登记 Agent 并开启本机直接连接，可让当前 Windows 用户的本地 MCP 客户端共享该身份。需要自动发信时，在发送模式中勾选允许的 Agent、账户和用途并保存限额。若需区分客户端，可使用各自的 `FTW_AGENT_TOKEN` 启动环境；明确提供的令牌优先于本机默认身份。令牌不要粘贴到 Agent 对话、明文配置、提交或日志中。Core 保存令牌摘要并验证每次操作，暂停或撤销立即阻止后续访问。
+当前 Windows 用户的本地 MCP 客户端共享“本机 Agent”身份，无需登记或令牌。需要自动发信时，在发送模式中勾选“本机 Agent”、允许的账户和用途并保存限额。Core 统一执行发信授权、拒发名单、去重和频率限制，暂停本机 Agent 可阻止后续访问。
 
 `send_authorized_email` 接收 `draft_id`、当前 `revision`、`purpose`、`task_id` 和客户端稳定的 `request_id`。用途为 `first_outreach`、`outreach_followup`、`quote_communication`、`sample_communication` 或 `other_business`。请求返回真实队列状态。轮询 `get_email_draft` 查看 SMTP 已接受、失败和结果未知。首次开发前用 `check_customer_outreach` 检查邮箱、同域联系人和历史，发送时 Core 再次执行规则。逐封审批继续使用 `request_email_approval` 与 `send_approved_email`。禁止发送模式下，可信 Agent 仍可起草和查询邮件。
 
-便携复制整个停用后的数据目录时保留 `agent-send-safety.sqlite`。业务备份恢复会撤销已登记 Agent、关闭自动授权并冻结旧的待发送任务。安全账本留在同一数据目录，防止业务数据回退后重复提交。
+便携复制整个停用后的数据目录时保留 `agent-send-safety.sqlite`。业务备份恢复会撤销旧登记令牌、关闭自动授权并冻结旧的待发送任务；本机 Agent 仍可访问，但需要重新设置自动发信授权。安全账本留在同一数据目录，防止业务数据回退后重复提交。
 
 ## 开发邮件模板
 
@@ -288,7 +288,7 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 
 桌面写邮件支持 PDF、JPEG、PNG、WebP，最多四件，合计 10 MiB 原文件，实际收发上限仍受邮箱服务器限制。保存位置是数据目录下的 `mail-objects`。同名文件内容变化会产生新的校验值，批准和发送以草稿保存的文件为准。
 
-在「Agent 发信权限 → Agent 可用附件」导入并授权后，已登记 Agent 用 `list_email_assets` 查文件 ID，用 `attach_email_assets` 更新共享草稿的附件，再读回最新修订送审或授权入队。
+在「Agent 发信权限 → Agent 可用附件」导入并授权后，本机 Agent 用 `list_email_assets` 查文件 ID，用 `attach_email_assets` 更新共享草稿的附件，再读回最新修订送审或授权入队。
 
 收件同步对超过 2 MiB 的邮件保存邮件头，桌面可在会话中按需下载最多 16 MiB 的完整邮件。Agent 可用 `fetch_inbox_message` 开始下载，并用 `read_inbox_body` 的分页偏移读取纯文本。附件可在桌面通过 Windows 另存窗口写入指定新文件。迁移前或手工备份复制 `backups/mail-objects` 与 `workbench-*.db`，恢复时 Core 校验引用的对象完整性。
 

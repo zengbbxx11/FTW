@@ -4,11 +4,11 @@ FTW · WorkBuddy 和 Codex 接入说明（Windows）
 
 完整解压 ZIP，双击 workbench.exe。在「系统状态」查看实际数据目录。保留 workbench.exe、ftw-core.exe、ftw-mcp.exe 和 portable.flag 在同一目录。客户端中的 MCP 命令应指向同目录的 ftw-mcp.exe，例如 D:\FTW工作台\ftw-mcp.exe。移动目录后需要更新该路径。
 
-2. 开启本机直接连接
+2. 本机直接连接
 
-在 FTW「邮件中心 → Agent 发信权限 → Agent 登记」填写 WorkBuddy，点击「登记并启用本机连接」。如果已登记，在对应的 Agent 条目点击「启用本机直接连接」。正常启动 WorkBuddy 即可，无需在 PowerShell 输入令牌。
+在同一 Windows 用户下正常启动 WorkBuddy 即可使用 FTW，无需登记 Agent、输入令牌或设置环境变量。
 
-凭据由 Windows 当前用户加密保存。本机直接连接的 MCP 客户端共享所选 Agent 身份，因此操作记录和自动发信授权也按该身份执行。为已有 Agent 启用本机连接会更新该身份的旧令牌，使用旧令牌的客户端需重新配置。可在工作台关闭本机直接连接、暂停或撤销 Agent。更换 Windows 用户或设备后，需要在 FTW 重新启用本机连接。
+本机 MCP 客户端共享“本机 Agent”身份，因此操作记录和自动发信授权也按该身份执行。工作台可以暂停或恢复本机接入；自动发信仍需用户在工作台保存允许的账户、用途和限额。
 
 3. 配置 WorkBuddy
 
@@ -28,20 +28,18 @@ FTW · WorkBuddy 和 Codex 接入说明（Windows）
 
 4. 配置 Codex 和其他客户端
 
-在客户端的 MCP 设置中添加本地 stdio 服务，命令同样指向本工作台的 ftw-mcp.exe，参数留空。本机直接连接默认使用工作台选中的 Agent 身份。
-
-如需分别识别客户端，可使用登记后「高级：手动使用令牌」中的令牌，并通过客户端的安全启动环境传递 FTW_AGENT_TOKEN。明确提供的令牌优先于本机默认身份。不要把令牌写入明文配置、项目文件、日志或对话。
+在客户端的 MCP 设置中添加本地 stdio 服务，命令同样指向本工作台的 ftw-mcp.exe，参数留空。本地客户端统一使用“本机 Agent”身份。
 
 5. 验证和发信
 
 在 WorkBuddy 或 Codex 的本地任务中输入：
   请调用 FTW 的 get_workbench_context 和 list_customers，只验证连接，不发送邮件。
 
-在 FTW「邮件中心 → 发件账户」配置并测试 SMTP，在「IMAP 收件」配置并测试 IMAP。需要 Agent 自动发信时，在「Agent 发信权限」选择允许的 Agent、发件邮箱、用途和限额，点击「保存发送权限」；也可以选择逐封审批。发信测试使用你自己授权的测试收件地址。
+在 FTW「邮件中心 → 发件账户」配置并测试 SMTP，在「IMAP 收件」配置并测试 IMAP。需要 Agent 自动发信时，在「Agent 发信权限」选择“本机 Agent”、发件邮箱、用途和限额，点击「保存发送权限」；也可以选择逐封审批。发信测试使用你自己授权的测试收件地址。
 
 6. 常见情况
 
-• 显示已连接但业务调用返回 mail_agent_unregistered：在同一份 FTW 工作台确认已启用本机直接连接，并检查 MCP 路径。旧配置中如设置了实际的 FTW_AGENT_TOKEN，它优先于本机身份；请移除过期配置或更新令牌。
+• 显示已连接但业务调用返回 mail_agent_unregistered：检查 MCP 路径是否指向新版 FTW，并重启工作台和 MCP 客户端。新版不读取 FTW_AGENT_TOKEN。
 • 返回 mail_agent_paused：由工作台用户恢复该 Agent 的接入。
 • 客户数据不一致：核对 FTW「系统状态」的数据目录和 MCP 命令路径，确保它们属于同一份工作台。
 • 发送权限不足：在 FTW 查看发送模式、Agent、发件账户、用途和限额；连接授权与发送授权分开管理。

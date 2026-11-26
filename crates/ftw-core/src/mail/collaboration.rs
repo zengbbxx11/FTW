@@ -9,12 +9,34 @@ use ftw_ipc::{
 
 impl MailService {
     pub(super) async fn session_actor(&self, token: &str) -> Result<String> {
+        self.identity_actor(policy::AgentIdentity::Token(token))
+            .await
+    }
+
+    pub(super) async fn identity_actor(
+        &self,
+        identity: policy::AgentIdentity<'_>,
+    ) -> Result<String> {
         let mut db = self.pool.acquire().await?;
-        policy::registered(&mut db, policy::digest(token)?).await
+        policy::resolve(&mut db, identity).await
     }
 
     pub async fn collaborate_crm(&self, token: &str, command: Command) -> Response {
-        let id = match self.session_actor(token).await {
+        self.collaborate_crm_as(policy::AgentIdentity::Token(token), command)
+            .await
+    }
+
+    pub async fn local_collaborate_crm(&self, command: Command) -> Response {
+        self.collaborate_crm_as(policy::AgentIdentity::Local, command)
+            .await
+    }
+
+    pub(super) async fn collaborate_crm_as(
+        &self,
+        identity: policy::AgentIdentity<'_>,
+        command: Command,
+    ) -> Response {
+        let id = match self.identity_actor(identity).await {
             Ok(id) => id,
             Err(error) => return response(Err(error)),
         };
@@ -34,8 +56,22 @@ impl MailService {
     }
 
     pub async fn collaborate(&self, token: &str, command: Collaboration) -> Response {
+        self.collaborate_as(policy::AgentIdentity::Token(token), command)
+            .await
+    }
+
+    pub async fn local_collaborate(&self, command: Collaboration) -> Response {
+        self.collaborate_as(policy::AgentIdentity::Local, command)
+            .await
+    }
+
+    async fn collaborate_as(
+        &self,
+        identity: policy::AgentIdentity<'_>,
+        command: Collaboration,
+    ) -> Response {
         use ftw_ipc::agent::{CompanyChange, CustomerBatchChange, LeadDecision};
-        let id = match self.session_actor(token).await {
+        let id = match self.identity_actor(identity).await {
             Ok(id) => id,
             Err(error) => return response(Err(error)),
         };

@@ -738,8 +738,6 @@ struct Ftw {
     executable: PathBuf,
     dev_root: Option<PathBuf>,
     access: Mutex<()>,
-    agent_token: Option<String>,
-    local_data: PathBuf,
 }
 
 #[tool_router(router = tool_router)]
@@ -875,7 +873,7 @@ impl Ftw {
     )]
     async fn list_email_assets(&self) -> ToolResult {
         self.call(AgentCommand::ListAssets {
-            token: self.mail_agent_token()?,
+            token: ftw_ipc::mail::Secret(String::new()),
         })
         .await
     }
@@ -885,7 +883,7 @@ impl Ftw {
     )]
     async fn attach_email_assets(&self, Parameters(input): Parameters<DraftAssets>) -> ToolResult {
         self.call(AgentCommand::AttachDraftAssets {
-            token: self.mail_agent_token()?,
+            token: ftw_ipc::mail::Secret(String::new()),
             id: input.draft_id,
             revision: input.revision,
             asset_ids: input.asset_ids,
@@ -2036,7 +2034,7 @@ impl Ftw {
         Parameters(input): Parameters<AuthorizedDraft>,
     ) -> ToolResult {
         self.call(AgentCommand::SendAuthorized {
-            token: self.mail_agent_token()?,
+            token: ftw_ipc::mail::Secret(String::new()),
             id: input.draft_id,
             revision: input.revision,
             purpose: input.purpose,
@@ -2171,53 +2169,27 @@ impl Ftw {
             executable: executable.with_file_name("ftw-core.exe"),
             dev_root,
             access: Mutex::new(()),
-            agent_token: env::var("FTW_AGENT_TOKEN").ok(),
-            local_data: profile.data,
         })
-    }
-
-    fn mail_agent_token(&self) -> Result<ftw_ipc::mail::Secret, ToolFailure> {
-        self.agent_token
-            .as_ref()
-            .filter(|value| !value.is_empty() && value.as_str() != "${FTW_AGENT_TOKEN}")
-            .cloned()
-            .or_else(|| ftw_ipc::local_agent::load(&self.local_data).ok())
-            .map(ftw_ipc::mail::Secret)
-            .ok_or_else(|| {
-                ToolFailure::new("mail_agent_unregistered", "mail_agent_unregistered: enable local Agent access in FTW, or configure FTW_AGENT_TOKEN.", None)
-            })
     }
 
     async fn call(&self, command: AgentCommand) -> ToolResult {
-        self.call_operation(Operation::RegisteredAgentMail {
-            token: self.mail_agent_token()?,
-            command: Box::new(command),
-        })
-        .await
+        self.call_operation(Operation::Agent(Box::new(command)))
+            .await
     }
 
     async fn inbox(&self, command: InboxCommand) -> ToolResult {
-        self.call_operation(Operation::RegisteredAgentInbox {
-            token: self.mail_agent_token()?,
-            command: Box::new(command),
-        })
-        .await
+        self.call_operation(Operation::AgentInbox(Box::new(command)))
+            .await
     }
 
     async fn crm(&self, command: AgentCrm) -> ToolResult {
-        self.call_operation(Operation::RegisteredAgentCrm {
-            token: self.mail_agent_token()?,
-            command: Box::new(command),
-        })
-        .await
+        self.call_operation(Operation::AgentCrm(Box::new(command)))
+            .await
     }
 
     async fn collaborate(&self, command: Collaboration) -> ToolResult {
-        self.call_operation(Operation::AgentCollaboration {
-            token: self.mail_agent_token()?,
-            command: Box::new(command),
-        })
-        .await
+        self.call_operation(Operation::LocalAgentCollaboration(Box::new(command)))
+            .await
     }
 
     async fn change_company(&self, request_id: String, change: CompanyChange) -> ToolResult {

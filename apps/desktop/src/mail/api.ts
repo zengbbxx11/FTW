@@ -52,7 +52,7 @@ export type AgentMailPolicy = {
   revision: number; mode: 'manual' | 'disabled' | 'automatic'; accounts: string[]; purposes: string[]
   daily_limit: number; task_limit: number; interval_seconds: number
 }
-export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean; paused: boolean; last_seen_at: number | null; local_default: boolean }
+export type RegisteredAgent = { id: string; name: string; revoked: boolean; automatic: boolean; paused: boolean; last_seen_at: number | null }
 
 export type AgentMailSettings = {
   kind: 'agent_mail_settings'; policy: AgentMailPolicy; automatic_available: boolean
@@ -77,8 +77,6 @@ export type MailCommand =
   | { action: 'set_agent_mail_policy'; policy: AgentMailPolicy; agent_ids: string[] }
   | { action: 'cancel_mail_policy_review'; id: string }
   | { action: 'register_mail_agent'; name: string; token: string }
-  | { action: 'enable_local_agent'; id: string; token: string }
-  | { action: 'disable_local_agent'; id: string }
   | { action: 'set_agent_paused'; id: string; paused: boolean }
   | { action: 'revoke_mail_agent'; id: string }
   | { action: 'list_accounts' }
@@ -169,7 +167,7 @@ const mailErrorLabels: Record<string, string> = {
   restored_without_resend: '从备份恢复，发送结果需要人工核对。',
   invalid_mail_password: '请输入有效的邮箱授权码或密码。',
   credential_unavailable: 'Windows 无法保护或解锁凭据。换机后请重新保存授权码。',
-  local_agent_storage_unavailable: '无法保存本机 Agent 凭据，请检查数据目录权限及当前 Windows 用户。',
+  local_agent_use_pause: '可以暂停本机 Agent 接入。',
   smtp_connection_failed: 'SMTP 连接或认证失败，请核对服务器、端口、加密方式和授权码。',
   mail_not_found: '草稿或邮箱账户不存在。',
   mail_account_busy: '邮箱正在发送邮件，请稍后再修改或删除账户。',

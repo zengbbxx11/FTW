@@ -122,10 +122,14 @@ async fn upgrading_preserves_agent_identity_and_allows_pause_and_resume() {
         let response = pipe.request(&context).await.unwrap();
         if paused {
             assert!(matches!(response, Response::Error {code,..} if code == "mail_agent_paused"));
-            assert!(
-                matches!(pipe.request(&Operation::AgentCrm(Box::new(ftw_ipc::agent::Command::Fields))).await.unwrap(),
-                Response::Error {code,..} if code == "mail_agent_unregistered")
-            );
+            assert!(matches!(
+                pipe.request(&Operation::AgentCrm(Box::new(
+                    ftw_ipc::agent::Command::Fields
+                )))
+                .await
+                .unwrap(),
+                Response::Crm { .. }
+            ));
         } else {
             assert!(matches!(response, Response::AgentData { .. }));
         }
@@ -254,7 +258,7 @@ fn core_rejects_a_read_only_lock_location() {
 use ftw_ipc::{crm, Operation};
 
 #[tokio::test]
-async fn local_mcp_connection_uses_the_desktop_authorized_identity() {
+async fn local_mcp_works_without_registration_or_token() {
     use ftw_ipc::mail;
     use serde_json::{json, Value};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -281,22 +285,7 @@ async fn local_mcp_connection_uses_the_desktop_authorized_identity() {
     let mut core = CoreProcess::start(root);
     core.ready(root).await;
     let pipe = PipeEndpoint::for_data_directory(&root.join("data")).unwrap();
-    let original = "a".repeat(64);
-    let registered = pipe
-        .request(&Operation::Mail(Box::new(
-            mail::Command::RegisterMailAgent {
-                name: "WorkBuddy fixture".into(),
-                token: mail::Secret(original),
-            },
-        )))
-        .await
-        .unwrap();
-    let Response::Mail { data } = registered else {
-        panic!("registration failed")
-    };
-    let mail::Result::Saved { id } = *data else {
-        panic!("registration failed")
-    };
+    let id = ftw_ipc::agent::LOCAL_AGENT_ID.to_owned();
 
     let mcp = Path::new(CORE).with_file_name("ftw-mcp.exe");
     let mut child = tokio::process::Command::new(mcp)
@@ -322,24 +311,7 @@ async fn local_mcp_connection_uses_the_desktop_authorized_identity() {
         json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
         "params":{"name":"get_workbench_context","arguments":{}}})
     };
-    let before = send(&mut input, &mut output, request(2)).await;
-    assert_eq!(
-        before["result"]["structuredContent"]["code"],
-        "mail_agent_unregistered"
-    );
-
-    let token = "b".repeat(64);
-    let enabled = pipe
-        .request(&Operation::Mail(Box::new(
-            mail::Command::EnableLocalAgent {
-                id: id.clone(),
-                token: mail::Secret(token),
-            },
-        )))
-        .await
-        .unwrap();
-    assert!(matches!(enabled, Response::Mail { .. }));
-    let connected = send(&mut input, &mut output, request(3)).await;
+    let connected = send(&mut input, &mut output, request(2)).await;
     assert_ne!(connected["result"]["isError"], true);
     let context: Value =
         serde_json::from_str(connected["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -381,17 +353,18 @@ async fn local_mcp_connection_uses_the_desktop_authorized_identity() {
     assert_ne!(after_restart["result"]["isError"], true);
     restarted.kill().await.unwrap();
 
-    let revoked = pipe
-        .request(&Operation::Mail(Box::new(mail::Command::RevokeMailAgent {
+    let paused = pipe
+        .request(&Operation::Mail(Box::new(mail::Command::SetAgentPaused {
             id,
+            paused: true,
         })))
         .await
         .unwrap();
-    assert!(matches!(revoked, Response::Mail { .. }));
+    assert!(matches!(paused, Response::Mail { .. }));
     let denied = send(&mut input, &mut output, request(4)).await;
     assert_eq!(
         denied["result"]["structuredContent"]["code"],
-        "mail_agent_unregistered"
+        "mail_agent_paused"
     );
     child.kill().await.unwrap();
 }

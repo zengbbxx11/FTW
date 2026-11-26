@@ -54,13 +54,13 @@ impl MailService {
 
     pub(super) async fn attach_agent_assets(
         &self,
-        token: &str,
+        identity: super::policy::AgentIdentity<'_>,
         id: &str,
         revision: i64,
         ids: &[String],
     ) -> Result<Reply> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let agent = super::policy::registered(&mut tx, super::policy::digest(token)?).await?;
+        let agent = super::policy::resolve(&mut tx, identity).await?;
         let assets = select(&mut tx, ids, true).await?;
         for asset in &assets {
             read_asset(self.objects()?, asset).await?;

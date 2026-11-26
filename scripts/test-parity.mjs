@@ -252,7 +252,7 @@ async function verifyCompany(call, writableField, hiddenField) {
     entry.field_id === writableField && entry.value?.value === 'Company contact fixture'))
   const audit = await desktop('data', { action: 'audit_workspace', entity: 'contact', source: 'agent',
     keyword: 'parity-company-unlink', days: 7, offset: 0 })
-  assert.ok(audit.rows.some(row => row.entity_id === foreign && row.actor_name === 'Codex Parity'
+  assert.ok(audit.rows.some(row => row.entity_id === foreign && row.actor_name === '本机 Agent'
     && row.task_id === 'parity-company-unlink' && row.operation === 'remove_company_membership'))
   assert.ok((await call('list_agent_runs', { keyword: newContact.request_id })).rows.some(row => row.record.entity_id === added.id))
   console.log('Company profile and membership parity verified with a live editor, revision protection, atomic create and audit')
@@ -277,15 +277,14 @@ try {
   await click('.app-nav button', '客户管理')
   console.log('Desktop started and created a contact before Agent registration')
 
-  const agent = await mail({ action: 'register_mail_agent', name: 'Codex Parity', token })
-  await mail({ action: 'register_mail_agent', name: 'WorkBuddy Parity', token: secondToken })
+  const agent = { id: 'local-mcp' }
   const db = openFixtureDb(dbpath)
   // The account only enables draft validation. This test never queues network mail.
   db.exec("INSERT INTO local_secrets(id,protected) VALUES('parity-fixture',X''); " +
     "INSERT INTO email_accounts(id,display_name,email_address,smtp_host,smtp_port,smtp_security,smtp_username,secret_ref) " +
     "VALUES('parity-fixture-account','Parity fixture','sender@example.test','invalid.example.test',465,'tls','sender@example.test','parity-fixture')")
   db.close()
-  await withMcp(undefined, call => call('list_customers', {}, /mail_agent_unregistered/))
+  await withMcp(undefined, call => call('list_customers'))
   await withMcp(secondToken, async call => {
     const found = await call('search_workbench', { keyword: humanName })
     assert.deepEqual(found.counts, { all: 1, customer: 1, mail: 0, activity: 0, file: 0 })
@@ -327,11 +326,11 @@ try {
     await visible('新值 B')
     await call('update_customer', { request_id: 'parity-current-contact', contact_id: created.id, customer_level: 'A',
       expected_revision: humanEdit.record_revision, expected_epoch: humanEdit.data_epoch })
-    await visible('Codex Parity')
+    await visible('本机 Agent')
     await visible('新值 A')
     const history = await call('get_customer_change_history', { contact_id: created.id })
     assert.deepEqual(history.rows.slice(0, 2).map(row => [row.actor_name, row.fields[0].before, row.fields[0].after]),
-      [['Codex Parity', 'B', 'A'], ['desktop-user', '', 'B']])
+      [['本机 Agent', 'B', 'A'], ['desktop-user', '', 'B']])
     console.log('Both contact writes and actor diffs propagated, and a stale write was rejected')
 
     const field = await crm({ action: 'save_field', definition: { id: null, expected_revision: null,
@@ -519,13 +518,13 @@ try {
     console.log('CSV preview rolls back and retryable import and export use Core validation')
 
     assert.deepEqual((await call('get_mail_task', { task_id: 'unused-parity-task' })).rows, [])
-    const runs = await desktop('data', { action: 'agent_runs', filter: 'all', keyword: 'Codex Parity', offset: 0 })
-    assert.ok(runs.rows.some(row => row.record.request_id === 'parity-agent-create' && row.record.agent_name === 'Codex Parity'))
+    const runs = await desktop('data', { action: 'agent_runs', filter: 'all', keyword: '本机 Agent', offset: 0 })
+    assert.ok(runs.rows.some(row => row.record.request_id === 'parity-agent-create' && row.record.agent_name === '本机 Agent'))
     assert.ok((await call('list_agent_runs', { keyword: 'parity-agent-create' })).rows.some(row =>
       row.record.agent_id === agent.id && row.record.success === true && row.record.retryable === false))
     assert.ok((await call('list_agent_runs', { keyword: 'parity-stale-contact' })).rows.some(row =>
       row.record.success === false && row.record.retryable === true))
-    assert.ok((await call('list_agent_runs', { keyword: 'WorkBuddy Parity' })).rows.some(row => row.record.request_id === 'parity-secondary-create'))
+    assert.ok((await call('list_agent_runs', { keyword: '本机 Agent' })).rows.some(row => row.record.request_id === 'parity-secondary-create'))
 
     // Only terminal SMTP fixtures are inserted in the desktop profile. Loopback testing of live queue transitions is in Rust.
     const cases = openFixtureDb(dbpath)
@@ -572,9 +571,9 @@ try {
     await click('.mail-folders button', '回复待确认')
     await visible('Parity reply with file')
     await call('suggest_reply_link', { message_id: 'parity-inbox', contact_id: created.id })
-    await visible('建议人 Codex Parity')
+    await visible('建议人 本机 Agent')
     const candidates = await call('get_reply_link_candidates', { message_id: 'parity-inbox' })
-    assert.deepEqual(candidates.rows.find(row => row.id === created.id).suggested_by, ['Codex Parity'])
+    assert.deepEqual(candidates.rows.find(row => row.id === created.id).suggested_by, ['本机 Agent'])
     assert.equal((await desktop('inbox', { action: 'get', id: 'parity-inbox' })).record.contact_id, null)
     await desktop('inbox', { action: 'review_link', id: 'parity-inbox', contact_id: created.id, expected_contact: null, expected_match: 'pending' })
     await call('suggest_reply_link', { message_id: 'parity-inbox', contact_id: created.id }, /mail_link_changed/)
@@ -672,7 +671,7 @@ try {
     const audit = await desktop('data', { action: 'audit_workspace', entity: 'email_template', keyword: '', source: '', days: 7, offset: 0 })
     const audited = audit.rows.filter(row => row.entity_id === savedTemplate.id)
     assert.ok(audited.some(row => row.actor === 'desktop-user' && row.operation === 'edit'))
-    assert.ok(audited.some(row => row.actor_name === 'Codex Parity' && row.task_id === archive.request_id && row.operation === 'archive'))
+    assert.ok(audited.some(row => row.actor_name === '本机 Agent' && row.task_id === archive.request_id && row.operation === 'archive'))
     assert.ok((await call('list_agent_runs', { keyword: archive.request_id })).rows.some(row => row.record.entity_id === savedTemplate.id))
     console.log('Shared templates verified in both directions, with scoped access, idempotency, edit preservation and audit')
 
@@ -730,7 +729,7 @@ try {
     assert.equal(rejectedLead.review_status, 'rejected')
     await call('update_lead_candidate', { ...leadChange, request_id: 'parity-lead-rejected', expected: version(rejectedLead) }, /crm_read_only/)
     const auditLead = await desktop('data', { action: 'audit_workspace', entity: 'lead', keyword: '', source: '', days: 7, offset: 0 })
-    assert.ok(auditLead.rows.some(row => row.entity_id === leadId && row.actor_name === 'Codex Parity' && row.task_id === leadChange.request_id))
+    assert.ok(auditLead.rows.some(row => row.entity_id === leadId && row.actor_name === '本机 Agent' && row.task_id === leadChange.request_id))
     console.log('Lead candidate edits verified in both directions, including review protection, provenance and stale versions')
 
     await verifyCompany(call, field.id, agentField.id)
@@ -758,7 +757,7 @@ try {
         patch: { alibaba_buyer_id: 'shared-buyer' } })
     })
     assert.equal((await call('get_customer', { contact_id: created.id })).record.input.alibaba_buyer_id, 'shared-buyer')
-    console.log('Both registered Agents share search and can edit the same customer')
+    console.log('Both local MCP clients share search and can edit the same customer')
 
     const fieldVersion = (await call('list_customer_fields')).fields.find(row => row.id === field.id).revision
     await click('.app-nav button', '客户管理')
@@ -807,13 +806,11 @@ try {
     await call('get_customer', { contact_id: created.id }, /mail_agent_paused/)
     await mail({ action: 'set_agent_paused', id: agent.id, paused: false })
     assert.equal((await call('get_customer', { contact_id: created.id })).record.id, created.id)
-    await mail({ action: 'revoke_mail_agent', id: agent.id })
-    await call('get_customer', { contact_id: created.id }, /mail_agent_unregistered/)
-    console.log('Registered access, pause, resume and revocation verified')
+    console.log('Local access, pause and resume verified')
   })
   await click('.app-nav button', '邮件中心')
   await click('.mail-folders button', 'Agent 发信权限')
-  await visible('Agent 登记')
+  await visible('本机 Agent 接入')
   await visible('最近连接', '.agent-administration')
   await click('.agent-administration button', '暂停接入')
   await visible('Agent 已暂停')

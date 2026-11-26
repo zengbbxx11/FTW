@@ -108,6 +108,16 @@ impl MailService {
         self.agent_inbox(command).await
     }
 
+    pub async fn local_agent_inbox(&self, command: AgentCommand) -> Response {
+        if let Err(error) = self
+            .identity_actor(super::policy::AgentIdentity::Local)
+            .await
+        {
+            return response(Err(error));
+        }
+        self.agent_inbox(command).await
+    }
+
     async fn configure_imap(
         &self,
         id: String,

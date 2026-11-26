@@ -83,7 +83,7 @@ async function exercise(protocol, token) {
     if (!token) {
       for (const name of ['list_customers', 'list_email_accounts', 'list_inbox', 'get_workbench_context']) {
         const result = await send('tools/call', { name, arguments: {} })
-        assert.equal(result.result.structuredContent.code, 'mail_agent_unregistered')
+        assert.ok(!result.error && !result.result?.isError, JSON.stringify(result))
       }
       return
     }
@@ -97,7 +97,7 @@ async function exercise(protocol, token) {
     }
     const context = await call('get_workbench_context')
     assert.equal(context.schema_version, 27)
-    assert.equal(context.agent.name, 'Fixture ' + protocol)
+    assert.equal(context.agent.id, 'local-mcp')
     assert.deepEqual(context.sender_accounts, [])
     const full = await call('get_workbench_definitions', { kind: 'states' })
     assert.equal(full.version, context.definitions.states)

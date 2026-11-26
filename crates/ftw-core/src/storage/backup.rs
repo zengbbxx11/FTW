@@ -150,7 +150,9 @@ pub async fn restore(pool: &SqlitePool, root: &Path, filename: &str) -> Result<S
                 UPDATE app_change_epoch SET epoch=lower(hex(randomblob(16)));
                 UPDATE email_approval_attempts SET state='interrupted',outcome='approval_interrupted',finished_at=unixepoch() WHERE state='waiting';
                 UPDATE mail_agent_policy SET mode='manual',revision=revision+1 WHERE mode='automatic';
-                UPDATE mail_agent_clients SET revoked=1 WHERE NOT revoked;
+                INSERT OR IGNORE INTO mail_agent_clients(id,name,token_digest) VALUES ('local-mcp','本机 Agent',randomblob(32));
+                UPDATE mail_agent_clients SET revoked=1 WHERE NOT revoked AND id<>'local-mcp';
+                UPDATE mail_agent_clients SET revoked=0,automatic=0 WHERE id='local-mcp';
                 UPDATE mail_assets SET agent_allowed=0 WHERE agent_allowed;
                 UPDATE mail_agent_reviews SET state='failed',outcome='approval_interrupted' WHERE state='waiting';
                 UPDATE inbox_messages SET download_outcome='approval_interrupted' WHERE download_outcome='running';

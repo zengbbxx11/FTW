@@ -560,3 +560,4 @@ pub enum Command {
         input: crate::crm::ActivityInput,
     },
 }
+pub const LOCAL_AGENT_ID: &str = "local-mcp";

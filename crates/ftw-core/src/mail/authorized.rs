@@ -4,8 +4,8 @@ use super::{
 };
 use sqlx::{Row, SqliteConnection};
 
-pub(super) struct Submission {
-    pub digest: Vec<u8>,
+pub(super) struct Submission<'a> {
+    pub identity: policy::AgentIdentity<'a>,
     pub id: String,
     pub revision: i64,
     pub purpose: String,
@@ -58,11 +58,11 @@ impl MailService {
         })
     }
 
-    pub(super) async fn enqueue_authorized(&self, submission: Submission) -> Result<Reply> {
+    pub(super) async fn enqueue_authorized(&self, submission: Submission<'_>) -> Result<Reply> {
         check_text(&submission.task, 96)?;
         check_text(&submission.request, 96)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let agent = policy::registered(&mut tx, submission.digest).await?;
+        let agent = policy::resolve(&mut tx, submission.identity).await?;
         let config = policy::current(&mut tx).await?;
         let (draft, revision, state) = snapshot(&mut tx, &submission.id).await?;
         if revision != submission.revision {

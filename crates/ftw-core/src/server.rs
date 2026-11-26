@@ -172,9 +172,9 @@ async fn respond(
                 }
                 Operation::Mail(command) => mail.desktop(*command, 0).await,
                 Operation::DesktopMail { owner, command } => mail.desktop(*command, owner).await,
-                Operation::Agent(_) | Operation::AgentInbox(_) | Operation::AgentCrm(_) => {
-                    error_response("mail_agent_unregistered")
-                }
+                Operation::Agent(command) => mail.local_agent_session(*command).await,
+                Operation::AgentInbox(command) => mail.local_agent_inbox(*command).await,
+                Operation::AgentCrm(command) => mail.local_collaborate_crm(*command).await,
                 Operation::RegisteredAgentMail { token, command } => {
                     mail.agent_session(&token.0, *command).await
                 }
@@ -187,6 +187,9 @@ async fn respond(
                 }
                 Operation::AgentCollaboration { token, command } => {
                     mail.collaborate(&token.0, *command).await
+                }
+                Operation::LocalAgentCollaboration(command) => {
+                    mail.local_collaborate(*command).await
                 }
                 Operation::Data(command) => {
                     crate::data::dispatch(database, mail, profile, *command).await
