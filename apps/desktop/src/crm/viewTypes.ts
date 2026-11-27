@@ -17,19 +17,19 @@ export type CellTarget = { id: string; revision: number; epoch: string }
 export type AvailableColumn = { id: string; title: string; kind: FieldKind; width: number; custom?: CustomField }
 
 export const systemColumns: AvailableColumn[] = [
-  { id: 'name', title: '客户姓名', kind: 'text', width: 178 },
+  { id: 'name', title: '客户姓名', kind: 'text', width: 210 },
   { id: 'company', title: '公司 / 店铺', kind: 'text', width: 126 },
-  { id: 'country', title: '国家 / 地区', kind: 'text', width: 92 },
-  { id: 'stage', title: '客户阶段', kind: 'single_select', width: 88 },
-  { id: 'sample', title: '样品进度', kind: 'single_select', width: 94 },
-  { id: 'level', title: '客户等级', kind: 'single_select', width: 90 },
-  { id: 'product', title: '产品兴趣', kind: 'text', width: 86 },
-  { id: 'mail_status', title: '邮件开发', kind: 'single_select', width: 112 },
+  { id: 'country', title: '国家 / 地区', kind: 'text', width: 124 },
+  { id: 'stage', title: '客户阶段', kind: 'single_select', width: 118 },
+  { id: 'sample', title: '样品进度', kind: 'single_select', width: 118 },
+  { id: 'level', title: '客户等级', kind: 'single_select', width: 118 },
+  { id: 'product', title: '产品兴趣', kind: 'text', width: 148 },
+  { id: 'mail_status', title: '邮件开发', kind: 'single_select', width: 124 },
   { id: 'mail_last_sent', title: '最近发信', kind: 'date', width: 122 },
   { id: 'mail_last_reply', title: '最近回复', kind: 'date', width: 122 },
   { id: 'mail_count', title: '开发提交数', kind: 'number', width: 112 },
   { id: 'mail_subject', title: '最近开发主题', kind: 'text', width: 150 },
-  { id: 'last_contact', title: '最近联系', kind: 'date', width: 96 },
+  { id: 'last_contact', title: '最近联系', kind: 'date', width: 122 },
   { id: 'email', title: '主要邮箱', kind: 'text', width: 186 },
   { id: 'source', title: '记录来源', kind: 'text', width: 104 },
 ]

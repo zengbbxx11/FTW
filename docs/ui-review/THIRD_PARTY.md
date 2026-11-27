@@ -13,3 +13,7 @@
 Twenty CRM 用于参考联系人身份、企业信息与记录活动的布局。AppFlowy 用于参考字段可见性、顺序、列宽和保存视图的交互。这两项都属于设计研究，无源代码移植或运行时依赖。 [Twenty 仓库及许可](https://github.com/twentyhq/twenty/blob/main/LICENSE) · [AppFlowy 数据库插件与许可](https://github.com/AppFlowy-IO/AppFlowy/tree/main/frontend/appflowy_flutter/lib/plugins/database)
 
 版权和许可声明位于 [第三方 UI 许可](../../apps/desktop/public/THIRD_PARTY_UI.txt)，便携版构建会随程序附上。
+
+## 1.1.9 选择控件
+
+使用 npm `@radix-ui/react-select` 2.4.1（MIT，WorkOS）和 `cmdk` 1.1.1（MIT，Paco Coursey），结合现有 Radix Popover，实现统一单选、搜索、键盘与弹层交互。`Select.tsx` 保留原表单的选项值、清空选项、禁用及必填校验，不引入新的业务状态。版权声明随包保存在 `THIRD_PARTY_UI.txt`。

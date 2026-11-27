@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ClipboardList, Clock, History, Layers, Package, Plus, Search, Truck, UserRound, UsersRound } from 'lucide-react'
@@ -44,9 +45,9 @@ export function SampleWorkspace({ back, openContact, openActivity }: {
       </div>
       <label className="followup-search"><Search aria-hidden="true" /><input type="search" aria-label="搜索样品记录" placeholder="搜索客户、型号或近期反馈" maxLength={300}
         value={search} onChange={event => { setSearch(event.target.value); setOffset(0); setSelected('') }} /></label>
-      <select aria-label="筛选样品进度" value={status} onChange={event => filter(event.target.value)}>
+      <Select aria-label="筛选样品进度" value={status} onChange={event => filter(event.target.value)}>
         <option value="">全部样品进度</option>{states.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}
-      </select>
+      </Select>
     </div>
     {editor && <section className="panel sample-editor"><h2>新增样品沟通记录</h2>
       <ActivityEditor key={editor.id} contactId={editor.id} initialType="sample" initialSample={editor.sample} close={() => setEditor(null)} />

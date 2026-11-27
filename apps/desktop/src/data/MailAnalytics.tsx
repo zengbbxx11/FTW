@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState, type CSSProperties } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Clock, Database, Download, Mail, Send, TriangleAlert } from 'lucide-react'
@@ -24,9 +25,9 @@ export function MailAnalytics({ open }: { open: (kind: MailReportLink) => void }
         <button type="button" className="button primary" disabled={!report || csv.isPending} onClick={() => csv.mutate()}>
           <Download aria-hidden="true" />{csv.isPending ? '正在导出…' : '导出统计'}</button></div></header>
     <div className="ops-controls analytics-options"><div className="row-actions">
-      <label>统计范围 <select aria-label="统计范围" disabled={csv.isPending} value={days} onChange={event => { setDays(Number(event.target.value)); csv.reset() }}>
+      <label>统计范围 <Select aria-label="统计范围" disabled={csv.isPending} value={days} onChange={event => { setDays(Number(event.target.value)); csv.reset() }}>
         {periods.map(period => <option value={period} key={period}>最近 {period} 天</option>)}
-      </select></label>
+      </Select></label>
       <label><input type="checkbox" disabled={csv.isPending} checked={includeLegacy} onChange={event => { setIncludeLegacy(event.target.checked); csv.reset() }} />包含历史未分类邮件</label>
     </div></div>
     {csv.data && <p role="status" className="review-notice long-text">统计已导出到 {csv.data.path}</p>}

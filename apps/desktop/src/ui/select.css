@@ -1,0 +1,31 @@
+.ftw-select-control { display: inline-flex; min-width: 0; max-width: 100%; vertical-align: middle; }
+.field > .ftw-select-control, .field > .ftw-select-control > .ftw-select-trigger { width: 100%; }
+#root .ftw-select-trigger, .ftw-popup .ftw-select-trigger {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: .7rem; min-width: 0;
+  min-height: 2.15rem; padding: .35rem .65rem; border: 1px solid var(--ftw-border); border-radius: .45rem;
+  background: var(--ftw-surface); color: var(--ftw-ink); font: inherit; font-size: .8125rem; font-weight: 400; text-align: start;
+}
+.ftw-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ftw-select-chevron { flex: none; width: 15px; height: 15px; color: var(--ftw-muted); }
+.ftw-select-trigger:hover:not(:disabled) { border-color: #9aafbf; }
+.ftw-select-trigger:disabled, fieldset:disabled .ftw-select-trigger { cursor: not-allowed; opacity: .55; }
+.ftw-select-popup { z-index: 150; min-width: var(--radix-select-trigger-width, var(--radix-popover-trigger-width)); max-width: min(30rem, calc(100vw - 20px));
+  max-height: min(20rem, var(--radix-select-content-available-height, var(--radix-popover-content-available-height))); padding: .3rem;
+  border: 1px solid var(--ftw-border); border-radius: .55rem; background: var(--ftw-surface); color: var(--ftw-ink); box-shadow: 0 8px 25px #14223826; font-size: .8125rem; }
+.ftw-select-item, .ftw-combobox [cmdk-item] { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .45rem .55rem;
+  border-radius: .3rem; cursor: default; outline: none; overflow-wrap: anywhere; }
+.ftw-select-item[data-highlighted], .ftw-combobox [cmdk-item][data-selected="true"] { background: var(--ftw-accent-soft); color: var(--ftw-accent); }
+.ftw-select-item[data-state="checked"] { color: var(--ftw-accent); font-weight: 600; }
+.ftw-select-popup svg { width: 15px; height: 15px; flex: none; }
+.ftw-select-item[data-disabled], .ftw-combobox [cmdk-item][data-disabled="true"] { opacity: .45; pointer-events: none; }
+.ftw-select-scroll { display: grid; place-items: center; padding: .15rem; }
+.ftw-combobox [cmdk-list] { max-height: min(17rem, 40vh); overflow: auto; overscroll-behavior: contain; }
+.ftw-combobox [cmdk-empty] { padding: 1rem; color: var(--ftw-muted); }
+.ftw-select-search { display: flex; align-items: center; gap: .4rem; padding: .25rem .4rem .5rem; border-bottom: 1px solid var(--ftw-border); margin-bottom: .25rem; }
+.ftw-select-search input { width: 100%; min-width: 0; border: 0; padding: .3rem; background: transparent; color: inherit; font: inherit; }
+.ftw-select-search input:focus-visible { outline: none; box-shadow: none; }
+/* One continuous focus edge, shared by native inputs and custom selectors. */
+#root :is(input:not([type="checkbox"]):not([type="radio"]),textarea,.ftw-select-trigger):is(:focus,:focus-visible),
+.ftw-popup :is(input:not([type="checkbox"]):not([type="radio"]),textarea,.ftw-select-trigger):is(:focus,:focus-visible),
+.ftw-select-popup input:focus-visible { outline: none; outline-offset: 0; border-color: var(--ftw-accent); box-shadow: inset 0 0 0 1px var(--ftw-accent); }
+.ftw-select-popup .ftw-select-search input:focus-visible { box-shadow: none; }

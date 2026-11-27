@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useDeferredValue, useState } from 'react'
 import { Archive, Ban, ChartColumn, CircleAlert, CircleHelp, Clock, FilePenLine, FolderOpen, Inbox, List, Mail, Paperclip, Pencil, Plus, RefreshCw, Send, Settings, ShieldCheck, Trash2, UserRound, type LucideIcon } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -22,7 +23,7 @@ const folders: Record<Folder, { label: string; icon: LucideIcon }> = {
   failed: { label: '发送失败', icon: CircleAlert },
   unknown: { label: '结果未知', icon: CircleHelp },
   bounced: { label: '已退信', icon: Archive },
-  review: { label: '回复待确认', icon: Mail },
+  review: { label: '客户来信待核对', icon: Mail },
   records: { label: '全部发信记录', icon: List },
   accounts: { label: '发件账户', icon: Settings },
   imap: { label: '收件设置', icon: RefreshCw },
@@ -335,10 +336,10 @@ function DraftForm({ contact, existing, reply, saved, close }: {
       {choosingTemplate && <DraftTemplatePicker contactId={contact.id} hasText={Boolean(subject.trim() || body.trim())}
         onClose={() => setChoosingTemplate(false)} onApply={data => { setSubject(data.subject); setBody(data.body); setChoosingTemplate(false) }} />}
       <div className="form-grid">
-        <Field label="发件账户"><select value={sender} onChange={e => setAccount(e.target.value)} disabled={fixedReply} required>
-          <option value="" disabled>选择账户</option>{senderRows.map(row => <option key={row.id} value={row.id}>{row.name} · {row.email}</option>)}</select></Field>
-        <Field label="收件邮箱"><select value={currentRecipient} onChange={e => setRecipient(e.target.value)} disabled={fixedReply} required>
-          <option value="" disabled>选择邮箱</option>{emails.map(row => <option key={row.value} value={row.value}>{row.value}</option>)}</select></Field>
+        <Field label="发件账户"><Select value={sender} onChange={e => setAccount(e.target.value)} disabled={fixedReply} required>
+          <option value="" disabled>选择账户</option>{senderRows.map(row => <option key={row.id} value={row.id}>{row.name} · {row.email}</option>)}</Select></Field>
+        <Field label="收件邮箱"><Select value={currentRecipient} onChange={e => setRecipient(e.target.value)} disabled={fixedReply} required>
+          <option value="" disabled>选择邮箱</option>{emails.map(row => <option key={row.value} value={row.value}>{row.value}</option>)}</Select></Field>
         <Field label="主题"><input value={subject} onChange={e => setSubject(e.target.value)} required={!reply} placeholder={reply ? '留空沿用原邮件主题' : undefined} /></Field>
       </div>
       <Field label="正文"><textarea rows={10} value={body} onChange={e => setBody(e.target.value)} required /></Field>

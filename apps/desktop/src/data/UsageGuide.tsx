@@ -28,10 +28,14 @@ export function UsageGuide({ navigate }: { navigate: (target: GuideTarget) => vo
     <div className="guide-grid">
       <section className="panel guide-card"><h2><BookOpen aria-hidden="true" />认识工作台</h2>
         <p>客户管理保存联系人和业务资料；邮件中心处理收发；工作台和 Agent 共享同一份本地数据。</p>
+        <p>点击客户管理的统计卡片可筛选全部、重点、样品或跟进中的客户。新建视图可保存筛选、排序和列布局；自建视图可以删除，删除不会影响客户资料。</p>
+        <p>拖动表头分界线调整列宽，双击可按当前页内容适配；表头小菜单可改显示名称、隐藏或移动列。“添加属性”可直接新建字段。列宽、顺序、显示状态和密度按视图自动记住，筛选和排序仍需主动保存。需要重来时点击“恢复默认列布局”。</p>
+        <p>每行右侧直接提供编辑、跟进和邮件；点击客户姓名查看详情。较长的下拉列表可以输入文字查找，方向键选择、Enter 确认、Esc 关闭。</p>
         <button className="button" onClick={() => navigate('customers')}><UsersRound aria-hidden="true" />打开客户管理</button>
       </section>
       <section className="panel guide-card"><h2><Mail aria-hidden="true" />配置邮箱</h2>
         <p>在邮箱账户中填写服务商提供的 SMTP 信息和授权码。需要收取回复时，再配置 IMAP 并同步收件箱。</p>
+        <p>收件箱保留全部来信；有客户匹配线索的邮件才进入“客户来信待核对”。无关来信可标记为非客户邮件并随时恢复，不会屏蔽后续来信。没有客户档案时，可从发件人新建客户后关联。</p>
         <div className="row-actions"><button className="button" onClick={() => navigate('accounts')}>发件账户 <ArrowRight aria-hidden="true" /></button>
           <button className="button" onClick={() => navigate('imap')}>收件设置 <ArrowRight aria-hidden="true" /></button></div>
       </section>

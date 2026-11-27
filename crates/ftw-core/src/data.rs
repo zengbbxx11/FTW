@@ -146,7 +146,7 @@ async fn dashboard(pool: &SqlitePool) -> Result<Reply> {
         "SELECT (SELECT count(*) FROM contacts WHERE archived_at IS NULL) contacts,
             (SELECT count(*) FROM email_messages) smtp_accepted,
             count(*) FILTER (WHERE m.mail_status='sent_no_reply_seen') waiting,
-            count(*) FILTER (WHERE m.last_reply_at IS NOT NULL) replied, count(*) sent_contacts
+            count(*) FILTER (WHERE m.mail_status='replied') replied, count(*) sent_contacts
          FROM mail_contact_outreach m JOIN contacts c ON c.id=m.contact_id
          WHERE c.archived_at IS NULL AND m.last_sent_at IS NOT NULL",
     )

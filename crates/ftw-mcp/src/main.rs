@@ -146,6 +146,22 @@ struct ArchiveView {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct DeleteView {
+    request_id: String,
+    view_id: String,
+    expected_revision: i64,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ClassifyInbox {
+    request_id: String,
+    targets: Vec<ftw_ipc::inbox::HandlingTarget>,
+    non_customer: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct DocumentUpload {
     contact_id: String,
     filename: String,
@@ -311,6 +327,7 @@ struct InboxQuery {
     account_id: Option<String>,
     keyword: Option<String>,
     offset: u32,
+    filter: ftw_ipc::inbox::InboxFilter,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -429,6 +446,7 @@ struct ReplyConfirmation {
     contact_id: String,
     expected_contact: Option<String>,
     expected_match: String,
+    expected_handling_revision: Option<i64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1056,6 +1074,7 @@ impl Ftw {
             contact_id: input.contact_id,
             expected_contact: input.expected_contact,
             expected_match: input.expected_match,
+            expected_handling_revision: input.expected_handling_revision,
         })
         .await
     }
@@ -1579,6 +1598,33 @@ impl Ftw {
         .await
     }
 
+    #[tool(
+        description = "Delete a custom shared view definition only, at its current revision. Built-in and default views cannot be deleted. Reuse request_id for identical retries."
+    )]
+    async fn delete_customer_view(&self, Parameters(input): Parameters<DeleteView>) -> ToolResult {
+        self.collaborate(Collaboration::DeleteView {
+            request_id: input.request_id,
+            id: input.view_id,
+            expected_revision: input.expected_revision,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Mark explicitly selected unassociated inbox messages as non-customer, or restore them. Pass current handling_revision from list_inbox as expected_revision. Does not delete messages or block future mail. Reuse request_id for retries."
+    )]
+    async fn classify_inbox_messages(
+        &self,
+        Parameters(input): Parameters<ClassifyInbox>,
+    ) -> ToolResult {
+        self.collaborate(Collaboration::ClassifyInbox {
+            request_id: input.request_id,
+            targets: input.targets,
+            non_customer: input.non_customer,
+        })
+        .await
+    }
+
     #[tool(description = "List archived shared views visible to this Agent.")]
     async fn list_archived_customer_views(&self) -> ToolResult {
         self.collaborate(Collaboration::ArchivedViews).await
@@ -1879,6 +1925,7 @@ impl Ftw {
             offset: input.offset,
             account_id: input.account_id,
             keyword: input.keyword,
+            filter: input.filter,
         })
         .await
     }

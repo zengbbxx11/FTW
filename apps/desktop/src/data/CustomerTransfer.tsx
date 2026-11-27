@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, FileSpreadsheet, Upload } from 'lucide-react'
@@ -16,7 +17,7 @@ const allFields = Object.keys(fields) as (keyof typeof fields)[]
 
 export function CustomerTransfer({ focus }: { focus: TransferFocus }) {
   const picker = useRef<HTMLInputElement>(null)
-  const scopeNode = useRef<HTMLSelectElement>(null)
+  const scopeNode = useRef<HTMLButtonElement>(null)
   const [file, setFile] = useState<{ name: string; text: string } | null>(null)
   const [reading, setReading] = useState(false)
   const [stage, setStage] = useState('prospect')
@@ -48,9 +49,9 @@ export function CustomerTransfer({ focus }: { focus: TransferFocus }) {
       <p className="muted">支持 UTF-8 CSV，每批最多 500 条且不超过 512 KiB。</p>
       <div className="data-csv-inputs">
         <Field label="客户 CSV"><input ref={picker} type="file" accept=".csv,text/csv" disabled={fileLocked} onChange={event => void select(event.target.files?.[0])} /></Field>
-        <Field label="阶段留空时"><select value={stage} disabled={fileLocked} onChange={event => { setStage(event.target.value); preview.reset() }}>
+        <Field label="阶段留空时"><Select value={stage} disabled={fileLocked} onChange={event => { setStage(event.target.value); preview.reset() }}>
           <option value="prospect">待开发</option><option value="won">已成交</option>
-        </select></Field>
+        </Select></Field>
       </div>
       {fileError && <DataError error={fileError} />}
       {preview.isError && <DataError error={preview.error} />}
@@ -71,10 +72,10 @@ export function CustomerTransfer({ focus }: { focus: TransferFocus }) {
     </section>
     <section className="panel data-csv-export"><div className="section-heading"><h2><Download aria-hidden="true" />导出客户 CSV</h2></div>
       <p className="muted">选择导出范围和字段。CSV 写入本地工作空间的 exports 目录。</p>
-      <Field label="客户范围"><select ref={scopeNode} aria-label="导出客户范围" value={scope} disabled={exported.isPending}
+      <Field label="客户范围"><Select ref={scopeNode} aria-label="导出客户范围" value={scope} disabled={exported.isPending}
         onChange={event => { setScope(event.target.value as CsvScope); exported.reset() }}>
         <option value="active">未归档客户</option><option value="archived">已归档客户</option><option value="all">全部客户（含归档）</option>
-      </select></Field>
+      </Select></Field>
       <fieldset className="data-export-fields" disabled={exported.isPending}><legend>导出字段</legend>
         <div>{allFields.map(id => <label key={id}><input type="checkbox" checked={selected.includes(id)} onChange={event => {
           const checked = event.target.checked

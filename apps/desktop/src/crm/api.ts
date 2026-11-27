@@ -119,7 +119,7 @@ export type ContactQuery = {
   page_size?: 20 | 50 | 100
   group?: [string, string | null] | null
   keyword: string
-  quick_view: '' | 'priority' | 'sample'
+  quick_view: '' | 'priority' | 'sample' | 'in_progress'
   country: string
   stage: string
   level: string
@@ -252,6 +252,7 @@ type Command =
   | { action: 'save_view'; view: ViewInput }
   | { action: 'move_view'; id: string; expected_revision: number; direction: -1 | 1 }
   | { action: 'archive_view'; id: string; expected_revision: number; archived: boolean }
+  | { action: 'delete_view'; id: string; expected_revision: number }
   | { action: 'update_cells'; targets: CellTarget[]; field: string; value: string }
   | { action: 'preview_bulk_contacts'; query: ContactQuery }
   | { action: 'update_matching_contacts'; query: ContactQuery; fingerprint: string; field: string; value: string }
@@ -313,6 +314,7 @@ export async function request<Kind extends Result['kind']>(
 const fieldLabels: Record<string, string> = {
   view_name: '视图名称', view_duplicate: '已有同名视图', view_default_hidden: '默认视图须保持可见',
   view_choose_default: '请先将另一个视图设为默认', view_columns: '列数、列宽或引用字段超出范围',
+  view_builtin_delete: '内置视图可隐藏或归档，不能删除。',
   query_field: '视图引用了已归档或不可访问的字段，请编辑视图以修复', query_columns: '每次最多载入 12 个自定义列',
   query_value: '检查筛选条件的值', query_depth: '请减少筛选条件或嵌套分组', query_empty_group: '筛选分组至少需要一个条件',
   field_name: '字段名称', field_name_duplicate: '已有同名的启用字段', field_color: '选择有效的标签颜色',

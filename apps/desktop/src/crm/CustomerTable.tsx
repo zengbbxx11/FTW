@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { columnResizingFeature, columnSizingFeature, functionalUpdate, rowSelectionFeature,
@@ -62,11 +63,11 @@ function SystemEditor({ field, label, value, change, catalog }: {
   if (['stage','level','sample'].includes(field)) {
     const options = optionsFor(field,catalog)
     const matching = options.find(option => option.code === value || option.aliases.includes(value.trim().toLowerCase()))
-    return <Field label={label}><select autoFocus value={matching?.code ?? value} onChange={event => change(event.target.value)}>
+    return <Field label={label}><Select autoFocus value={matching?.code ?? value} onChange={event => change(event.target.value)}>
       {field !== 'stage' && <option value="">未设置</option>}
       {value && !matching && <option value={value}>{value}</option>}
       {options.map(option => <option value={option.code} key={option.code}>{option.label}</option>)}
-    </select></Field>
+    </Select></Field>
   }
   return <Field label={label}><input autoFocus value={value} onChange={event => change(event.target.value)} /></Field>
 }
@@ -118,7 +119,7 @@ export function CustomerCellEditor({ record, initialValue, column, catalog, anch
     }
     form.showPopover()
     place()
-    form.querySelector<HTMLElement>('input,select,textarea')?.focus()
+    form.querySelector<HTMLElement>('input:not([hidden]),button.ftw-select-trigger,textarea')?.focus()
     const bounds = new ResizeObserver(place)
     bounds.observe(form)
     window.addEventListener('resize', place)
@@ -133,6 +134,7 @@ export function CustomerCellEditor({ record, initialValue, column, catalog, anch
     onToggle={event => { if (event.newState === 'closed') finish(undefined, false) }}
     onSubmit={event => { event.preventDefault(); if (saveable) save.mutate(undefined) }}
     onKeyDown={event => {
+      if (event.defaultPrevented || popover.current?.querySelector('.ftw-select-trigger[data-state="open"]')) return
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish() }
       if (event.key === 'Tab' && saveable) { event.preventDefault(); save.mutate(event.shiftKey ? -1 : 1) }
     }}>
@@ -151,12 +153,13 @@ export type BulkSelection = {
   match?: { count: number; fingerprint: string }
 }
 
-export default function CustomerTable({ data, available, columns, density, catalog, open, resize, sort, order, activeRow, editCustomer, showMail, emailPreview, bulkQuery, selection, setSelection, filtering }: {
+export default function CustomerTable({ data, available, columns, density, catalog, open, resize, sort, order, activeRow, editCustomer, showMail, emailPreview, bulkQuery, selection, setSelection, filtering, followup, addField, changeColumns }: {
   data: ContactRow[]; available: AvailableColumn[]; columns: ColumnSetting[]; density: string
   catalog: StateOption[]; open: (id: string) => void; resize: (widths: Record<string,number>) => void
   sort: (field: string) => void; order?: { field: string; descending: boolean }
   activeRow: string | null; editCustomer: (id: string) => void; showMail: (id: string) => void; emailPreview: boolean
   bulkQuery: ContactQuery; selection: BulkSelection; setSelection: (value: BulkSelection) => void; filtering: boolean
+  followup: (id: string) => void; addField: () => void; changeColumns: (columns: ColumnSetting[]) => void
 }) {
   const [editing, setEditing] = useState<{ key: string; anchor: HTMLElement } | null>(null)
   const [clipboardError, setClipboardError] = useState(false)
@@ -181,10 +184,31 @@ export default function CustomerTable({ data, available, columns, density, catal
   const table = useTable({
     features, columns: defs, data, getRowId: row => row.id, enableRowSelection: row => row.original.archived_at === null,
     defaultColumn: { minSize: 72, maxSize: 640 },
-    columnResizeMode: 'onEnd',
+    columnResizeMode: 'onChange',
     state: { columnSizing: widths, rowSelection },
     onColumnSizingChange: updater => resize(functionalUpdate(updater,widths)),
   })
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [columnName, setColumnName] = useState('')
+  function patchColumn(field: string, patch: Partial<ColumnSetting>) { changeColumns(columns.map(column => column.field === field ? { ...column, ...patch } : column)) }
+  function moveColumn(field: string, direction: number) {
+    if (field === 'name') return
+    const index = columns.findIndex(column => column.field === field)
+    const current = visible.findIndex(column => column.field === field)
+    const neighborField = visible[current + direction]?.field
+    const neighbor = columns.findIndex(column => column.field === neighborField)
+    if (neighbor < 0 || neighbor >= columns.length) return
+    if (neighborField === 'name') return
+    const next = [...columns]; [next[index], next[neighbor]] = [next[neighbor], next[index]]; changeColumns(next)
+  }
+  function fitColumn(field: string) {
+    const meta = columnMeta.get(field)!
+    const measure = document.createElement('canvas').getContext('2d')!
+    measure.font = '13px "Segoe UI", "Microsoft YaHei UI", sans-serif'
+    const textWidth = Math.max(measure.measureText(columns.find(column => column.field === field)?.label ?? meta.title).width,
+      ...data.map(row => measure.measureText(valueText(row, meta, catalog)).width))
+    patchColumn(field, { width: Math.round(Math.max(72, Math.min(640, textWidth + (field === 'name' ? 70 : 48)))) })
+  }
   const selectMatching = useMutation({
     mutationFn: () => request({ action: 'preview_bulk_contacts', query: bulkQuery }, 'bulk_contacts'),
     onSuccess: result => {
@@ -231,9 +255,9 @@ export default function CustomerTable({ data, available, columns, density, catal
         title="选择当前筛选中所有未归档客户，包括其他页面"
         onClick={() => selectMatching.mutate()}><CustomerIcon name="check" />选择全部匹配客户</button>}
       {selectedCount > 0 && <>
-      <Field label="批量修改字段"><select value={bulkField} onChange={event => { setBulkField(event.target.value); setBulkValue('') }}>
+      <Field label="批量修改字段"><Select value={bulkField} onChange={event => { setBulkField(event.target.value); setBulkValue('') }}>
         <option value="stage">客户阶段</option><option value="level">客户等级</option><option value="sample">样品进度</option>
-      </select></Field>
+      </Select></Field>
       <SystemEditor field={bulkField} label="目标值" value={bulkValue} change={setBulkValue} catalog={catalog} />
       <ConfirmButton label={'将 ' + selectedCount + ' 位客户的选定字段更新为同一值？'}
         disabled={selectionBusy || !bulkValue || (!selection.match && selectedCount > 1000)} onConfirm={() => bulk.mutate()}>确认批量修改</ConfirmButton>
@@ -243,7 +267,13 @@ export default function CustomerTable({ data, available, columns, density, catal
       {bulk.isError && <Problem error={bulk.error} />}
       {selectMatching.isError && <Problem error={selectMatching.error} />}
     </div>}
-    <div className={'table-wrap customer-grid is-' + density}><table aria-label="客户表格">
+    {renaming && <form className="column-rename panel" onSubmit={event => { event.preventDefault(); patchColumn(renaming, { label: columnName.trim() || null }); setRenaming(null) }}>
+      <Field label="列显示名称"><input autoFocus maxLength={96} value={columnName} onChange={event => setColumnName(event.target.value)} /></Field>
+      <button type="submit" className="button primary">保存名称</button><button type="button" className="button" onClick={() => setRenaming(null)}>取消</button>
+    </form>}
+    <div className={'table-wrap customer-grid is-' + density}><table aria-label="客户表格" style={{ minWidth: visible.reduce((sum, column) => sum + column.width, 0) + 354 }}>
+      {/* The flexible gap absorbs spare room without changing saved data-column widths. */}
+      <colgroup><col style={{ width: 34 }} />{visible.map(column => <col key={column.field} style={{ width: column.width }} />)}<col style={{ width: 112 }} /><col /><col style={{ width: 208 }} /></colgroup>
       <thead>{table.getHeaderGroups().map(group => <tr key={group.id}>
         <th className="grid-row-select"><input type="checkbox" aria-label="选择本页客户" checked={allPage}
           ref={input => { if (input) input.indeterminate = Boolean(Object.keys(rowSelection).length) && !allPage }}
@@ -257,10 +287,20 @@ export default function CustomerTable({ data, available, columns, density, catal
             <span><table.FlexRender header={header} /></span>
             {sortable && <CustomerIcon name={ordered ? order.descending ? 'down' : 'up' : 'sort'} />}
           </button>
+          <ActionMenu trigger={<IconButton className="column-options" label={`${columnMeta.get(header.column.id)?.title}列设置`}><CustomerIcon name="expand" /></IconButton>}>
+            <MenuAction disabled={!sortable} onSelect={() => sort(header.column.id)}><CustomerIcon name="sort" />切换排序</MenuAction>
+            <MenuAction onSelect={() => { setRenaming(header.column.id); setColumnName(columns.find(column => column.field === header.column.id)?.label ?? columnMeta.get(header.column.id)!.title) }}><CustomerIcon name="edit" />修改显示名称</MenuAction>
+            <MenuAction onSelect={() => fitColumn(header.column.id)}>适应本页内容</MenuAction>
+            <MenuAction onSelect={() => patchColumn(header.column.id, { width: columnMeta.get(header.column.id)!.width })}>恢复默认宽度</MenuAction>
+            <MenuAction disabled={visible.findIndex(column => column.field === header.column.id) <= 1} onSelect={() => moveColumn(header.column.id, -1)}>向左移动</MenuAction>
+            <MenuAction disabled={header.column.id === 'name' || visible[visible.length - 1].field === header.column.id} onSelect={() => moveColumn(header.column.id, 1)}>向右移动</MenuAction>
+            <MenuAction disabled={header.column.id === 'name'} onSelect={() => patchColumn(header.column.id, { hidden: true })}>隐藏这一列</MenuAction>
+          </ActionMenu>
           <span role="separator" aria-label={`调整${columnMeta.get(header.column.id)?.title ?? '当前列'}列宽`}
             aria-orientation="vertical" aria-valuenow={header.getSize()} aria-valuemin={72} aria-valuemax={640}
             tabIndex={0} className="column-resize"
             onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()}
+            onDoubleClick={() => fitColumn(header.column.id)}
             onKeyDown={event => {
               if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
                 event.preventDefault()
@@ -268,7 +308,9 @@ export default function CustomerTable({ data, available, columns, density, catal
                 table.setColumnSizing(previous => ({ ...previous, [header.column.id]: width }))
               }
             }} />
-        </th>})}<th scope="col" className="customer-row-actions">操作</th></tr>)}</thead>
+        </th>})}<th scope="col" className="customer-add-field"><button type="button" className="text-button" onClick={addField}><CustomerIcon name="plus" />添加属性</button></th>
+        <th className="customer-grid-fill" aria-hidden="true" />
+        <th scope="col" className="customer-row-actions">快捷操作</th></tr>)}</thead>
       <tbody>{table.getRowModel().rows.map(entry => <tr key={entry.id} data-selected={entry.getIsSelected()} data-active={entry.id === activeRow}>
         <td className="grid-row-select"><input type="checkbox" aria-label={'选择 ' + entry.original.display_name} checked={entry.getIsSelected()}
           onChange={event => toggleTargets([targetFor(entry.original)], event.target.checked)}
@@ -315,15 +357,13 @@ export default function CustomerTable({ data, available, columns, density, catal
               {editor}
           </td>
         })}
-        <td className="customer-row-actions">
-          {/* Menu follows Shadcn Admin's DataTableRowActions, using the existing FTW detail routes. */}
-          <ActionMenu trigger={<IconButton label={`操作 · ${entry.original.display_name}`}><CustomerIcon name="more" /></IconButton>}>
-            <MenuAction onSelect={() => requestAnimationFrame(() => open(entry.id))}><CustomerIcon name="contact" />打开详情</MenuAction>
-            {entry.original.archived_at === null && <MenuAction onSelect={() => requestAnimationFrame(() => editCustomer(entry.id))}>
-              <CustomerIcon name="edit" />编辑客户
-            </MenuAction>}
-            <MenuAction onSelect={() => requestAnimationFrame(() => showMail(entry.id))}><CustomerIcon name="mail" />邮件往来</MenuAction>
-          </ActionMenu>
+        <td className="customer-add-field" />
+        <td className="customer-grid-fill" aria-hidden="true" />
+        <td className="customer-row-actions"><div className="customer-quick-actions">
+          <button type="button" className="text-button" aria-label={`编辑 ${entry.original.display_name}`} disabled={entry.original.archived_at !== null} onClick={() => editCustomer(entry.id)}><CustomerIcon name="edit" />编辑</button>
+          <button type="button" className="text-button" aria-label={`跟进 ${entry.original.display_name}`} disabled={entry.original.archived_at !== null} onClick={() => followup(entry.id)}><CustomerIcon name="addActivity" />跟进</button>
+          <button type="button" className="text-button" aria-label={`邮件 ${entry.original.display_name}`} onClick={() => showMail(entry.id)}><CustomerIcon name="mail" />邮件</button>
+          </div>
         </td>
       </tr>)}</tbody>
     </table></div>

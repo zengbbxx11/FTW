@@ -1,6 +1,6 @@
 # FTW CRM 内部接口与共享数据合约
 
-适用于 1.1.7，数据库 Schema 27。本轮增加的开发概况查询由桌面与 MCP 共用，未新增数据库迁移。当前实现和验证范围见[项目状态](PROJECT_STATUS.md)。
+适用于 1.1.10，数据库 Schema 28。全库跟进筛选、自建视图删除和可恢复来信分类沿用 1.1.8；本轮通过现有视图接口自动保存表格显示设置，没有新增业务接口。当前实现和验证范围见[项目状态](PROJECT_STATUS.md)。
 
 桌面 WebView 通过 Tauri 的 `crm_request` 调用 Core，参数对象包含 `command`。Rust 调用者可以使用 `ftw_ipc::crm::Command` 与 `ftw_ipc::crm::Result`。桌面操作由 Core 识别为 `manual`。MCP 经受限命令进入同一套 CRM 校验，Core 记录 Agent 来源和请求标识。下表是主要桌面接口，MCP 客户端用 [MCP 工具合约](MCP_MAIL.md)。
 
@@ -72,3 +72,17 @@ cargo run --locked -p ftw-ipc --example crm_schema -- result
 `query_customers` 和桌面 `list_contacts` 可接收组合条件。`filter` 支持 `group`（AND 或 OR）及 `rule`（稳定字段和选项 ID、运算符、类型化值）。分页支持 20、50 或 100 行。最多 3 个排序字段和 12 个投影自定义字段。表格列和看板分组需要保留原有的字段访问规则。行内和批量更新要求对应联系人的记录版本和数据纪元；批量最多更新 50 位客户，限阶段、等级和样品进度。
 
 看板可按业务阶段或自定义单选字段分组。切换布局保留视图筛选和排序。看板各列单独分页，可拖动卡片或在卡片内用下拉菜单移动。
+
+## 1.1.8 筛选、视图删除与来信处理
+
+- `quick_view` 新增 `in_progress`，与 `customer_stats.in_progress` 使用相同阶段条件。`priority`、`sample` 继续复用各自的统计条件。
+- `delete_view` 接收 `id` 和 `expected_revision`，仅删除自建视图定义；默认视图和内置稳定 ID 不允许删除。成功返回 `saved`，提交后通知 `crm_views` 数据域并记录审计。
+- 桌面 `inbox_request` 的 `list` 新增可选 `filter`：`all`（默认）、`review`、`unassociated`、`non_customer`。旧 `unmatched=true` 同样使用新的客户待核对规则。
+- `classify` 接收 `targets:[{id,expected_revision}]` 与 `non_customer`，每次 1–100 个明确邮件 ID，事务化执行；版本来自来信 `handling_revision`。已确认的客户关联不能直接标记非客户；未确认的初步关联在标记时解除，恢复后按现有客户线索重新核对。
+- 来信新增 `non_customer` 和 `handling_revision`。`review_link` 可附 `expected_handling_revision`，防止旧核验页面覆盖最新分类。冲突返回 `mail_link_changed`。
+
+## 1.1.9 表格显示设置
+
+1.1.10 的面板填充区域只负责窗口适配，不是客户属性，不写入视图列定义，不改变 MCP 查询结果或保存的列宽。
+
+桌面的列宽、顺序、显示状态和密度通过原有 `save_view` 持久化。自动保存将显示修改合并到已保存的视图定义，保留其原查询与排序；当前页面尚未保存的业务条件不会进入自动保存请求。沿用 `expected_revision` 校验，冲突时保留本地预览并提示重新读取，不自动覆盖。自建字段仍通过 `save_field`，新增后仅在当前视图显示，受已有自定义列数量限制。客户姓名保持可见。数据库和 MCP 工具不新增。

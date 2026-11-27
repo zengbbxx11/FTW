@@ -1,5 +1,6 @@
 import { useDeferredValue, useState } from 'react'
-import { QueryBuilder, type Field as QueryField, type RuleGroupType } from 'react-querybuilder'
+import { QueryBuilder, toFlatOptionArray, type Field as QueryField, type RuleGroupType, type ValueSelectorProps } from 'react-querybuilder'
+import { Select } from '../ui/Select'
 import 'react-querybuilder/dist/query-builder.css'
 import { useQuery } from '@tanstack/react-query'
 import { Columns3 } from 'lucide-react'
@@ -22,6 +23,13 @@ const previewFields = [
   ['last', '最近联系', (row: ContactRow) => dateLabel(row.last_contact_at)],
 ] as const
 type PreviewField = typeof previewFields[number][0]
+
+function FilterSelect({ options, value, handleOnChange, disabled, title, className }: ValueSelectorProps) {
+  return <Select value={value ?? ''} onChange={event => handleOnChange(event.target.value)} disabled={disabled} title={title} className={className} aria-label={title ?? '筛选条件'}>
+    {toFlatOptionArray(options).map(option => <option key={option.name} value={option.name}>{option.label}</option>)}
+  </Select>
+}
+const filterControls = { valueSelector: FilterSelect, fieldSelector: FilterSelect, operatorSelector: FilterSelect, combinatorSelector: FilterSelect, valueSourceSelector: FilterSelect }
 
 function queryField(column: AvailableColumn, catalog: StateOption[]): QueryField {
   const basic = { name: column.id, label: column.title }
@@ -99,6 +107,7 @@ export default function AdvancedFilters({ columns, catalog, filter, query, apply
     <div className="section-heading"><h2>组合筛选</h2>
       <button type="button" className="button" onClick={close}>关闭</button></div>
     <QueryBuilder fields={columns.map(column => queryField(column,catalog))}
+      controlElements={filterControls}
       query={draft} onQueryChange={setDraft} maxLevels={3} autoSelectValue={false}
       operators={options(Object.keys(operators) as FieldOperator[])}
       combinators={[{ name: 'and', label: '满足全部' }, { name: 'or', label: '满足任一' }]}

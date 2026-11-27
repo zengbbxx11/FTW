@@ -1,6 +1,6 @@
 FTW · WorkBuddy 和 Codex 接入说明（Windows）
 
-适用于 FTW 1.1.7。Schema 27，当前提供 102 个 MCP 工具。
+适用于 FTW 1.1.10。Schema 28，当前提供 104 个 MCP 工具。
 
 1. 使用同一份工作台
 
@@ -47,3 +47,5 @@ FTW · WorkBuddy 和 Codex 接入说明（Windows）
 • 发送权限不足：在 FTW 查看发送模式、Agent、发件账户、用途和限额；连接授权与发送授权分开管理。
 • 发送结果未知：先核对发件记录或邮箱服务商记录，不要盲目重发。SMTP 已接受不代表一定送达。
 • 需要反馈故障时，在「系统状态 → 导出诊断报告」保存 JSON。窗口无法打开时，双击便携目录的 FTW-Diagnostics.cmd。查看报告后，随出错时间、操作步骤一并反馈。
+
+来信管理：普通未知来信保留在收件箱，不等于客户回复。list_inbox 可按 review、unassociated、non_customer 筛选。按用户要求可用 classify_inbox_messages 标记／恢复明确邮件，先读取 handling_revision。自建共享视图可用 delete_customer_view 删除，客户数据不受影响。

@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowDown, ArrowRight, ArrowUp, Bot, Check, ClipboardCheck, Clock, FileText, History, Inbox, Mail,
@@ -8,7 +9,7 @@ import { IconButton } from '../ui/WorkbenchUI'
 import { DataError } from './DataTools'
 import { send, type DashboardData } from './api'
 
-export type DashboardLink = 'customers' | 'sent' | 'waiting' | 'mail' | 'activities' | 'agent' | 'analytics' | 'new' | 'csv' | 'review' | 'approvals' | 'sync'
+export type DashboardLink = 'customers' | 'sent' | 'waiting' | 'replied' | 'mail' | 'activities' | 'agent' | 'analytics' | 'new' | 'csv' | 'review' | 'approvals' | 'sync'
 type Widget = 'metrics' | 'recent' | 'progress' | 'trend' | 'agent' | 'quick'
 type Period = 7 | 14 | 30
 type Layout = { order: Widget[]; hidden: Widget[]; compact: boolean; period: Period }
@@ -71,7 +72,7 @@ export function Dashboard({ navigate, openActivity }: { navigate: (link: Dashboa
         <Metric icon={UsersRound} tone="teal" value={data.stats.contacts} label="CRM 客户" onClick={() => navigate('customers')} />
         <Metric icon={Send} tone="purple" value={data.stats.smtp_accepted} label="SMTP 已接受" onClick={() => navigate('sent')} />
         <Metric icon={Clock} tone="orange" value={data.stats.waiting} label="已发未见回复客户" onClick={() => navigate('waiting')} />
-        <Metric icon={Mail} tone="green" value={data.stats.replied} label="已发且有回复客户" onClick={() => navigate('mail')} />
+        <Metric icon={Mail} tone="green" value={data.stats.replied} label="已发且有回复客户" onClick={() => navigate('replied')} />
       </div>
       case 'recent': return <section className="panel dashboard-panel">
         <PanelHeading label={widgetLabels.recent} action="查看全部" onClick={() => navigate('activities')} />
@@ -125,7 +126,7 @@ export function Dashboard({ navigate, openActivity }: { navigate: (link: Dashboa
     {data && <>
       {!editing && <div className="dashboard-attention" aria-label="待办和同步异常">
         <button type="button" className="button" onClick={() => navigate('approvals')}><ClipboardCheck aria-hidden="true" />待审核邮件 <strong>{data.pending}</strong></button>
-        <button type="button" className="button" onClick={() => navigate('review')}><Inbox aria-hidden="true" />回复待确认 <strong>{data.unmatched}</strong></button>
+        <button type="button" className="button" onClick={() => navigate('review')}><Inbox aria-hidden="true" />客户来信待核对 <strong>{data.unmatched}</strong></button>
         {data.issues.length > 0 && <button type="button" className="button" onClick={() => navigate('sync')}><TriangleAlert aria-hidden="true" />邮箱同步异常 <strong>{data.issues.length}</strong></button>}
       </div>}
       <div className={editing ? 'dashboard-settings' : undefined}>
@@ -147,12 +148,12 @@ export function Dashboard({ navigate, openActivity }: { navigate: (link: Dashboa
               <IconButton label={`下移${widgetLabels[widget]}`} disabled={index === editing.order.length - 1} onClick={() => moveWidget(widget, 1)}><ArrowDown aria-hidden="true" /></IconButton>
             </div>
           </li>)}</ul>
-          <label className="field">显示密度<select value={editing.compact ? 'compact' : 'standard'}
+          <label className="field">显示密度<Select value={editing.compact ? 'compact' : 'standard'}
             onChange={({ target: { value } }) => setEditing(draft => draft && { ...draft, compact: value === 'compact' })}>
-            <option value="standard">标准</option><option value="compact">紧凑</option></select></label>
-          <label className="field">默认时间范围<select value={editing.period}
+            <option value="standard">标准</option><option value="compact">紧凑</option></Select></label>
+          <label className="field">默认时间范围<Select value={editing.period}
             onChange={({ target: { value } }) => setEditing(draft => draft && { ...draft, period: Number(value) as Period })}>
-            {periods.map(days => <option key={days} value={days}>最近 {days} 天</option>)}</select></label>
+            {periods.map(days => <option key={days} value={days}>最近 {days} 天</option>)}</Select></label>
           {storageError && <p role="alert" className="alert error">无法保存本地布局，请检查工作台数据目录。</p>}
         </aside>}
       </div>
@@ -198,8 +199,8 @@ function Trend({ data, period, setPeriod, editing }: { data: DashboardData; peri
   return <section className="panel dashboard-panel">
     <div className="section-heading"><h2>邮件提交趋势</h2><div className="row-actions">
       <button type="button" className="button" aria-pressed={table} onClick={() => setTable(!table)}>{table ? '查看图表' : '查看数据'}</button>
-      <select aria-label="邮件提交趋势时间范围" value={period} disabled={editing} onChange={event => setPeriod(Number(event.target.value) as Period)}>
-        {periods.map(days => <option key={days} value={days}>最近 {days} 天</option>)}</select>
+      <Select aria-label="邮件提交趋势时间范围" value={period} disabled={editing} onChange={event => setPeriod(Number(event.target.value) as Period)}>
+        {periods.map(days => <option key={days} value={days}>最近 {days} 天</option>)}</Select>
     </div></div>
     {table ? <div className="dashboard-trend-table table-wrap"><table aria-label="每日 SMTP 接受量">
       <thead><tr><th>日期</th><th>SMTP 已接受</th></tr></thead>

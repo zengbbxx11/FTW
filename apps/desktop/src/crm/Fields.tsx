@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Archive, ArrowDown, ArrowLeft, ArrowUp, Pencil, Plus, RotateCcw, SlidersHorizontal } from 'lucide-react'
@@ -34,17 +35,17 @@ export function FieldInput({ label, kind, options, value, change }: FieldInputPr
   }
   if (kind === 'single_select') {
     const selected = value?.type === kind ? value.value : ''
-    return <Field label={label}><select value={selected} onChange={event => change(event.target.value ? { type: kind, value: event.target.value } : null)}>
+    return <Field label={label}><Select value={selected} onChange={event => change(event.target.value ? { type: kind, value: event.target.value } : null)}>
       <option value="">未设置</option>
       {options.filter(option => !option.archived || selected === option.id).map(option =>
         <option key={option.id} value={option.id} disabled={option.archived}>{option.label}{option.archived && '（已归档）'}</option>)}
-    </select></Field>
+    </Select></Field>
   }
   if (kind === 'checkbox') {
     const selected = value?.type === kind ? String(value.value) : ''
-    return <Field label={label}><select value={selected} onChange={event =>
+    return <Field label={label}><Select value={selected} onChange={event =>
       change(event.target.value ? { type: kind, value: event.target.value === 'true' } : null)
-    }><option value="">未设置</option><option value="true">是</option><option value="false">否</option></select></Field>
+    }><option value="">未设置</option><option value="true">是</option><option value="false">否</option></Select></Field>
   }
   if (kind === 'number') {
     return <Field label={label}><input type="number" step="any" value={value?.type === kind ? value.value : ''}
@@ -160,10 +161,10 @@ export function CustomerFieldPanel({ contactId, archived }: { contactId: string;
 
 const accessLabels = { hidden: '仅工作台可见', read: 'Agent 可读', write: 'Agent 可读写' } as const
 
-export function FieldManager({ back, backLabel = '返回客户' }: { back: () => void; backLabel?: string }) {
+export function FieldManager({ back, backLabel = '返回客户', initialNew = false, created }: { back: () => void; backLabel?: string; initialNew?: boolean; created?: (id: string) => void }) {
   const fields = useCustomerFields(true)
   const cache = useQueryClient()
-  const [edit, setEdit] = useState<CustomField | 'new' | null>(null)
+  const [edit, setEdit] = useState<CustomField | 'new' | null>(initialNew ? 'new' : null)
   const [showArchived, setShowArchived] = useState(false)
   const operation = useMutation({
     mutationFn: (data: { id: string; expected_revision: number; direction: -1 | 1 } | { id: string; expected_revision: number; archived: boolean }) =>
@@ -206,18 +207,18 @@ export function FieldManager({ back, backLabel = '返回客户' }: { back: () =>
       })}</ul> : <Empty>{showArchived ? '没有已归档字段。' : '尚无自定义字段。'}</Empty>)}
     </section>
     {edit && <DefinitionEditor key={edit === 'new' ? 'new' : edit.id}
-      field={edit === 'new' ? undefined : edit} close={() => setEdit(null)} />}
+      field={edit === 'new' ? undefined : edit} close={() => setEdit(null)} created={created} />}
     </div>
   </div>
 }
 
 function ColorSelect({ value, change }: { value: FieldColor; change: (color: FieldColor) => void }) {
-  return <select value={value} onChange={event => change(event.target.value as FieldColor)}>
+  return <Select value={value} onChange={event => change(event.target.value as FieldColor)}>
     {Object.entries(fieldColors).map(([id,label]) => <option value={id} key={id}>{label}</option>)}
-  </select>
+  </Select>
 }
 
-function DefinitionEditor({ field, close }: { field?: CustomField; close: () => void }) {
+function DefinitionEditor({ field, close, created }: { field?: CustomField; close: () => void; created?: (id: string) => void }) {
   const [draft, setDraft] = useState<FieldDefinition>(() => ({
     id: field?.id ?? null, expected_revision: field?.revision ?? null, name: field?.name ?? '', kind: field?.kind ?? 'text',
     color: field?.color ?? 'gray', agent_access: field?.agent_access ?? 'write', show_in_details: field?.show_in_details ?? true,
@@ -226,8 +227,9 @@ function DefinitionEditor({ field, close }: { field?: CustomField; close: () => 
   const cache = useQueryClient()
   const save = useMutation({
     mutationFn: () => request({ action: 'save_field', definition: draft }, 'saved'),
-    onSuccess: async () => {
+    onSuccess: async result => {
       await Promise.all([cache.invalidateQueries({ queryKey: ['crm-fields'] }), cache.invalidateQueries({ queryKey: ['contact-fields'] })])
+      if (!field) created?.(result.id)
       close()
     },
   })
@@ -261,14 +263,14 @@ function DefinitionEditor({ field, close }: { field?: CustomField; close: () => 
     <fieldset disabled={save.isPending}>
       <div className="form-grid">
         <Field label="字段名称"><input autoFocus value={draft.name} maxLength={96} onChange={event => update('name', event.target.value)} required /></Field>
-        <Field label="字段类型"><select disabled={Boolean(field)} value={draft.kind} onChange={event =>
+        <Field label="字段类型"><Select disabled={Boolean(field)} value={draft.kind} onChange={event =>
           setDraft(current => ({ ...current, kind: event.target.value as FieldKind, options: [], default_value: null }))}>
           {Object.entries(fieldKinds).map(([id,label]) => <option key={id} value={id}>{label}</option>)}
-        </select></Field>
+        </Select></Field>
         <Field label="标签颜色"><ColorSelect value={draft.color} change={value => update('color', value)} /></Field>
-        <Field label="Agent 权限"><select value={draft.agent_access} onChange={event => update('agent_access', event.target.value as keyof typeof accessLabels)}>
+        <Field label="Agent 权限"><Select value={draft.agent_access} onChange={event => update('agent_access', event.target.value as keyof typeof accessLabels)}>
           {Object.entries(accessLabels).map(([id,label]) => <option key={id} value={id}>{label}</option>)}
-        </select></Field>
+        </Select></Field>
         <label><input type="checkbox" checked={draft.show_in_details} onChange={event => update('show_in_details', event.target.checked)} /> 在客户详情显示</label>
         <FieldInput label="新客户的默认值" kind={draft.kind} options={draft.options} value={draft.default_value} change={value => update('default_value', value)} />
       </div>

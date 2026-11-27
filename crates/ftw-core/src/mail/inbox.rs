@@ -1,4 +1,4 @@
-mod store;
+pub(super) mod store;
 pub(crate) use store::NEEDS_REVIEW;
 #[cfg(test)]
 mod tests;
@@ -53,18 +53,32 @@ impl MailService {
                 unmatched,
                 offset,
                 keyword,
+                filter,
             } => {
                 store::list(
-                    &self.pool, account_id, contact_id, unmatched, offset, keyword,
+                    &self.pool, account_id, contact_id, unmatched, offset, keyword, filter,
                 )
                 .await
             }
             Command::ReviewCandidates { id } => store::review_candidates(&self.pool, &id).await,
+            Command::Classify {
+                targets,
+                non_customer,
+            } => {
+                store::classify(
+                    &self.pool,
+                    crate::crm::Actor::DESKTOP,
+                    targets,
+                    non_customer,
+                )
+                .await
+            }
             Command::ReviewLink {
                 id,
                 contact_id,
                 expected_contact,
                 expected_match,
+                expected_handling_revision,
             } => {
                 store::review_link(
                     &self.pool,
@@ -72,13 +86,14 @@ impl MailService {
                     &contact_id,
                     expected_contact,
                     expected_match,
+                    expected_handling_revision,
                     crate::crm::Actor::DESKTOP,
                 )
                 .await
             }
             Command::Get { id } => store::get(&self.pool, &id).await,
             Command::Thread { id, offset } => store::thread(&self.pool, &id, offset).await,
-            Command::Link { id, contact_id } => store::link(&self.pool, &id, &contact_id).await,
+            Command::Link { id, contact_id, expected_handling_revision } => store::link_checked(&self.pool, &id, &contact_id, expected_handling_revision).await,
         };
         response(result)
     }
@@ -96,7 +111,13 @@ impl MailService {
                 offset,
                 account_id,
                 keyword,
-            } => store::list(&self.pool, account_id, contact_id, false, offset, keyword).await,
+                filter,
+            } => {
+                store::list(
+                    &self.pool, account_id, contact_id, false, offset, keyword, filter,
+                )
+                .await
+            }
             AgentCommand::Thread { id, offset } => store::thread(&self.pool, &id, offset).await,
         };
         response(result)
@@ -346,6 +367,7 @@ impl MailService {
         contact: &str,
         expected_contact: Option<String>,
         expected_match: String,
+        expected_handling_revision: Option<i64>,
     ) -> Response {
         response(
             store::review_link(
@@ -354,6 +376,7 @@ impl MailService {
                 contact,
                 expected_contact,
                 expected_match,
+                expected_handling_revision,
                 actor,
             )
             .await,

@@ -148,6 +148,10 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
         Command::PreviewContacts { query } => contacts::preview(pool, query, actor).await,
         Command::ListViews { include_archived } => views::list(pool, actor, include_archived).await,
         Command::SaveView { view } => views::save(pool, actor, view).await,
+        Command::DeleteView {
+            id,
+            expected_revision,
+        } => views::delete(pool, actor, &id, expected_revision).await,
         Command::ArchiveView {
             id,
             expected_revision,

@@ -96,7 +96,7 @@ async function exercise(protocol, token) {
       return JSON.parse(response.result.content[0].text)
     }
     const context = await call('get_workbench_context')
-    assert.equal(context.schema_version, 27)
+    assert.equal(context.schema_version, 28)
     assert.equal(context.agent.id, 'local-mcp')
     assert.deepEqual(context.sender_accounts, [])
     const full = await call('get_workbench_definitions', { kind: 'states' })
@@ -258,7 +258,7 @@ try {
     }
     throw new Error('Core did not start for the isolated MCP fixture')
   })()
-  assert.equal(health.schemaVersion, 27)
+  assert.equal(health.schemaVersion, 28)
   await exercise('2025-06-18')
   for (const protocol of ['2025-06-18', '2025-11-25']) {
     const token = randomBytes(32).toString('hex')

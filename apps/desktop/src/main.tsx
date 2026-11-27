@@ -40,7 +40,7 @@ window.addEventListener('error', () => reportWebviewFailure('script_error'))
 window.addEventListener('unhandledrejection', () => reportWebviewFailure('unhandled_rejection'))
 
 type Page =
-  | { kind: 'contacts'; initialView?: 'mail_no_reply' }
+  | { kind: 'contacts'; initialView?: 'mail_no_reply' | 'mail_replied' }
   | { kind: 'customer-quality'; duplicates?: boolean }
   | { kind: 'new-contact' | 'leads' | 'new-lead' | 'system' | 'dashboard' | 'samples' | 'search' | 'agent-runs' | 'mail-analysis' | 'guide' }
   | { kind: 'activities'; activityId?: string }
@@ -63,6 +63,7 @@ const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'm
 ]
 
 const dashboardPages: Record<DashboardLink, Page> = {
+  replied: { kind: 'contacts', initialView: 'mail_replied' },
   customers: { kind: 'contacts' }, sent: { kind: 'mail', folder: 'accepted' }, waiting: { kind: 'contacts', initialView: 'mail_no_reply' },
   mail: { kind: 'mail' }, activities: { kind: 'activities' }, agent: { kind: 'agent-runs' }, analytics: { kind: 'mail-analysis' }, new: { kind: 'new-contact' },
   csv: { kind: 'data', initialTab: 'csv' }, review: { kind: 'mail', folder: 'review' }, approvals: { kind: 'mail', folder: 'drafts' },

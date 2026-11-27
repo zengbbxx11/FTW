@@ -323,7 +323,12 @@ async fn activity(db: &mut SqliteConnection, message: &str, contact: &str) -> Re
 }
 
 pub(super) async fn link(pool: &SqlitePool, id: &str, contact: &str) -> Result<Reply> {
-    link_contact(pool, id, contact, None, crate::crm::Actor::DESKTOP).await
+    link_contact(pool, id, contact, None, None, crate::crm::Actor::DESKTOP).await
+}
+
+pub(super) async fn link_checked(pool: &SqlitePool, id: &str, contact: &str, revision: Option<i64>) -> Result<Reply> {
+    if revision.is_none() { return link(pool, id, contact).await; }
+    link_contact(pool, id, contact, None, revision, crate::crm::Actor::DESKTOP).await
 }
 
 pub(super) async fn review_link(
@@ -332,6 +337,7 @@ pub(super) async fn review_link(
     contact: &str,
     expected_contact: Option<String>,
     expected_match: String,
+    expected_handling_revision: Option<i64>,
     actor: crate::crm::Actor<'_>,
 ) -> Result<Reply> {
     link_contact(
@@ -339,6 +345,7 @@ pub(super) async fn review_link(
         id,
         contact,
         Some((expected_contact, expected_match)),
+        expected_handling_revision,
         actor,
     )
     .await
@@ -349,9 +356,21 @@ async fn link_contact(
     id: &str,
     contact: &str,
     expected: Option<(Option<String>, String)>,
+    expected_handling_revision: Option<i64>,
     actor: crate::crm::Actor<'_>,
 ) -> Result<Reply> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(revision) = expected_handling_revision {
+        let current: i64 =
+            sqlx::query_scalar("SELECT handling_revision FROM inbox_messages WHERE id=?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Failure::Code("mail_not_found"))?;
+        if current != revision {
+            return Err(Failure::Code("mail_link_changed"));
+        }
+    }
     if let Some(expected) = expected {
         let current: (Option<String>, String) =
             sqlx::query_as("SELECT contact_id,match_state FROM inbox_messages WHERE id=?")
@@ -389,7 +408,7 @@ async fn link_contact(
     let updated = sqlx::query(
         "UPDATE inbox_messages SET thread_id=CASE WHEN contact_id IS ? THEN thread_id ELSE 'inbox:' || id END,
          reply_to_sent_id=CASE WHEN contact_id IS ? THEN reply_to_sent_id END,
-         contact_id=?,match_state='manual' WHERE id=?",
+         contact_id=?,match_state='manual',non_customer=0,handling_revision=handling_revision+1 WHERE id=?",
     ).bind(contact).bind(contact).bind(contact).bind(id).execute(&mut *tx).await?;
     if updated.rows_affected() != 1 {
         return Err(Failure::Code("mail_not_found"));
@@ -442,6 +461,62 @@ pub(super) async fn review_candidates(pool: &SqlitePool, id: &str) -> Result<Rep
     Ok(Reply::ReviewCandidates { rows })
 }
 
+pub(in crate::mail) async fn classify(
+    pool: &SqlitePool,
+    actor: crate::crm::Actor<'_>,
+    targets: Vec<ftw_ipc::inbox::HandlingTarget>,
+    non_customer: bool,
+) -> Result<Reply> {
+    if targets.is_empty() || targets.len() > 100 {
+        return Err(Failure::Code("mail_selection_invalid"));
+    }
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut seen = std::collections::HashSet::new();
+    for target in &targets {
+        if !seen.insert(&target.id) {
+            return Err(Failure::Code("mail_selection_invalid"));
+        }
+        let (revision, current, contact, match_state): (i64, bool, Option<String>, String) = sqlx::query_as(
+            "SELECT handling_revision,non_customer,contact_id,match_state FROM inbox_messages WHERE id=?"
+        ).bind(&target.id).fetch_optional(&mut *tx).await?.ok_or(Failure::Code("mail_not_found"))?;
+        if revision != target.expected_revision {
+            return Err(Failure::Code("mail_link_changed"));
+        }
+        // Classification is for unassociated mail. Correct an existing customer link separately.
+        if non_customer && contact.is_some() && match_state != "contact" {
+            return Err(Failure::Code("mail_already_linked"));
+        }
+        if current != non_customer {
+            if non_customer && match_state == "contact" {
+                sqlx::query("DELETE FROM activities WHERE related_message_id=? AND event_type='email_received' AND source='system'")
+                    .bind(&target.id).execute(&mut *tx).await?;
+                sqlx::query("UPDATE inbox_messages SET contact_id=NULL,thread_id='inbox:' || id,match_state='pending',reply_to_sent_id=NULL WHERE id=?")
+                    .bind(&target.id).execute(&mut *tx).await?;
+            }
+            sqlx::query("UPDATE inbox_messages SET non_customer=?,handling_revision=handling_revision+1 WHERE id=?")
+                .bind(non_customer).bind(&target.id).execute(&mut *tx).await?;
+            super::super::audit_as(
+                &mut tx,
+                actor.source,
+                actor.id,
+                "inbox_message",
+                &target.id,
+                if non_customer {
+                    "mark_non_customer"
+                } else {
+                    "restore_customer_review"
+                },
+                actor.agent_run_id,
+            )
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(Reply::Saved {
+        id: targets[0].id.clone(),
+    })
+}
+
 pub(super) async fn suggest_link(
     pool: &SqlitePool,
     actor: &str,
@@ -449,9 +524,9 @@ pub(super) async fn suggest_link(
     contact: &str,
 ) -> Result<Reply> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let pending: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM inbox_messages i WHERE id=? AND {NEEDS_REVIEW} AND message_role='correspondence')"
-    )).bind(id).fetch_one(&mut *tx).await?;
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM inbox_messages i WHERE id=? AND i.non_customer=0 AND (i.contact_id IS NULL OR i.match_state='contact') AND message_role='correspondence')"
+    ).bind(id).fetch_one(&mut *tx).await?;
     if !pending {
         return Err(Failure::Code("mail_link_changed"));
     }
@@ -489,9 +564,12 @@ pub(super) async fn suggest_link(
     Ok(Reply::Saved { id: id.to_owned() })
 }
 
-pub(crate) const NEEDS_REVIEW: &str = "(i.contact_id IS NULL OR i.match_state='contact')";
+pub(crate) const NEEDS_REVIEW: &str = "(i.non_customer=0 AND i.message_role='correspondence' AND (i.contact_id IS NULL OR i.match_state='contact') AND (
+    EXISTS(SELECT 1 FROM contacts c WHERE c.id=i.contact_id AND c.archived_at IS NULL)
+    OR EXISTS(SELECT 1 FROM contact_methods m JOIN contacts c ON c.id=m.contact_id WHERE m.kind='email' AND m.normalized=lower(i.sender) AND c.archived_at IS NULL)
+    OR EXISTS(SELECT 1 FROM inbox_link_suggestions s JOIN contacts c ON c.id=s.contact_id WHERE s.message_id=i.id AND c.archived_at IS NULL)))";
 
-const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names,i.message_role,i.match_state,i.body_complete,i.download_outcome
+const RECEIVE: &str = "SELECT i.id,i.account_id,i.contact_id,c.display_name contact_name,i.thread_id,i.sender,i.subject,i.received_at,i.kind,1 received,i.body_text,i.attachment_names,i.message_role,i.match_state,i.body_complete,i.download_outcome,i.non_customer,i.handling_revision
     FROM inbox_messages i LEFT JOIN contacts c ON c.id=i.contact_id";
 
 pub(super) async fn list(
@@ -501,6 +579,7 @@ pub(super) async fn list(
     unmatched: bool,
     offset: u32,
     keyword: Option<String>,
+    filter: ftw_ipc::inbox::InboxFilter,
 ) -> Result<Reply> {
     let mut query = QueryBuilder::new(RECEIVE);
     query.push(" WHERE 1=1");
@@ -510,8 +589,20 @@ pub(super) async fn list(
     if let Some(contact) = contact {
         query.push(" AND i.contact_id=").push_bind(contact);
     }
-    if unmatched {
+    if unmatched || matches!(filter, ftw_ipc::inbox::InboxFilter::Review) {
         query.push(" AND ").push(NEEDS_REVIEW);
+    } else {
+        match filter {
+            ftw_ipc::inbox::InboxFilter::NonCustomer => {
+                query.push(" AND i.non_customer=1");
+            }
+            ftw_ipc::inbox::InboxFilter::Unassociated => {
+                query
+                    .push(" AND i.non_customer=0 AND i.contact_id IS NULL AND NOT ")
+                    .push(NEEDS_REVIEW);
+            }
+            _ => {}
+        }
     }
     if let Some(keyword) = keyword
         .as_deref()
@@ -552,7 +643,7 @@ pub(super) async fn thread(pool: &SqlitePool, id: &str, offset: u32) -> Result<R
     let query = format!(
         "{RECEIVE} WHERE i.thread_id=?
          UNION ALL SELECT e.id,e.account_id,e.contact_id,c.display_name,COALESCE(e.conversation_id,'sent:' || e.id),
-            e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]','outgoing','thread',1,NULL
+            e.from_address,e.subject,e.submitted_at,'smtp_accepted',0,e.body_text,'[]','outgoing','thread',1,NULL,0,1
          FROM email_messages e JOIN contacts c ON c.id=e.contact_id
            WHERE COALESCE(e.conversation_id,'sent:' || e.id)=?
          ORDER BY 8,1 LIMIT ? OFFSET ?",
@@ -599,6 +690,8 @@ fn row(r: SqliteRow) -> InboxRow {
         match_state: r.get("match_state"),
         body_complete: r.get("body_complete"),
         download_outcome: r.get("download_outcome"),
+        non_customer: r.get("non_customer"),
+        handling_revision: r.get("handling_revision"),
     }
 }
 

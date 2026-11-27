@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Link, Plus, Save } from 'lucide-react'
@@ -64,12 +65,12 @@ export function LeadEvidencePanel({ id, notes, contact, readOnly }: {
         {row.note && <p className="long-text">{row.note}</p>}
         {row.request_id && <small className="muted">MCP 请求 {row.request_id}</small>}
       </div><div className="lead-evidence-review">
-        <select className="ops-tag" data-tone={tones[row.status]} aria-label={'核验状态 ' + row.subject}
+        <Select className="ops-tag" data-tone={tones[row.status]} aria-label={'核验状态 ' + row.subject}
           value={row.status} disabled={readOnly || review.isPending} onChange={event => {
           if (query.data) review.mutate({ row, status: event.target.value as EvidenceStatus, epoch: query.data.epoch })
         }}>
           {Object.entries(statuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-        </select>
+        </Select>
         {row.reviewed_at && <small className="muted">{row.review_source === 'agent' ? 'Agent 核验于' : '人工核验于'} {dateLabel(row.reviewed_at)}</small>}
         {row.review_source === 'agent' && !readOnly && <button type="button" className="button" disabled={review.isPending}
           onClick={() => { if (query.data) review.mutate({ row, status: row.status, epoch: query.data.epoch }) }}>人工确认</button>}

@@ -5,6 +5,7 @@ MIT License
 Shadcn Admin — Copyright (c) 2024 Sat Naing
 shadcn/ui — Copyright (c) 2023 shadcn
 Radix Primitives — Copyright (c) 2022 WorkOS
+cmdk 1.1.1 — Copyright (c) 2022 Paco Coursey
 TanStack Table — Copyright (c) 2016 Tanner Linsley
 TanStack Query — Copyright (c) 2021-present Tanner Linsley
 React Query Builder — Copyright (c) 2024 Jake Boone and other contributors

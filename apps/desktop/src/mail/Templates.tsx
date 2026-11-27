@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Archive, Eye, FilePenLine, FileText, Plus, RotateCcw, Save, ShieldCheck, X } from 'lucide-react'
@@ -49,9 +50,9 @@ export function Templates() {
       <section className="panel template-list">
         <div className="section-heading"><h2>模板库</h2><button className="button primary" type="button" onClick={() => { setCreating(true); setNotice('') }}>
           <Plus aria-hidden="true" />新增模板</button></div>
-        <Field label="邮件用途"><select value={purpose} onChange={event => { setPurpose(event.target.value as Purpose | ''); resetList() }}>
+        <Field label="邮件用途"><Select value={purpose} onChange={event => { setPurpose(event.target.value as Purpose | ''); resetList() }}>
           <option value="">全部用途</option>{Object.entries(mailPurposes).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
-        </select></Field>
+        </Select></Field>
         <div className="account-settings-tabs" role="group" aria-label="模板状态">
           <button className="button" aria-pressed={!archived} onClick={() => { setArchived(false); resetList() }}>在用</button>
           <button className="button" aria-pressed={archived} onClick={() => { setArchived(true); resetList() }}>已归档</button>
@@ -115,9 +116,9 @@ function TemplateEditor({ template, defaultPurpose, busy, cancel, archive, saved
     <form onSubmit={event => { event.preventDefault(); if (complete && !locked && !stale && !isArchived) save.mutate() }}>
       <fieldset className="template-fields" disabled={locked}>
         <Field label="模板名称"><input name="name" value={input.name} maxLength={140} readOnly={isArchived} onChange={event => update('name', event.target.value)} required /></Field>
-        <Field label="邮件用途"><select value={input.purpose} disabled={isArchived} onChange={event => update('purpose', event.target.value as Purpose)}>
+        <Field label="邮件用途"><Select value={input.purpose} disabled={isArchived} onChange={event => update('purpose', event.target.value as Purpose)}>
           {Object.entries(mailPurposes).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
-        </select></Field>
+        </Select></Field>
         <Field label="邮件主题"><input name="subject" value={input.subject} maxLength={360} readOnly={isArchived} onChange={event => update('subject', event.target.value)} required /></Field>
         <Field label="纯文本正文"><textarea name="body" rows={9} value={input.body} maxLength={12000} readOnly={isArchived} onChange={event => update('body', event.target.value)} required /></Field>
       </fieldset>
@@ -163,12 +164,12 @@ export function DraftTemplatePicker({ contactId, onApply, onClose, hasText }: {
   return <section className="template-draft-picker" aria-label="选用邮件模板">
     <div className="section-heading"><h3>选用邮件模板</h3><button type="button" className="button" onClick={onClose}><X aria-hidden="true" />关闭</button></div>
     <div className="form-grid">
-      <Field label="模板用途"><select value={purpose} onChange={event => { setPurpose(event.target.value as Purpose | ''); setOffset(0); setId('') }}>
+      <Field label="模板用途"><Select value={purpose} onChange={event => { setPurpose(event.target.value as Purpose | ''); setOffset(0); setId('') }}>
         <option value="">全部用途</option>{Object.entries(mailPurposes).map(([key, label]) => <option value={key} key={key}>{label}</option>)}
-      </select></Field>
-      <Field label="在用模板"><select value={id} onChange={event => setId(event.target.value)}>
+      </Select></Field>
+      <Field label="在用模板"><Select value={id} onChange={event => setId(event.target.value)}>
         <option value="">{rows.isPending ? '正在读取模板…' : '选择模板'}</option>{rows.data?.rows.map(row => <option value={row.id} key={row.id}>{row.name}</option>)}
-      </select></Field>
+      </Select></Field>
     </div>
     {rows.data && <Pagination offset={offset} more={rows.data.has_more} change={next => { setOffset(next); setId('') }} />}
     {(rows.isError || preview.isError) && <TemplateError error={rows.error ?? preview.error} />}

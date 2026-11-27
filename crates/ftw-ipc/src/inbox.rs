@@ -1,4 +1,22 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HandlingTarget {
+    pub id: String,
+    pub expected_revision: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxFilter {
+    #[default]
+    All,
+    Review,
+    Unassociated,
+    NonCustomer,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -39,6 +57,12 @@ pub enum Command {
         offset: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keyword: Option<String>,
+        #[serde(default)]
+        filter: InboxFilter,
+    },
+    Classify {
+        targets: Vec<HandlingTarget>,
+        non_customer: bool,
     },
     Get {
         id: String,
@@ -51,6 +75,7 @@ pub enum Command {
         contact_id: String,
         expected_contact: Option<String>,
         expected_match: String,
+        expected_handling_revision: Option<i64>,
     },
     Thread {
         id: String,
@@ -59,6 +84,7 @@ pub enum Command {
     Link {
         id: String,
         contact_id: String,
+        expected_handling_revision: Option<i64>,
     },
 }
 
@@ -85,6 +111,8 @@ pub enum AgentCommand {
         account_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keyword: Option<String>,
+        #[serde(default)]
+        filter: InboxFilter,
     },
     Thread {
         id: String,
@@ -124,6 +152,10 @@ pub struct Row {
     pub body_complete: bool,
     #[serde(default)]
     pub download_outcome: Option<String>,
+    #[serde(default)]
+    pub non_customer: bool,
+    #[serde(default)]
+    pub handling_revision: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

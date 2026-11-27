@@ -81,6 +81,10 @@
 .mail-status svg { width: .8rem; height: .8rem; }
 .mail-status:is([data-status="linked"],[data-status="smtp_accepted"],[data-status="approved"]) { color: #12694e; background: #dbf4e8; }
 .mail-status:is([data-status="queued"],[data-status="pending_approval"],[data-status="expired"],[data-status="unmatched"]) { color: #875200; background: #fff0d5; }
+.mail-selectable-row { display: flex; align-items: center; gap: .35rem; padding-inline-start: .6rem; }
+.mail-selectable-row > .mail-list-item { flex: 1; min-width: 0; }
+.mail-batch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; padding: .6rem; background: var(--ftw-accent-soft); }
+.mail-handling-actions { padding: .6rem; border-bottom: 1px solid var(--ftw-border); }
 .mail-status[data-status="sending"] { color: #185591; background: #e1effe; }
 .mail-status:is([data-status="failed"],[data-status="bounced"]) { color: #9e283c; background: #fce5e9; }
 .mail-status[data-status="delivery_unknown"] { color: #6240a0; background: #eee8fa; }

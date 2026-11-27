@@ -12,6 +12,97 @@ const AGENT: Actor<'_> = Actor {
     agent_run_id: None,
 };
 
+#[tokio::test]
+async fn custom_view_deletion_preserves_customers_and_notifies_both_clients() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::storage::open(dir.path(), dir.path()).await.unwrap();
+    let contact = add(&pool, "Kept customer", "法国", "contacted").await;
+    let Reply::Saved { id } = save(
+        &pool,
+        AGENT,
+        ViewInput {
+            id: None,
+            expected_revision: None,
+            name: "Disposable view".into(),
+            hidden: false,
+            is_default: false,
+            config: Config::default(),
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("save")
+    };
+    let counter: i64 =
+        sqlx::query_scalar("SELECT revision FROM app_change_counters WHERE domain='crm_views'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(matches!(
+        delete(&pool, AGENT, &id, 2).await,
+        Err(Error::Conflict(1))
+    ));
+    assert!(matches!(
+        delete(&pool, Actor::DESKTOP, "all", 1).await,
+        Err(Error::Invalid("view_choose_default"))
+    ));
+    assert!(matches!(
+        delete(&pool, Actor::DESKTOP, "priority", 1).await,
+        Err(Error::Invalid("view_builtin_delete"))
+    ));
+    delete(&pool, AGENT, &id, 1).await.unwrap();
+    let next: i64 =
+        sqlx::query_scalar("SELECT revision FROM app_change_counters WHERE domain='crm_views'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(next, counter + 1);
+    assert_eq!(rows(&pool, ContactQuery::default()).await[0].id, contact);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_logs WHERE entity_id=? AND operation='delete'",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn in_progress_quick_filter_matches_global_statistics() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::storage::open(dir.path(), dir.path()).await.unwrap();
+    for stage in [
+        "prospect",
+        "contacted",
+        "replied",
+        "requirements",
+        "quote_sample",
+        "sample_in_progress",
+        "negotiation",
+        "won",
+        "paused",
+        "excluded",
+    ] {
+        add(&pool, stage, "", stage).await;
+    }
+    let matching = rows(
+        &pool,
+        ContactQuery {
+            quick_view: "in_progress".into(),
+            ..Default::default()
+        },
+    )
+    .await;
+    let Reply::CustomerStats { in_progress, .. } = contacts::stats(&pool).await.unwrap() else {
+        panic!("stats")
+    };
+    assert_eq!(matching.len() as i64, in_progress);
+    assert_eq!(matching.len(), 6);
+    pool.close().await;
+}
+
 async fn add(pool: &SqlitePool, name: &str, country: &str, stage: &str) -> String {
     let mut tx = pool.begin().await.unwrap();
     let Reply::Saved { id } = contacts::save(

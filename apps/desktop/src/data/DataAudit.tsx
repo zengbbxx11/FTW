@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useDeferredValue, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRight, ClipboardList, Funnel, Search } from 'lucide-react'
@@ -56,13 +57,13 @@ export function AuditWorkspace({ open }: { open: (target: AuditTarget) => void }
     <div className="panel ops-controls data-audit-filters">
       <label className="followup-search"><Search aria-hidden="true" /><input type="search" maxLength={160} aria-label="搜索审计记录"
         placeholder="记录名称、编号、来源或操作代码" value={filter.keyword} onChange={event => change({ keyword: event.target.value })} /></label>
-      <div className="row-actions"><select aria-label="审计来源" value={filter.source} onChange={event => change({ source: event.target.value })}>
+      <div className="row-actions"><Select aria-label="审计来源" value={filter.source} onChange={event => change({ source: event.target.value })}>
         <option value="">全部来源</option>{Object.entries(sources).map(([key,label]) => <option key={key} value={key}>{label}</option>)}
-      </select><select aria-label="审计对象类型" value={filter.entity} onChange={event => change({ entity: event.target.value })}>
+      </Select><Select aria-label="审计对象类型" value={filter.entity} onChange={event => change({ entity: event.target.value })}>
         <option value="">全部对象</option>{(query.data?.entities ?? (filter.entity ? [filter.entity] : [])).map(key => <option key={key} value={key}>{entities[key] ?? key}</option>)}
-      </select><select aria-label="审计时间范围" value={filter.days} onChange={event => change({ days: Number(event.target.value) })}>
+      </Select><Select aria-label="审计时间范围" value={filter.days} onChange={event => change({ days: Number(event.target.value) })}>
         <option value="0">全部日期</option>{[7,30,90].map(days => <option key={days} value={days}>最近 {days} 天</option>)}
-      </select><button type="button" className="button" disabled={!filter.source && !filter.entity && !filter.keyword && !filter.days} onClick={() => change(initial)}>清除筛选</button></div>
+      </Select><button type="button" className="button" disabled={!filter.source && !filter.entity && !filter.keyword && !filter.days} onClick={() => change(initial)}>清除筛选</button></div>
     </div>
     <div className="ops-split data-audit-grid" data-selected={Boolean(current)}>
       <section className="panel ops-table"><div className="section-heading"><h2>操作记录</h2></div>

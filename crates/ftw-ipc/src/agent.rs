@@ -66,6 +66,7 @@ pub enum Collaboration {
         contact_id: String,
         expected_contact: Option<String>,
         expected_match: String,
+        expected_handling_revision: Option<i64>,
     },
     CreateReplyDraft {
         request_id: String,
@@ -122,6 +123,16 @@ pub enum Collaboration {
     ArchiveView {
         id: String,
         expected_revision: i64,
+    },
+    DeleteView {
+        request_id: String,
+        id: String,
+        expected_revision: i64,
+    },
+    ClassifyInbox {
+        request_id: String,
+        targets: Vec<crate::inbox::HandlingTarget>,
+        non_customer: bool,
     },
     RestoreView {
         id: String,

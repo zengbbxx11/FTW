@@ -3,10 +3,11 @@ import {
   ChevronLeft, ChevronRight, ChevronUp, CircleCheck, ClipboardList, Clock, ContactRound, Copy, Ellipsis,
   Filter, Globe, GripVertical, History, Kanban, ListFilter, Mail, MessageSquarePlus, Package, Pencil,
   Plus, RotateCcw, Save, Search, Send, ShieldCheck, SlidersHorizontal, Star, Table2,
-  TrendingUp, Upload, UsersRound, X,
+  TrendingUp, Trash2, Upload, UsersRound, X,
 } from 'lucide-react'
 
 const icons = {
+  delete: Trash2,
   users: UsersRound, grid: Table2, board: Kanban, star: Star, box: Package, growth: TrendingUp,
   checkCircle: CircleCheck, search: Search, filter: Filter, settings: SlidersHorizontal,
   plus: Plus, check: Check, edit: Pencil, arrow: ChevronRight, back: ChevronLeft, mail: Mail,

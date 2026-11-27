@@ -1,6 +1,6 @@
 # FTW MCP 客户开发、邮件和协作
 
-适用于 1.1.7、Schema 27，当前共有 102 个 MCP 工具。既有工具保持兼容。工具是否按需加载由客户端决定；FTW 不宣称工具数量对 Token 消耗没有影响。优先查询精简概况，再按需读取正文和完整历史。[当前状态](PROJECT_STATUS.md)
+适用于 1.1.10、Schema 28，当前共有 104 个 MCP 工具。既有工具保持兼容。工具是否按需加载由客户端决定；FTW 不宣称工具数量对 Token 消耗没有影响。优先查询精简概况，再按需读取正文和完整历史。[当前状态](PROJECT_STATUS.md)
 
 桌面邮件中心将收件、草稿与审批、SMTP 已接受、发送队列、发送失败、提交结果未知和退信分开查询。收发件搜索按主题与地址在 Core 中筛选，再返回当前页。已发未见回复入口打开原有 CRM 视图，记录仍以最后一次有效的 IMAP 同步为准。
 
@@ -305,3 +305,16 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 MCP 工具的 `content[0].text` 继续提供原有业务结果或错误说明。`structuredContent` 补充第 1 版回执。可读取 `operation`、`status`、`success`、`retryable` 与 `requires_human`。Core 返回实体编号、任务编号或版本时，回执也提供相应字段。失败回执包含稳定的 `code`，并在 Core 提供时包含 `detail`。
 
 `success: null` 表示业务仍在处理或结果未知。邮件入队对应 `queued`，SMTP 接受对应 `smtp_accepted`，提交失败对应 `failed`，提交结果未知对应 `delivery_unknown`。失败或未知时，若 Core 已保存具体原因，`code` 会带回该原因。未知发送需要人工核对。版本冲突类错误的 `retryable` 表示读取最新记录后可重新发起。桌面错误和任务中心使用相同的错误处理标记。工具名错误或参数结构错误继续按 MCP 协议返回。
+
+## 1.1.8 视图删除与来信分类
+
+| 工具 | 参数及行为 |
+| --- | --- |
+| `delete_customer_view` | `request_id`、`view_id`、`expected_revision`。仅删除 Agent 可访问的自建共享视图；保留客户、邮件和跟进，禁止删除默认或内置视图。 |
+| `classify_inbox_messages` | `request_id`、`targets:[{id,expected_revision}]`、`non_customer`。根据用户任务标记明确选中的来信或恢复，最多 100 封，版本取自 `handling_revision`；不屏蔽发件人的后续来信。 |
+
+`list_inbox` 新增可选 `filter`：`all`、`review`、`unassociated`、`non_customer`，默认仍返回全部来信。返回元数据包含 `non_customer` 与 `handling_revision`。原待关联查询入口改用统一客户待核对规则；普通未知来信不强制进入提醒。可通过客户查询／创建与现有回复关联工具继续处理。
+
+`confirm_reply_link` 新增可选 `expected_handling_revision`，建议使用最新值。原有同邮箱、人工核实和模糊关联审核边界保持有效。修改类重试复用相同请求 ID；发生 `mail_link_changed` 时重新读取状态，不能盲目覆盖。
+
+`query_customers` 和 `list_customers` 的 `quick_view` 支持 `in_progress`。现有工具名称与参数继续兼容；本轮不增加分组或精简接入模式。

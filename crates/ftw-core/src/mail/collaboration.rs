@@ -308,13 +308,20 @@ impl MailService {
                 contact_id,
                 expected_contact,
                 expected_match,
+                expected_handling_revision,
             } => {
                 let operation = "confirm_reply_link";
+                // Keep the original request fingerprint for callers that omit the new revision.
+                let fingerprint = if let Some(revision) = expected_handling_revision {
+                    serde_json::json!([message, contact_id, expected_contact, expected_match, revision])
+                } else {
+                    serde_json::json!([message, contact_id, expected_contact, expected_match])
+                };
                 if let Err(existing) = crate::agent::claim_for(
                     &self.pool,
                     operation,
                     &request_id,
-                    &(&message, &contact_id, &expected_contact, &expected_match),
+                    &fingerprint,
                     Some(&id),
                 )
                 .await
@@ -331,6 +338,7 @@ impl MailService {
                         &contact_id,
                         expected_contact,
                         expected_match,
+                        expected_handling_revision,
                     )
                     .await;
                 return crate::agent::finish_for(
@@ -570,6 +578,61 @@ impl MailService {
             Collaboration::SaveView { input } => {
                 return crm::response(crm::views::save(&self.pool, actor, input).await)
             }
+            Collaboration::DeleteView {
+                request_id,
+                id,
+                expected_revision,
+            } => {
+                return self
+                    .run_crm_change(
+                        actor,
+                        "delete_customer_view",
+                        &request_id,
+                        CrmCommand::DeleteView {
+                            id,
+                            expected_revision,
+                        },
+                    )
+                    .await;
+            }
+            Collaboration::ClassifyInbox {
+                request_id,
+                targets,
+                non_customer,
+            } => {
+                let operation = "classify_inbox_messages";
+                if let Err(existing) = crate::agent::claim_for(
+                    &self.pool,
+                    operation,
+                    &request_id,
+                    &(&targets, non_customer),
+                    Some(&id),
+                )
+                .await
+                {
+                    return existing;
+                }
+                let reply = super::inbox::response(
+                    super::inbox::store::classify(
+                        &self.pool,
+                        Actor {
+                            agent_run_id: Some(&request_id),
+                            ..actor
+                        },
+                        targets,
+                        non_customer,
+                    )
+                    .await,
+                );
+                return crate::agent::finish_for(
+                    &self.pool,
+                    operation,
+                    &request_id,
+                    reply,
+                    Some(&id),
+                )
+                .await;
+            }
             Collaboration::ArchiveView {
                 id,
                 expected_revision,
@@ -694,6 +757,7 @@ impl MailService {
                         unmatched: true,
                         offset,
                         keyword: None,
+                        filter: Default::default(),
                     })
                     .await;
             }

@@ -1,0 +1,2 @@
+# SQLx records checksums of migration bytes. Keep them identical across Windows checkouts.
+crates/ftw-core/migrations/*.sql text eol=lf

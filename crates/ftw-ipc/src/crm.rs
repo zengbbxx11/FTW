@@ -229,6 +229,10 @@ pub enum Command {
         expected_revision: i64,
         archived: bool,
     },
+    DeleteView {
+        id: String,
+        expected_revision: i64,
+    },
     MoveView {
         id: String,
         expected_revision: i64,

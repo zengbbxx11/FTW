@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useDeferredValue, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Building2, CircleCheck, ClipboardList, Ellipsis, FileSearch, Link, Pencil, Plus, Search, UserRoundPlus, X } from 'lucide-react'
@@ -43,9 +44,9 @@ export function LeadList({ open, create, openContact }: { open: (id: string) => 
     <div className="lead-toolbar">
       <label className="followup-search"><Search aria-hidden="true" /><input type="search" aria-label="搜索候选客户" value={input} maxLength={320}
         placeholder="搜索名称、公司、网站、邮箱或国家" onChange={event => { setInput(event.target.value); reset() }} /></label>
-      <select aria-label="候选客户来源" value={source} onChange={event => { setSource(event.target.value); reset() }}>
+      <Select aria-label="候选客户来源" value={source} onChange={event => { setSource(event.target.value); reset() }}>
         <option value="">全部来源</option><option value="agent">Agent</option><option value="manual">人工</option>
-      </select>
+      </Select>
     </div>
     {query.isPending && <Empty>正在读取候选客户…</Empty>}
     {query.isError && <Problem error={query.error} />}

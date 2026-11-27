@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useDeferredValue, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileText, History, MessageSquare, Package, Phone, Plus, Reply, Search, Send, UsersRound, type LucideIcon } from 'lucide-react'
@@ -44,13 +45,13 @@ export function Timeline({ contact, openContact, startNew = false, initialActivi
       <h2>沟通时间线</h2>
       <div className="row-actions">
         {focused && <button type="button" className="button" onClick={() => setFocused(undefined)}><History aria-hidden="true" />全部跟进记录</button>}
-        {!contact && !focused && <select aria-label="筛选记录来源" value={source} onChange={event => { setSource(event.target.value); setOffset(0) }}>
+        {!contact && !focused && <Select aria-label="筛选记录来源" value={source} onChange={event => { setSource(event.target.value); setOffset(0) }}>
           <option value="">所有来源</option><option value="manual">手动</option><option value="agent">Agent</option><option value="system">系统</option>
-        </select>}
-        {!focused && <select aria-label="筛选沟通方式" value={eventType} onChange={e => { setEventType(e.target.value); setOffset(0) }}>
+        </Select>}
+        {!focused && <Select aria-label="筛选沟通方式" value={eventType} onChange={e => { setEventType(e.target.value); setOffset(0) }}>
           <option value="">全部方式</option>
           {Object.entries(activityTypes).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-        </select>}
+        </Select>}
         {contact && contact.archived_at === null && editor === null && <button className="button primary" onClick={() => setEditor({ contactId: contact.id })}>
           <CustomerIcon name="plus" />新增跟进
         </button>}
@@ -183,12 +184,12 @@ export function ActivityEditor({ activity, contactId, close, initialType, initia
   return <form className="inline-form" onSubmit={event => { event.preventDefault(); mutation.mutate() }}>
     <fieldset disabled={mutation.isPending}>
       <div className="form-grid">
-        <Field label="计入客户联系日期"><select value={input.counts_as_contact == null ? '' : String(input.counts_as_contact)} onChange={e => setInput(current => ({ ...current, counts_as_contact: e.target.value === '' ? null : e.target.value === 'true' }))}>
+        <Field label="计入客户联系日期"><Select value={input.counts_as_contact == null ? '' : String(input.counts_as_contact)} onChange={e => setInput(current => ({ ...current, counts_as_contact: e.target.value === '' ? null : e.target.value === 'true' }))}>
           {activity?.counts_as_contact == null && <option value="">按跟进类型判断</option>}<option value="true">是</option><option value="false">否</option>
-        </select></Field>
-        {!initialType && <Field label="沟通方式"><select value={input.event_type} onChange={e => setInput(old => ({ ...old, event_type: e.target.value as ActivityType }))}>
+        </Select></Field>
+        {!initialType && <Field label="沟通方式"><Select value={input.event_type} onChange={e => setInput(old => ({ ...old, event_type: e.target.value as ActivityType }))}>
           {editableActivityTypes.map(type => <option value={type} key={type}>{activityTypes[type]}</option>)}
-        </select></Field>}
+        </Select></Field>}
         <Field label="发生时间"><input required type="datetime-local" value={dateInput(input.occurred_at || null)}
           onChange={e => setInput(old => ({ ...old, occurred_at: fromDateInput(e.target.value) ?? 0 }))} /></Field>
         <Field label="摘要（必填）"><input required autoFocus value={input.summary}
@@ -202,10 +203,10 @@ export function ActivityEditor({ activity, contactId, close, initialType, initia
             onChange={event => setInput(old => ({ ...old, sample: { ...sample, quantity: event.target.value ? event.target.valueAsNumber : null } }))} /></Field>
           <Field label="批次编号"><input name="sample-batch" maxLength={100} placeholder="相同批次沿用同一编号" value={sample.batch_ref ?? ''}
             onChange={event => setInput(old => ({ ...old, sample: { ...sample, batch_ref: event.target.value } }))} /></Field>
-          <Field label="本次样品进度"><select value={sample.progress ?? ''}
+          <Field label="本次样品进度"><Select value={sample.progress ?? ''}
             onChange={event => setInput(old => ({ ...old, sample: { ...sample, progress: event.target.value } }))}>
             <option value="">未记录进度</option>{sampleStates.map(option => <option key={option.code} value={option.code}>{option.label}</option>)}
-          </select></Field>
+          </Select></Field>
         </>}
         <Field label="客户反馈或需求"><textarea name="customer-feedback" rows={3} value={input.customer_feedback} onChange={e => setInput(old => ({ ...old, customer_feedback: e.target.value }))} /></Field>
         <Field label="详情"><textarea name="details" rows={3} value={input.details}

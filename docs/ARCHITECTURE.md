@@ -1,6 +1,6 @@
 # Core 进程与存储
 
-当前版本为 1.1.7，Schema 27；[当前实现与验证范围](PROJECT_STATUS.md)。本轮没有新增数据库迁移。
+当前源码版本为 1.1.10，Schema 28；[当前实现与验证范围](PROJECT_STATUS.md)。1.1.8 增加可恢复的来信分类及视图删除通知；1.1.9 统一选择控件和表格列布局保存，没有新增数据库迁移或 MCP 工具。
 
 `workbench.exe` 的本地 WebView 通过 Tauri 命令 `core_health`、`core_changes`、`crm_request`、`mail_request`、`inbox_request` 和 `data_request` 调用 Core。`ftw-mcp.exe` 通过同一 Core 的受限入口执行已授权的 CRM、文件、审计、任务及邮件操作。Core 负责输入校验、主体识别、权限、版本检查和事务。MCP 可在桌面关闭时按需启动 Core。[MCP 工具和权限](MCP_MAIL.md)
 
@@ -28,7 +28,7 @@
 
 ## SQLite 路径和迁移
 
-Core 打开 `data/workbench.db`，连接启用外键、WAL、FULL 同步和五秒锁等待。SQLx 使用内嵌迁移和自身的 `_sqlx_migrations` 表，健康检查读取最近成功迁移的版本。当前源码的最新迁移为 `0027_trusted_agents.sql`。迁移失败时 Core 记录错误并退出，升级前的一致性快照用于恢复。[按顺序查看 SQLx 迁移](../crates/ftw-core/migrations)
+Core 打开 `data/workbench.db`，连接启用外键、WAL、FULL 同步和五秒锁等待。SQLx 使用内嵌迁移和自身的 `_sqlx_migrations` 表，健康检查读取最近成功迁移的版本。当前源码的最新迁移为 `0028_inbox_handling.sql`。迁移失败时 Core 记录错误并退出，升级前的一致性快照用于恢复。[按顺序查看 SQLx 迁移](../crates/ftw-core/migrations)
 
 打开已有数据库且检测到待应用迁移时，Core 在新迁移前通过 SQLite Online Backup API 生成一致性快照。快照放在数据根目录的 `backups` 下，备份失败时停止升级。保留升级前的原始设置和迁移版本。历史发件附件和限长收件原文随数据库备份。新版附件和按需下载的大邮件保存在不可变对象文件，Core 校验并复制备份引用的对象。恢复前验证完整性和迁移校验和，创建当前库的安全备份，再替换内容。恢复期间暂停发件、审批和收件，旧审批失效，恢复的排队及发送中任务记录为结果未知。
 
@@ -59,3 +59,7 @@ Core 打开 `data/workbench.db`，连接启用外键、WAL、FULL 同步和五�
 
 - 本机接口采用规格允许的 Windows IPC。Core 不监听 TCP，浏览器侧只有受限的 Tauri 命令。
 - WebView2 使用系统 Evergreen Runtime。工作台启动前检测缺失的运行时，显示本机错误对话框。开发版使用独立的 WebView2 数据目录，避免与发布版并行时争用用户配置。
+
+### Schema 28
+
+`0028_inbox_handling.sql` 为收件增加 `non_customer`、`handling_revision` 和查询索引，并补充视图删除后的数据域通知。默认值保留所有历史邮件；原匹配状态及邮件类型保持独立。分类、批量恢复和关联提交通过同一 Core 事务及修订检查，UI／MCP 共用，沿用现有数据变更刷新机制。

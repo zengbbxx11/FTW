@@ -8,6 +8,84 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const MAIL: &[u8] = b"From: Buyer <buyer@example.test>\r\nTo: sender@example.test\r\nSubject: Re: Quote\r\nMessage-ID: <reply@example.test>\r\nIn-Reply-To: <out@ftw.local>\r\n\r\nBuyer reply.\r\n";
 
+#[tokio::test]
+async fn non_customer_handling_is_reversible_persistent_and_does_not_block_new_messages() {
+    let (dir, pool, _) = fixture().await;
+    let known = String::from_utf8_lossy(MAIL).replace("In-Reply-To: <out@ftw.local>\r\n", "");
+    let ordinary = known
+        .replace("buyer@example.test", "newsletter@example.test")
+        .replace("reply@", "ordinary@");
+    let automatic = known
+        .replace("Subject:", "Auto-Submitted: auto-replied\r\nSubject:")
+        .replace("reply@", "automatic@");
+    for (uid, raw) in [(1, &known), (2, &ordinary), (3, &automatic)] {
+        store::save(&pool, "acct", 12, uid, raw.as_bytes(), None, false)
+            .await
+            .unwrap();
+    }
+    let list = |filter| store::list(&pool, None, None, false, 0, None, filter);
+    let inbox::Result::Rows { rows, .. } = list(inbox::InboxFilter::Review).await.unwrap() else {
+        panic!("review")
+    };
+    assert_eq!(rows.len(), 1);
+    let target = inbox::HandlingTarget {
+        id: rows[0].id.clone(),
+        expected_revision: rows[0].handling_revision,
+    };
+    store::classify(
+        &pool,
+        crate::crm::Actor::DESKTOP,
+        vec![target.clone()],
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(
+        store::classify(&pool, crate::crm::Actor::DESKTOP, vec![target], false)
+            .await
+            .is_err()
+    );
+    store::save(&pool, "acct", 13, 9, known.as_bytes(), None, false)
+        .await
+        .unwrap();
+    let inbox::Result::Rows { rows, .. } = list(inbox::InboxFilter::NonCustomer).await.unwrap()
+    else {
+        panic!("non customer")
+    };
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].contact_id.is_none());
+    let restored_id = rows[0].id.clone();
+    let new_mail = known.replace("reply@example.test", "new-reply@example.test");
+    store::save(&pool, "acct", 13, 10, new_mail.as_bytes(), None, false)
+        .await
+        .unwrap();
+    store::classify(
+        &pool,
+        crate::crm::Actor::DESKTOP,
+        vec![inbox::HandlingTarget {
+            id: rows[0].id.clone(),
+            expected_revision: rows[0].handling_revision,
+        }],
+        false,
+    )
+    .await
+    .unwrap();
+    pool.close().await;
+    let pool = crate::storage::open(dir.path(), dir.path()).await.unwrap();
+    let inbox::Result::Rows { rows, .. } =
+        store::list(&pool, None, None, true, 0, None, Default::default())
+            .await
+            .unwrap()
+    else {
+        panic!("restored")
+    };
+    assert_eq!(rows.len(), 2);
+    let restored = rows.iter().find(|row| row.id == restored_id).unwrap();
+    assert!(!restored.non_customer);
+    assert_eq!(restored.handling_revision, 3);
+    pool.close().await;
+}
+
 async fn fixture() -> (tempfile::TempDir, SqlitePool, String) {
     let dir = tempfile::tempdir().unwrap();
     let pool = crate::storage::open(dir.path(), dir.path()).await.unwrap();
@@ -90,11 +168,17 @@ async fn associates_exact_replies_and_deduplicates_after_uidvalidity_change() {
     store::save(&pool, "acct", 13, 10, spoof.as_bytes(), None, false)
         .await
         .unwrap();
-    let inbox::Result::Rows { rows, .. } =
-        store::list(&pool, Some("acct".into()), None, true, 0, None)
-            .await
-            .unwrap()
-    else {
+    let inbox::Result::Rows { rows, .. } = store::list(
+        &pool,
+        Some("acct".into()),
+        None,
+        false,
+        0,
+        None,
+        inbox::InboxFilter::Unassociated,
+    )
+    .await
+    .unwrap() else {
         panic!("rows")
     };
     assert_eq!(rows.len(), 1);

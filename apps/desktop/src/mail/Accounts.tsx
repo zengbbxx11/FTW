@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, CircleAlert, CircleCheck, Clock, Mail, Pencil, Plus, RefreshCw, Save, Server, ShieldCheck, Trash2, X } from 'lucide-react'
@@ -147,11 +148,11 @@ function AccountForm({ account, busy, save, cancel, test }: {
         <Field label="发件邮箱"><input name="email" type="email" defaultValue={account?.email} required /></Field>
         <Field label="SMTP 主机"><input name="host" defaultValue={account?.host} placeholder="smtp.example.com" required /></Field>
         <div className="account-form-pair">
-          <Field label="加密方式"><select value={security} onChange={event => {
+          <Field label="加密方式"><Select value={security} onChange={event => {
             const next = event.target.value as typeof security
             setSecurity(next)
             setPort(next === 'tls' ? 465 : 587)
-          }}><option value="tls">TLS</option><option value="starttls">STARTTLS（强制）</option></select></Field>
+          }}><option value="tls">TLS</option><option value="starttls">STARTTLS（强制）</option></Select></Field>
           <Field label="端口"><input type="number" min="1" max="65535" value={port || ''} required onChange={event => setPort(event.target.valueAsNumber)} /></Field>
         </div>
         <Field label="SMTP 登录名"><input name="username" defaultValue={account?.username ?? account?.email} required /></Field>

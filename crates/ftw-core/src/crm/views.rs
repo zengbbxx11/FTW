@@ -342,6 +342,32 @@ async fn check_shared(
     permitted(catalog, &config).map_err(|_| Error::ReadOnly)
 }
 
+pub async fn delete(pool: &SqlitePool, actor: Actor<'_>, id: &str, revision: i64) -> Result<Reply> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let (_, default, _) = header(&mut tx, id, revision).await?;
+    if default {
+        return Err(Error::Invalid("view_choose_default"));
+    }
+    // Built-in IDs are stable entry points; their visibility is managed separately.
+    if matches!(
+        id,
+        "all" | "priority" | "sample" | "mail_no_reply" | "mail_replied" | "mail_bounced"
+    ) {
+        return Err(Error::Invalid("view_builtin_delete"));
+    }
+    if matches!(actor.source, Source::Agent) {
+        let catalog = query::catalog_on(&mut tx, actor).await?;
+        check_shared(&mut tx, id, &catalog, true).await?;
+    }
+    sqlx::query("DELETE FROM crm_views WHERE id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    audit(&mut tx, actor, "customer_view", id, "delete").await?;
+    tx.commit().await?;
+    Ok(Reply::Saved { id: id.into() })
+}
+
 pub async fn query_saved(
     pool: &SqlitePool,
     actor: Actor<'_>,

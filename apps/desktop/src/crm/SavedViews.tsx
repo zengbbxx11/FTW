@@ -1,19 +1,25 @@
-import { useState } from 'react'
+import { Select } from '../ui/Select'
+import { lazy, Suspense, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { request } from './api'
-import { Empty, Field, Problem } from './components'
+import { ConfirmButton, Empty, Field, Problem } from './components'
+import { builtinViewIds, viewSummary } from './viewSummary'
+import type { StateOption } from './api'
 import { columnsWithDefaults, type AvailableColumn, type ColumnSetting, type SavedView, type ViewConfig, type ViewInput } from './viewTypes'
 
 import { CustomerIcon } from './CustomerIcon'
 import { HelpTip, ToolPopover } from '../ui/WorkbenchUI'
+const ViewEditor = lazy(() => import('./ViewEditor').then(module => ({ default: module.ViewEditor })))
 
 export function useSavedViews() {
   return useQuery({ queryKey: ['crm-views'], queryFn: () => request({ action: 'list_views', include_archived: true }, 'views') })
 }
 
-export function SavedViewBar({ views, active, config, baseRevision, counts, select, saved }: {
+export function SavedViewBar({ views, active, config, baseRevision, counts, select, saved, available, catalog, savingLayout = false }: {
   views: SavedView[]; active?: SavedView; config: ViewConfig; baseRevision: number | null
   counts?: { active: number; priority: number; sample: number }; select: (id: string) => void; saved: (id: string) => void
+  available: AvailableColumn[]; catalog: StateOption[]; manageFields?: () => void
+  savingLayout?: boolean
 }) {
   const [manager, setManager] = useState(false)
   const [editor, setEditor] = useState<ViewInput | null>(null)
@@ -32,6 +38,14 @@ export function SavedViewBar({ views, active, config, baseRevision, counts, sele
       'direction' in requestData ? request({ action: 'move_view', ...requestData }, 'saved')
         : request({ action: 'archive_view', ...requestData },'saved'),
     onSuccess: () => cache.invalidateQueries({ queryKey: ['crm-views'] }),
+  })
+  const remove = useMutation({
+    mutationFn: (view: SavedView) => request({ action: 'delete_view', id: view.id, expected_revision: view.revision }, 'saved'),
+    onSuccess: async (_, view) => {
+      await cache.invalidateQueries({ queryKey: ['crm-views'] })
+      if (editor?.id === view.id) setEditor(null)
+      if (active?.id === view.id) select(views.find(item => item.is_default && item.id !== view.id)?.id ?? 'all')
+    },
   })
   const dirty = baseRevision !== null
   const live = views.filter(view => !view.archived)
@@ -59,7 +73,7 @@ export function SavedViewBar({ views, active, config, baseRevision, counts, sele
       </button></HelpTip>
       </div>
       <div className="customer-view-actions">
-        {dirty && active && <button className="button" disabled={save.isPending} onClick={() => save.mutate(edit(active,config))}>
+        {dirty && active && <button className="button" disabled={save.isPending || savingLayout} onClick={() => save.mutate(edit(active,config))}>
           <CustomerIcon name="save" />保存当前视图
         </button>}
         <button className="button" aria-expanded={manager} onClick={() => setManager(value => !value)}>
@@ -67,26 +81,18 @@ export function SavedViewBar({ views, active, config, baseRevision, counts, sele
         </button>
       </div>
     </div>
-    {editor && <form className="panel saved-view-editor" onSubmit={event => { event.preventDefault(); save.mutate(editor) }}>
-      <h2>{editor.id ? '编辑客户视图' : '新建客户视图'}</h2>
-      <div className="form-grid">
-        <Field label="视图名称"><input autoFocus value={editor.name} maxLength={100} required onChange={event => setEditor({ ...editor, name: event.target.value })} /></Field>
-        <label><input type="checkbox" checked={editor.is_default} disabled={active?.id === editor.id && active?.is_default}
-          onChange={event => setEditor({ ...editor, is_default: event.target.checked, hidden: event.target.checked ? false : editor.hidden })} /> 设为默认视图</label>
-        <label><input type="checkbox" checked={editor.hidden} disabled={editor.is_default}
-          onChange={event => setEditor({ ...editor, hidden: event.target.checked })} /> 隐藏标签</label>
-      </div>
-      <div className="form-footer"><button className="button" type="button" onClick={() => setEditor(null)}>取消</button>
-        <button className="button primary" disabled={save.isPending}><CustomerIcon name="save" />保存</button></div>
-    </form>}
+    {editor && <Suspense fallback={<Empty>正在打开视图编辑器…</Empty>}><ViewEditor key={editor.id ?? 'new'} value={editor} change={setEditor} current={config} available={available} catalog={catalog}
+      save={() => save.mutate(editor)} cancel={() => setEditor(null)} pending={save.isPending || savingLayout} defaultLocked={views.some(view => view.id === editor.id && view.is_default)} /></Suspense>}
     {save.isError && <Problem error={save.error} />}
     {manager && <section className="panel saved-view-manager"><h2>管理客户视图</h2>
       {manage.isError && <Problem error={manage.error} />}
+      {remove.isError && <Problem error={remove.error} />}
       {views.length === 0 ? <Empty>没有已保存的视图。</Empty> : <ul className="record-list">
         {views.map(view => {
           const target = { id:view.id, expected_revision:view.revision }
           const index = live.findIndex(current => current.id === view.id)
-          return <li key={view.id}><strong>{view.name} {view.is_default ? '· 默认' : view.archived ? '· 已归档' : view.hidden ? '· 已隐藏' : ''}</strong>
+          return <li key={view.id}><div><strong>{view.name} {view.is_default ? '· 默认' : view.archived ? '· 已归档' : view.hidden ? '· 已隐藏' : ''}</strong>
+            <small className="view-manager-summary">{viewSummary(view.config)}</small></div>
             <div className="row-actions">
               {!view.archived && <>
                 <button className="button" onClick={() => { select(view.id); setManager(false) }}><CustomerIcon name="arrow" />打开</button>
@@ -104,6 +110,9 @@ export function SavedViewBar({ views, active, config, baseRevision, counts, sele
                 onClick={() => manage.mutate({ ...target,archived:!view.archived })}>
                 <CustomerIcon name={view.archived ? 'restore' : 'archive'} />{view.archived?'恢复':'归档'}
               </button>
+              {!builtinViewIds.has(view.id) && <ConfirmButton label={`删除视图“${view.name}”？只删除视图配置，不删除任何客户、邮件或沟通记录。`}
+                disabled={view.is_default || remove.isPending} onConfirm={() => remove.mutate(view)}><CustomerIcon name="delete" />删除</ConfirmButton>}
+              {view.is_default && <small>更换默认视图后可归档或删除</small>}
             </div></li>
         })}
       </ul>}
@@ -112,7 +121,7 @@ export function SavedViewBar({ views, active, config, baseRevision, counts, sele
 }
 
 export function ColumnSettings({ available, saved, change, manageFields, density, setDensity }: {
-  available: AvailableColumn[]; saved: ColumnSetting[] | undefined; change: (columns: ColumnSetting[]) => void; manageFields: () => void
+  available: AvailableColumn[]; saved: ColumnSetting[] | undefined; change: (columns: ColumnSetting[]) => void; manageFields?: () => void
   density: 'standard' | 'compact'; setDensity: (density: 'standard' | 'compact') => void
 }) {
   const columns = columnsWithDefaults(saved,available)
@@ -124,18 +133,19 @@ export function ColumnSettings({ available, saved, change, manageFields, density
   function move(index: number, neighbor: number) {
     const next = [...columns]
     if (index < 0 || neighbor < 0 || neighbor >= next.length) return
+    if (next[index].field === 'name' || next[neighbor].field === 'name') return
     const [value] = next.splice(index,1)
     next.splice(neighbor,0,value)
     change(next)
   }
   return <ToolPopover label="列设置" className="customer-column-popover"
-    trigger={<button type="button" className="button"><CustomerIcon name="settings" />列设置</button>}>
+    trigger={<button type="button" className="button"><CustomerIcon name="settings" />属性与列设置</button>}>
     <div className="section-heading"><div><h2 className="ftw-popup-heading">显示字段</h2><small>自定义列 {customVisible} / 12</small></div>
       <div className="row-actions">
-        <label className="customer-page-size">行密度 <select value={density} onChange={event => setDensity(event.target.value as typeof density)}>
+        <label className="customer-page-size">行密度 <Select value={density} onChange={event => setDensity(event.target.value as typeof density)}>
           <option value="standard">标准</option><option value="compact">紧凑</option>
-        </select></label>
-        <button className="button" onClick={manageFields}><CustomerIcon name="settings" />字段与属性</button>
+        </Select></label>
+        {manageFields && <button className="button" onClick={manageFields}><CustomerIcon name="settings" />字段与属性</button>}
       </div>
     </div>
     <div className="column-config-header" aria-hidden="true"><span></span><span>字段</span><span>显示名称</span><span>列宽</span><span>顺序</span></div>

@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { lazy, Suspense, useDeferredValue, useEffect, useId, useRef, useState, type CSSProperties } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dateInput, dateLabel, fromDateInput, methodKinds, outreachLabels, request, sourceLabel, stages,
@@ -15,6 +16,7 @@ import { ActionMenu, IconButton, MenuAction, ToolPopover } from '../ui/Workbench
 import { CustomerIcon } from './CustomerIcon'
 import { LeadEvidencePanel } from './LeadEvidence'
 import { ContactHistory } from './ContactHistory'
+import { useViewLayout } from './useViewLayout'
 
 const wideDrawer = '(min-width: 1440px)'
 const AdvancedFilters = lazy(() => import('./AdvancedFilters'))
@@ -33,12 +35,25 @@ export function ContactList({ compose, history, files, company, create, importCs
   const views = useSavedViews()
   const records = views.data?.views ?? []
   const [activeId,setActiveId] = useState(initialView ?? '')
+  const [preset, setPreset] = useState<string | null>(initialView ?? null)
   const active = records.find(view => view.id === activeId && !view.archived) ?? records.find(view => view.is_default)
   const [local,setLocal] = useState<{ id: string; revision: number | null; config: ViewConfig } | null>(null)
   const [offset,setOffset] = useState(0)
   const [showAdvanced,setShowAdvanced] = useState(false)
   const [manageFields,setManageFields] = useState(false)
-  const config = local?.id === (active?.id ?? '') ? local.config : active?.config ?? {}
+  const [newField, setNewField] = useState(false)
+  const [columnNotice, setColumnNotice] = useState('')
+  const layout = useViewLayout(active, (id, from, to, patch) => setLocal(current => current?.id === id
+    ? { ...current, revision: current.revision === from ? to : current.revision, config: { ...current.config, ...patch } } : current))
+  const baseConfig = { ...(local?.id === (active?.id ?? '') ? local.config : active?.config ?? {}), ...layout.draft }
+  const config: ViewConfig = preset ? { ...baseConfig, query: { ...defaultQuery,
+    sort: baseConfig.query?.sort ?? 'updated', order: baseConfig.query?.order, page_size: baseConfig.query?.page_size,
+    ...(preset.startsWith('mail_') ? { filter: { type: 'group', logic: 'and', children: [
+      { type: 'rule', field: 'mail_status', operator: 'eq', value: preset === 'mail_replied' ? 'replied' : 'sent_no_reply_seen' },
+      { type: 'rule', field: 'mail_last_sent', operator: 'gte', value: 0 },
+    ] } }
+      : { quick_view: (preset === 'active' ? '' : preset) as ContactQuery['quick_view'] }),
+  } } : baseConfig
   const board = config.layout === 'board'
   const available = availableColumns(fields.data?.fields ?? [])
   const columns = columnsWithDefaults(config.columns?.length ? config.columns : initialColumnsForView(active?.id), available)
@@ -51,13 +66,13 @@ export function ContactList({ compose, history, files, company, create, importCs
   const liveBulkKey = useRef(bulkKey)
   useEffect(() => { liveBulkKey.current = bulkKey }, [bulkKey])
   const [bulkSelection, setBulkSelection] = useState<{ key: string; data: BulkSelection }>({ key: '', data: { targets: {} } })
-  const [selection, setSelection] = useState<{ id: string; entry?: 'edit' | 'mail'; sequence: number } | null>(null)
+  const [selection, setSelection] = useState<{ id: string; entry?: 'edit' | 'mail' | 'followup'; sequence: number } | null>(null)
   const selected = selection?.id ?? null
   const [drawerWidth, setDrawerWidth] = useState<number | undefined>(undefined)
   const drawer = useRef<HTMLDialogElement>(null)
   const drawerTrigger = useRef<HTMLElement | null>(null)
   const search = useRef<HTMLInputElement>(null)
-  function open(id: string, entry?: 'edit' | 'mail') {
+  function open(id: string, entry?: 'edit' | 'mail' | 'followup') {
     const dialog = drawer.current
     if (!dialog) return
     if (!dialog.open) {
@@ -88,6 +103,7 @@ export function ContactList({ compose, history, files, company, create, importCs
     return () => { media.removeEventListener('change', resize); window.removeEventListener('keydown', keyboard) }
   }, [])
   function configure(change: Partial<ViewConfig>, reset = true) {
+    setPreset(null)
     setLocal({ id: active?.id ?? '', revision: local?.id === active?.id ? local?.revision ?? null : active?.revision ?? null,
       config: { ...config, ...change } })
     if (reset) setOffset(0)
@@ -100,6 +116,7 @@ export function ContactList({ compose, history, files, company, create, importCs
     configure({ query:next })
   }
   function select(id: string) {
+    setPreset(null)
     setBulkSelection({ key: '', data: { targets: {} } })
     setActiveId(id)
     setLocal(null)
@@ -110,7 +127,9 @@ export function ContactList({ compose, history, files, company, create, importCs
     close()
     setSelection(null)
     setManageFields(true)
+    setNewField(false)
   }
+  function addColumnField() { manageColumnFields(); setNewField(true) }
   const result = useQuery({
     queryKey: ['contacts', requestQuery], enabled: !board && fields.isFetched && (!initialView || !views.isPending),
     queryFn: () => request({ action: 'list_contacts', query: requestQuery }, 'contacts'),
@@ -123,7 +142,12 @@ export function ContactList({ compose, history, files, company, create, importCs
   const selectedIndex = pageRows.findIndex(row => row.id === selected)
   const sideStyle = drawerWidth === undefined ? undefined : { '--customer-drawer-width': drawerWidth + 'px' } as CSSProperties
   const setWidth = (width: number) => setDrawerWidth(Math.max(340, Math.min(620, width)))
-  if (manageFields) return <FieldManager back={() => setManageFields(false)} />
+  if (manageFields) return <FieldManager initialNew={newField} back={() => setManageFields(false)} created={id => {
+    const displaced = projection.length >= 12 ? projection.at(-1) : undefined
+    layout.change({ columns: [...columns.filter(column => column.field !== id).map(column => column.field === displaced ? { ...column, hidden: true } : column), { field: id, label: null, width: 148, hidden: false }] })
+    setColumnNotice(displaced ? '新属性已显示。当前视图最多同时显示 12 个自定义属性，已收起最后一个旧属性，可在属性与列设置中调整。' : '')
+    setManageFields(false)
+  }} />
   return <section className="contact-workbench" aria-label="客户管理" style={sideStyle}>
     <div className="customer-command">
     <header className="page-heading customer-heading">
@@ -143,7 +167,7 @@ export function ContactList({ compose, history, files, company, create, importCs
     </header>
     {views.isError && <Problem error={views.error} />}
     {fields.isError && <Problem error={fields.error} />}
-    <SavedViewBar views={records} active={active} config={config} baseRevision={local?.id === active?.id ? local?.revision ?? null : null} counts={overview.data} select={select} saved={select} />
+    <SavedViewBar views={records} active={active} config={config} available={available} catalog={catalog} manageFields={manageColumnFields} savingLayout={layout.busy} baseRevision={local?.id === active?.id ? local?.revision ?? null : null} counts={overview.data} select={select} saved={select} />
     <div className="customer-toolbar">
       <div className="customer-search">
         <span className="search-symbol"><CustomerIcon name="search" /></span>
@@ -156,17 +180,17 @@ export function ContactList({ compose, history, files, company, create, importCs
       </button>}>
         <h2 className="ftw-popup-heading">筛选客户</h2>
         <div className="form-grid">
-          <Field label="客户阶段"><select value={query.stage} onChange={event => update({stage:event.target.value})}>
+          <Field label="客户阶段"><Select value={query.stage} onChange={event => update({stage:event.target.value})}>
             <option value="">全部阶段</option>{Object.entries(stages).map(([key,label]) => <option key={key} value={key}>{label}</option>)}
-          </select></Field>
+          </Select></Field>
           <Field label="国家或地区"><input value={query.country} onChange={event=>update({country:event.target.value})} /></Field>
           <Field label="客户等级"><StateFilter field="customer_level" catalog={catalog} value={query.level} change={level=>update({level})} /></Field>
           <Field label="样品进度"><StateFilter field="sample_status" catalog={catalog} value={query.sample_status ?? ''} change={sample_status=>update({sample_status})} /></Field>
           <Field label="客户类型"><input value={query.customer_type} onChange={event=>update({customer_type:event.target.value})} /></Field>
           <Field label="客户来源"><input value={query.source} onChange={event=>update({source:event.target.value})} /></Field>
-          <Field label="归档状态"><select value={query.archive} onChange={event=>update({archive:event.target.value as ContactQuery['archive']})}>
+          <Field label="归档状态"><Select value={query.archive} onChange={event=>update({archive:event.target.value as ContactQuery['archive']})}>
             <option value="active">未归档</option><option value="archived">已归档</option><option value="all">全部</option>
-          </select></Field>
+          </Select></Field>
         </div>
         <div className="ftw-popup-footer">
         <button className="button" type="button" onClick={() => update({
@@ -188,19 +212,24 @@ export function ContactList({ compose, history, files, company, create, importCs
       <button className="button" onClick={() => setShowAdvanced(value=>!value)} aria-expanded={showAdvanced} data-filtered={Boolean(query.filter)}>
         <CustomerIcon name="sliders" />高级筛选
       </button>
-      {!board && <ColumnSettings available={available} saved={columns} change={items=>configure({columns:items},false)}
-        density={config.density ?? 'standard'} setDensity={density => configure({density},false)}
+      {!board && <ColumnSettings available={available} saved={columns} change={items=>layout.change({columns:items})}
+        density={config.density ?? 'standard'} setDensity={density => layout.change({density})}
         manageFields={manageColumnFields} />}
+      {!board && <button type="button" className="button" onClick={addColumnField}><CustomerIcon name="plus" />添加属性</button>}
+      {!board && <button type="button" className="button" onClick={() => layout.change({ columns: initialColumnsForView(active?.id), density: 'standard' })}><CustomerIcon name="restore" />恢复默认列布局</button>}
+      <small role="status">{layout.busy ? '正在记住列布局…' : '列布局自动记住'}</small>
       {board && <button className="button" onClick={manageColumnFields}><CustomerIcon name="settings" />字段管理</button>}
       <div className="layout-switch" role="group" aria-label="客户视图布局">
         <IconButton label="表格视图" aria-pressed={!board} onClick={() => configure({ layout: 'table' })}><CustomerIcon name="grid" /></IconButton>
         <IconButton label="看板视图" aria-pressed={board} onClick={() => configure({ layout: 'board' })}><CustomerIcon name="board" /></IconButton>
       </div>
-      {board && <Field label="分组字段"><select value={config.group_field ?? 'stage'} onChange={event => configure({group_field:event.target.value})}>
+      {board && <Field label="分组字段"><Select value={config.group_field ?? 'stage'} onChange={event => configure({group_field:event.target.value})}>
         <option value="stage">客户阶段</option>
         {(fields.data?.fields ?? []).filter(field => field.kind === 'single_select').map(field => <option key={field.id} value={field.id}>{field.name}</option>)}
-      </select></Field>}
+      </Select></Field>}
     </div>
+    {layout.error != null && <div className="alert warning"><Problem error={layout.error} /><p>列布局未保存，未覆盖其他人的修改。</p><button type="button" className="button" onClick={layout.discard}>重新读取已保存布局</button></div>}
+    {columnNotice && <p className="review-notice" role="status">{columnNotice}<button type="button" className="text-button" onClick={() => setColumnNotice('')}>关闭</button></p>}
     {active?.id === 'mail_no_reply' && <p className="customer-mail-context">
       <CustomerIcon name="clock" />仅显示最新发信后已完成 IMAP 同步、暂未查到已关联客户回复的记录。
     </p>}
@@ -211,10 +240,11 @@ export function ContactList({ compose, history, files, company, create, importCs
       {([
         ['active', '全部客户', 'users'], ['priority', '重点客户', 'star'], ['sample', '样品客户', 'box'],
         ['in_progress', '跟进中', 'growth'],
-      ] as const).map(([key, label, symbol]) => <div className="customer-metric" key={key} data-metric={key}>
+      ] as const).map(([key, label, symbol]) => <button type="button" className="customer-metric" key={key} data-metric={key} aria-pressed={preset === key}
+        onClick={() => { configure({ query: config.query }); setPreset(key); setBulkSelection({ key: '', data: { targets: {} } }); setShowAdvanced(false) }}>
         <span className="customer-metric-icon"><CustomerIcon name={symbol} /></span>
         <div><strong>{overview.data![key].toLocaleString('zh-CN')}</strong><span>{label}</span></div>
-      </div>)}
+      </button>)}
     </div>}
     </div>
     <section className="customer-data" aria-label={board ? '客户看板' : '客户表格'}>
@@ -237,14 +267,15 @@ export function ContactList({ compose, history, files, company, create, importCs
           setSelection={data => { if (liveBulkKey.current === bulkKey) setBulkSelection({ key: bulkKey, data }) }} filtering={requestQuery.keyword !== query.keyword}
           columns={columns} catalog={catalog} density={config.density ?? 'standard'} open={open} activeRow={selected} order={query.order?.[0]}
           editCustomer={id => open(id, 'edit')} showMail={id => open(id, 'mail')} emailPreview={Boolean(active?.id.startsWith('mail_'))}
-          resize={widths=>configure({columns:columns.map(column=>({...column,width:widths[column.field]??column.width}))},false)}
+          followup={id => open(id, 'followup')} addField={addColumnField} changeColumns={items => layout.change({ columns: items })}
+          resize={widths=>layout.change({columns:columns.map(column=>({...column,width:widths[column.field]??column.width}))})}
           sort={field=>update({order:[{field,descending:query.order?.[0]?.field===field && !query.order[0].descending}]})} />}
         <div className="customer-list-footer">
           <span>{result.data.rows.length > 0 ? `第 ${offset + 1}–${offset + result.data.rows.length} 条` : '本页无记录'}</span>
-          <label className="customer-page-size">每页 <select aria-label="每页客户数" value={query.page_size ?? 20}
+          <label className="customer-page-size">每页 <Select aria-label="每页客户数" value={query.page_size ?? 20}
             onChange={event => update({page_size:Number(event.target.value) as 20|50|100})}>
             <option value="20">20</option><option value="50">50</option><option value="100">100</option>
-          </select> 条</label>
+          </Select> 条</label>
           <div className="customer-pagination" role="group" aria-label="客户分页">
             <IconButton label="上一页" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - (query.page_size ?? 20)))}>
               <CustomerIcon name="back" />
@@ -348,11 +379,11 @@ function BoardColumn({ query, group, value, label, open, groups, move, drag, set
       onDragEnd={()=>setDrag(null)}>
       <button className="text-button" onClick={()=>open(row.id)}>{row.display_name}</button>
       <small>{[row.company_name,row.country_region,row.primary_interest].filter(Boolean).join(' · ')}</small>
-      {row.archived_at===null&&<select aria-label={'移动客户 ' + row.display_name} value={value??''}
+      {row.archived_at===null&&<Select aria-label={'移动客户 ' + row.display_name} value={value??''}
         onChange={event=>move(row,event.target.value||null)}>
         {!groups.some(item=>item.id===value)&&<option value={value??''} disabled>{label}</option>}
         {groups.map(item=><option key={item.id??'unset'} value={item.id??''}>{item.label}</option>)}
-      </select>}
+      </Select>}
     </div>)}
     {result.data&&<Pagination offset={offset} more={result.data.has_more} change={setOffset}/>}
   </section>
@@ -387,11 +418,12 @@ function revealEditorSection(id: string) {
 
 export type CompanyIdentity = Pick<ContactInput, 'company_name' | 'country_region'>
 
-export function ContactEditor({ record, saved, cancel, initialGroup = 'basic', initialCompany, companyProfile }: {
+export function ContactEditor({ record, saved, cancel, initialGroup = 'basic', initialCompany, companyProfile, initialInput }: {
   record?: Contact; saved: (id: string) => void; cancel: () => void; initialGroup?: EditorGroup; initialCompany?: CompanyIdentity
   companyProfile?: CellTarget
+  initialInput?: Partial<ContactInput>
 }) {
-  const [input, setInput] = useState(record?.input ?? { ...blank, ...initialCompany })
+  const [input, setInput] = useState(record?.input ?? { ...blank, ...initialCompany, ...initialInput })
   const [original, setOriginal] = useState(input)
   const [group, setGroup] = useState<EditorGroup>(initialGroup)
   const [managingFields, setManagingFields] = useState(false)
@@ -520,9 +552,9 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic', i
         <div className="form-grid">
           <Field label="客户名称 *"><input required autoFocus={initialGroup === 'basic'} value={input.display_name} onChange={e => update('display_name', e.target.value)} /></Field>
           {fieldsFor(['company_name','country_region'])}
-          <Field label="客户阶段"><select value={input.stage} onChange={e => update('stage', e.target.value as Stage)}>
+          <Field label="客户阶段"><Select value={input.stage} onChange={e => update('stage', e.target.value as Stage)}>
             {Object.entries(stages).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-          </select></Field>
+          </Select></Field>
           {fieldsFor(['customer_level','customer_source'])}
         </div>
       </section>
@@ -535,9 +567,9 @@ export function ContactEditor({ record, saved, cancel, initialGroup = 'basic', i
         </div>
         {input.methods.map((method, index) => (
           <div className="form-grid collection-row" key={method.id ?? 'new-method-' + index}>
-            <Field label="渠道类型"><select value={method.kind} onChange={e => updateMethod(index, { kind: e.target.value as MethodKind })}>
+            <Field label="渠道类型"><Select value={method.kind} onChange={e => updateMethod(index, { kind: e.target.value as MethodKind })}>
               {Object.entries(methodKinds).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-            </select></Field>
+            </Select></Field>
             <Field label="账号"><input required autoFocus={!method.id && !method.value} type={method.kind === 'email' ? 'email' : 'text'}
               value={method.value} onChange={e => updateMethod(index, { value: e.target.value, is_verified: false })} /></Field>
             <Field label="渠道备注"><input value={method.label} onChange={e => updateMethod(index, { label: e.target.value })} /></Field>
@@ -640,13 +672,13 @@ function outreachSyncLabel(outreach: Outreach) {
 
 export function ContactDetail({ id, entry, back, openRelated, compose, history, files, company, drawer }: {
   id: string; back: () => void; openRelated: (id: string) => void; compose: (contact: Contact) => void; history: (id: string) => void
-  files: (id: string) => void; company: (id: string) => void; drawer?: boolean; entry?: 'edit' | 'edit-channels' | 'edit-business' | 'mail'
+  files: (id: string) => void; company: (id: string) => void; drawer?: boolean; entry?: 'edit' | 'edit-channels' | 'edit-business' | 'mail' | 'followup'
 }) {
   const [editing, setEditing] = useState<EditorGroup | null>(entry === 'edit' ? 'basic' : entry === 'edit-channels' ? 'channels' : entry === 'edit-business' ? 'business' : null)
-  const [section, setSection] = useState<keyof typeof detailSections>(entry === 'mail' ? 'mail' : 'overview')
+  const [section, setSection] = useState<keyof typeof detailSections>(entry === 'mail' ? 'mail' : entry === 'followup' ? 'activity' : 'overview')
   const [copy, setCopy] = useState('')
   const [showEmpty, setShowEmpty] = useState(false)
-  const [startFollowup, setStartFollowup] = useState(false)
+  const [startFollowup, setStartFollowup] = useState(entry === 'followup')
   const [propertyEditor, setPropertyEditor] = useState<{ field: string; anchor: HTMLButtonElement } | null>(null)
   const catalog = useStateCatalog()
   const cache = useQueryClient()
@@ -866,21 +898,22 @@ function StateSelect({ field, catalog, value, change }: {
   field: string; catalog: StateOption[]; value: string; change: (value: string) => void
 }) {
   const option = findState(catalog, field, value)
-  return <select value={option?.code ?? value} onChange={e => change(e.target.value)}>
+  return <Select value={option?.code ?? value} onChange={e => change(e.target.value)}>
     <option value="">未设置</option>
     {value && !option && <option value={value}>历史值 · {value}</option>}
     {catalog.filter(item => item.field === field).map(item => <option key={item.code} value={item.code}>{item.label}</option>)}
-  </select>
+  </Select>
 }
 
 function StateFilter({ field, catalog, value, change }: {
   field: string; catalog: StateOption[]; value: string; change: (value: string) => void
 }) {
-  return <>
-    <input list={field + '-filter'} value={value} onChange={e => change(e.target.value)} />
-    <datalist id={field + '-filter'}>{catalog.filter(item => item.field === field).map(item =>
-      <option key={item.code} value={item.label}>{item.label}</option>)}</datalist>
-  </>
+  const option = findState(catalog, field, value)
+  return <Select value={option?.code ?? value} onChange={event => change(event.target.value)}>
+    <option value="">全部</option>
+    {value && !option && <option value={value}>历史值 · {value}</option>}
+    {catalog.filter(item => item.field === field).map(item => <option key={item.code} value={item.code}>{item.label}</option>)}
+  </Select>
 }
 
 function isFiltered(query: ContactQuery) {

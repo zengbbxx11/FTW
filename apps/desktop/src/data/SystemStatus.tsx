@@ -1,3 +1,4 @@
+import { Select } from '../ui/Select'
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -132,9 +133,9 @@ export function SystemStatus({ audit, mail }: { audit: () => void; mail: (protoc
             <button type="button" className="button" onClick={() => mail('IMAP')}><RefreshCw aria-hidden="true" />收件设置</button>
           </div>
           <div className="system-mail-test">
-            {selected ? <><select aria-label="选择要检测的邮箱连接" value={`${selected.protocol}:${selected.id}`} disabled={mailCheck.isPending}
+            {selected ? <><Select aria-label="选择要检测的邮箱连接" value={`${selected.protocol}:${selected.id}`} disabled={mailCheck.isPending}
               onChange={event => setTarget(event.target.value)}>{targets.map(item => <option key={`${item.protocol}:${item.id}`} value={`${item.protocol}:${item.id}`}>
-                {item.protocol} · {item.label}</option>)}</select>
+                {item.protocol} · {item.label}</option>)}</Select>
               <button type="button" className="button" disabled={mailCheck.isPending} onClick={() => mailCheck.mutate(selected)}><Mail aria-hidden="true" />
                 {mailCheck.isPending ? '连接检测中…' : '检查邮箱连接'}</button></>
               : <button type="button" className="button" onClick={() => mail('SMTP')}><Mail aria-hidden="true" />发件账户设置</button>}

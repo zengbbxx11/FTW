@@ -15,10 +15,12 @@ fn sample_filter() -> String {
     format!("({} IN ('planned','in_progress','in_transit','evaluating') OR (c.sample_status='' AND c.stage='sample_in_progress'))", state_sql("sample_status"))
 }
 
+const IN_PROGRESS_FILTER: &str = "c.stage IN ('contacted','replied','requirements','quote_sample','sample_in_progress','negotiation')";
+
 pub async fn stats(pool: &SqlitePool) -> Result<Reply> {
     let row = sqlx::query(&format!(
         "SELECT COUNT(*) active,COUNT(*) FILTER(WHERE {}) priority, COUNT(*) FILTER(WHERE {}) sample,
-        COUNT(*) FILTER(WHERE stage IN ('contacted','replied','requirements','quote_sample','sample_in_progress','negotiation')) in_progress,
+        COUNT(*) FILTER(WHERE {IN_PROGRESS_FILTER}) in_progress,
         COUNT(*) FILTER(WHERE stage='won') won FROM contacts c WHERE archived_at IS NULL",
         priority_filter(), sample_filter()
     )).fetch_one(pool).await?;
@@ -171,6 +173,9 @@ async fn append_match_conditions(
         }
         "sample" => {
             query.push(" AND ").push(sample_filter());
+        }
+        "in_progress" => {
+            query.push(" AND ").push(IN_PROGRESS_FILTER);
         }
         _ => return Err(Error::Invalid("quick_view")),
     }
