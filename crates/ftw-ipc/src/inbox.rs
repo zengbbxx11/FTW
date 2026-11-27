@@ -16,6 +16,9 @@ pub enum Command {
         destination: String,
     },
     Accounts,
+    ReplyUpdates {
+        after: Option<i64>,
+    },
     Configure {
         account_id: String,
         host: String,
@@ -145,6 +148,10 @@ pub struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Result {
+    ReplyUpdates {
+        cursor: i64,
+        count: i64,
+    },
     SyncStatus {
         rows: Vec<SyncStatus>,
     },

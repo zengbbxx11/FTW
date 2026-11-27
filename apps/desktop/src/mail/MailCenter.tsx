@@ -1,7 +1,7 @@
 import { useDeferredValue, useState } from 'react'
-import { Archive, Ban, ChartColumn, CircleAlert, CircleHelp, Clock, FilePenLine, Inbox, List, Mail, Pencil, Plus, RefreshCw, Send, Settings, ShieldCheck, UserRound, type LucideIcon } from 'lucide-react'
+import { Archive, Ban, ChartColumn, CircleAlert, CircleHelp, Clock, FilePenLine, FolderOpen, Inbox, List, Mail, Paperclip, Pencil, Plus, RefreshCw, Send, Settings, ShieldCheck, Trash2, UserRound, type LucideIcon } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { dateLabel, request, sourceLabel, type Contact } from '../crm/api'
+import { dateLabel, outreachLabels, request, sourceLabel, type Contact } from '../crm/api'
 import { ConfirmButton, Empty, Field, Pagination } from '../crm/components'
 import { useSavedViews } from '../crm/SavedViews'
 import { AgentMail } from './AgentMail'
@@ -251,9 +251,14 @@ function DraftForm({ contact, existing, reply, saved, close }: {
   const [replace, setReplace] = useState(false)
   const [fileError, setFileError] = useState('')
   const [readingFiles, setReadingFiles] = useState(false)
+  const [showDocuments, setShowDocuments] = useState(false)
+  const [documentOffset, setDocumentOffset] = useState(0)
   const [choosingTemplate, setChoosingTemplate] = useState(false)
   const cache = useQueryClient()
   const accounts = useQuery({ queryKey: ['mail-accounts'], queryFn: () => mailCall({ action: 'list_accounts' }, 'accounts') })
+  const overview = useQuery({ queryKey: ['development-overview', contact.id], queryFn: () => request({ action: 'development_overview', id: contact.id }, 'development_overview') })
+  const documents = useQuery({ queryKey: ['customer-files', contact.id, 'draft', documentOffset], enabled: showDocuments,
+    queryFn: () => mailCall({ action: 'file_workspace', contact_id: contact.id, keyword: '', direction: 'document', offset: documentOffset }, 'file_workspace') })
   const senderRows = accounts.data?.kind === 'accounts' ? accounts.data.rows : []
   const sender = account ? (senderRows.some(row => row.id === account) ? account : '') : senderRows.find(row => row.is_default)?.id ?? senderRows[0]?.id ?? ''
   const currentRecipient = emails.find(item => item.value.toLowerCase() === recipient.toLowerCase())?.value ?? recipient
@@ -276,12 +281,37 @@ function DraftForm({ contact, existing, reply, saved, close }: {
       saved(result.id)
     },
   })
+  async function currentFiles() {
+    if (!existing || replace || revision === null) return files
+    return (await mailCall({ action: 'prepare_draft_assets', id: existing.id, revision }, 'assets')).rows
+  }
+  function setAttachments(next: Asset[]) {
+    if (next.length > 4 || next.reduce((sum, item) => sum + item.size, 0) > 10 * 1024 * 1024) throw new Error('attachment_limit')
+    setFiles(next)
+    setReplace(true)
+  }
   const selectFiles = async () => {
     setFileError('')
     setReadingFiles(true)
     try {
+      const current = await currentFiles()
       const selected = await chooseMailAssets()
-      if (selected.length) { setFiles(selected); setReplace(true) }
+      if (selected.length) setAttachments([...current, ...selected.filter(item => !current.some(row => row.id === item.id))])
+    } catch (error) { setFileError(mailError(error)) }
+    finally { setReadingFiles(false) }
+  }
+  async function removeFile(index: number) {
+    setFileError(''); setReadingFiles(true)
+    try { const current = await currentFiles(); setAttachments(current.filter((_, item) => item !== index)) }
+    catch (error) { setFileError(mailError(error)) }
+    finally { setReadingFiles(false) }
+  }
+  async function addDocument(id: string) {
+    setFileError(''); setReadingFiles(true)
+    try {
+      const current = await currentFiles()
+      const result = await mailCall({ action: 'customer_document_asset', contact_id: contact.id, document_id: id }, 'assets')
+      setAttachments([...current, ...result.rows.filter(item => !current.some(row => row.id === item.id))])
     } catch (error) { setFileError(mailError(error)) }
     finally { setReadingFiles(false) }
   }
@@ -293,6 +323,14 @@ function DraftForm({ contact, existing, reply, saved, close }: {
       {accounts.isError && <ErrorNotice error={accounts.error} />}
       {accounts.data && senderRows.length === 0 && <p className="alert warning">请先在「发件账户」配置 SMTP。</p>}
       {emails.length === 0 && <p className="alert warning">请先在客户资料中添加邮箱。</p>}
+      {overview.isError && <p className="alert warning" role="status">无法读取相关联系人，请稍后在客户管理中核对。</p>}
+      {overview.data && overview.data.record.related_contacts.length > 0 && <div className="alert warning">
+        <strong>相关公司或同域联系人</strong>
+        <p>请结合历史判断是否需要联系；不同联系人可以分别开发。</p>
+        <ul>{overview.data.record.related_contacts.slice(0, 5).map(row => <li key={row.id}>
+          {row.display_name} · {row.company_name || '公司未填写'} · {row.reason === 'email_domain' ? '邮箱域名相同' : row.reason === 'company_profile' ? '同公司档案' : '公司名称相同'} · {outreachLabels[row.mail_status]} · 最近联系 {dateLabel(row.last_contact_at)}
+        </li>)}</ul>{(overview.data.record.related_contacts.length > 5 || overview.data.record.related_has_more) && <small>更多关联联系人可在客户详情或客户管理中查看。</small>}
+      </div>}
       {reply && <p className="muted">原邮件 · {reply.subject || '无主题'}</p>}
       {choosingTemplate && <DraftTemplatePicker contactId={contact.id} hasText={Boolean(subject.trim() || body.trim())}
         onClose={() => setChoosingTemplate(false)} onApply={data => { setSubject(data.subject); setBody(data.body); setChoosingTemplate(false) }} />}
@@ -310,12 +348,25 @@ function DraftForm({ contact, existing, reply, saved, close }: {
       }}>插入账户签名</button>}
       <div className="row-actions">
         <button className="button" type="button" disabled={readingFiles} onClick={() => void selectFiles()}>
-          {readingFiles ? '正在读取附件…' : (files.length || existing?.attachments.length) ? '替换附件' : '选择附件'}
-        </button><small>PDF、JPEG、PNG 或 WebP，最多 4 件，合计 10 MiB</small>
+          <Paperclip aria-hidden="true" />{readingFiles ? '正在读取附件…' : '添加本地附件'}
+        </button><button type="button" className="button" onClick={() => setShowDocuments(value => !value)} aria-expanded={showDocuments}><FolderOpen aria-hidden="true" />选择客户文件</button>
+        <small>PDF、JPEG、PNG 或 WebP，最多 4 件，合计 10 MiB</small>
       </div>
-      {(replace ? files : existing?.attachments ?? []).map((file, i) => <small key={i}>{file.filename}</small>)}
-      {(files.length > 0 || Boolean(existing?.attachments.length && !replace)) && <button className="text-button" type="button"
-        onClick={() => { setFiles([]); setReplace(true); setFileError('') }}>移除所有附件</button>}
+      {showDocuments && <div className="draft-documents">
+        {documents.isPending && <small>正在读取客户文件…</small>}
+        {documents.isError && <ErrorNotice error={documents.error} />}
+        {documents.data && <>{documents.data.rows.length ? <ul>{documents.data.rows.map(file => <li key={file.document_id}>
+          <span>{file.filename}</span><button type="button" className="text-button" disabled={!file.document_id || readingFiles} onClick={() => file.document_id && void addDocument(file.document_id)}><Plus aria-hidden="true" />添加</button>
+        </li>)}</ul> : <small>该客户尚无文件。</small>}
+          <div className="row-actions">{documentOffset > 0 && <button type="button" className="button" onClick={() => setDocumentOffset(Math.max(0, documentOffset - 20))}>上一页</button>}
+            {documents.data.has_more && <button type="button" className="button" onClick={() => setDocumentOffset(documentOffset + 20)}>下一页</button>}</div></>}
+      </div>}
+      {(replace ? files : existing?.attachments ?? []).map((file, i) => <div className="draft-attachment" key={`${file.sha256}:${i}`}>
+        <small>{file.filename} · {file.size.toLocaleString()} 字节</small>
+        <button type="button" className="text-button" disabled={readingFiles} aria-label={`移除附件 ${file.filename}`} onClick={() => void removeFile(i)}><Trash2 aria-hidden="true" />移除</button>
+      </div>)}
+      {(replace ? files.length > 0 : Boolean(existing?.attachments.length)) && <button type="button" className="text-button" disabled={readingFiles}
+        onClick={() => { setFiles([]); setReplace(true); setFileError('') }}><Trash2 aria-hidden="true" />移除全部附件</button>}
       {fileError && <ErrorNotice error={fileError} />}
       {save.isError && <ErrorNotice error={save.error} />}
       <div className="form-footer"><button className="button primary" disabled={!sender || !emails.length || readingFiles || !!fileError}>保存草稿</button></div>

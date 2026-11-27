@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { invoke } from '@tauri-apps/api/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Activity, Bot, Database, History, LayoutDashboard, Mail, Search, UserSearch, UsersRound, type LucideIcon } from 'lucide-react'
+import { Activity, BookOpen, Bot, Database, History, LayoutDashboard, Mail, Search, UserSearch, UsersRound, type LucideIcon } from 'lucide-react'
 import { AppShell } from './AppShell'
 import { ContactDetail, ContactEditor, ContactList } from './crm/Contacts'
 import { CustomerQuality } from './crm/Quality'
@@ -21,6 +21,9 @@ import { MailAnalytics, type MailReportLink } from './data/MailAnalytics'
 import { SystemStatus } from './data/SystemStatus'
 import type { AuditTarget, SearchTarget } from './data/api'
 import { CoreChanges } from './data/CoreChanges'
+import { UsageGuide } from './data/UsageGuide'
+import { UpdateNotice } from './data/Updates'
+import { AutoSync, ReplyNotice } from './mail/AutoSync'
 import './styles.css'
 import './data/workbench.css'
 import './data/operations.css'
@@ -39,14 +42,14 @@ window.addEventListener('unhandledrejection', () => reportWebviewFailure('unhand
 type Page =
   | { kind: 'contacts'; initialView?: 'mail_no_reply' }
   | { kind: 'customer-quality'; duplicates?: boolean }
-  | { kind: 'new-contact' | 'leads' | 'new-lead' | 'system' | 'dashboard' | 'samples' | 'search' | 'agent-runs' | 'mail-analysis' }
+  | { kind: 'new-contact' | 'leads' | 'new-lead' | 'system' | 'dashboard' | 'samples' | 'search' | 'agent-runs' | 'mail-analysis' | 'guide' }
   | { kind: 'activities'; activityId?: string }
   | { kind: 'data'; initialTab?: DataTab; fileContact?: string; fileDocument?: string }
   | { kind: 'contact'; id: string; entry?: 'edit' | 'edit-channels' | 'edit-business'; returnTo?: { kind: 'company'; id: string } | { kind: 'customer-quality' } }
   | { kind: 'company' | 'lead'; id: string }
   | { kind: 'mail'; contact?: Contact; inboxContact?: string; draftContact?: string; draftId?: string; inboxMessage?: string; inboxOnly?: boolean; reviewInbox?: boolean; folder?: Folder }
 
-const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'mail' | 'system' | 'data' | 'search' | 'agent-runs'; label: string; sections: Page['kind'][]; icon: LucideIcon }[] = [
+const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'mail' | 'system' | 'data' | 'search' | 'agent-runs' | 'guide'; label: string; sections: Page['kind'][]; icon: LucideIcon }[] = [
   { kind: 'dashboard', label: '工作台', sections: ['dashboard'], icon: LayoutDashboard },
   { kind: 'contacts', label: '客户管理', sections: ['contacts','customer-quality','contact','company','new-contact','samples'], icon: UsersRound },
   { kind: 'leads', label: '候选客户', sections: ['leads','lead','new-lead'], icon: UserSearch },
@@ -56,6 +59,7 @@ const navigation: { kind: 'dashboard' | 'contacts' | 'leads' | 'activities' | 'm
   { kind: 'system', label: '系统状态', sections: ['system'], icon: Activity },
   { kind: 'data', label: '数据与审计', sections: ['data'], icon: Database },
   { kind: 'search', label: '全局搜索', sections: ['search'], icon: Search },
+  { kind: 'guide', label: '使用指南', sections: ['guide'], icon: BookOpen },
 ]
 
 const dashboardPages: Record<DashboardLink, Page> = {
@@ -121,6 +125,9 @@ function App() {
 
   return <AppShell page={page.kind} navigate={kind => kind === 'search' ? openSearch() : setPage({ kind })}
     navigation={navigation.map(({ sections, ...item }) => ({ ...item, active: sections.includes(page.kind) }))}>
+      <AutoSync />
+      <ReplyNotice open={() => setPage({ kind: 'mail', folder: 'inbox' })} />
+      <UpdateNotice open={() => setPage({ kind: 'system' })} />
       {page.kind === 'dashboard' && <Dashboard navigate={link => setPage(dashboardPages[link])} openActivity={openActivity} />}
       {page.kind === 'agent-runs' && <AgentRuns back={() => setPage({ kind: 'dashboard' })} open={openAgentRecord}
         changes={() => setPage({ kind: 'data', initialTab: 'agent-changes' })} />}
@@ -151,6 +158,12 @@ function App() {
         openUnreplied={() => setPage({ kind: 'contacts', initialView: 'mail_no_reply' })} />}
       {page.kind === 'system' && <SystemStatus audit={() => setPage({ kind: 'data', initialTab: 'audit' })}
         mail={protocol => setPage({ kind: 'mail', folder: protocol === 'IMAP' ? 'imap' : 'accounts' })} />}
+      {page.kind === 'guide' && <UsageGuide navigate={target => {
+        if (target === 'customers') return contacts()
+        if (target === 'backup') return setPage({ kind: 'data', initialTab: 'backup' })
+        if (target === 'system') return setPage({ kind: 'system' })
+        setPage({ kind: 'mail', folder: target })
+      }} />}
   </AppShell>
 }
 

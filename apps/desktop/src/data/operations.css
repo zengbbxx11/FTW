@@ -104,3 +104,7 @@
   object-fit: contain;
 }
 .support-report-path { overflow-wrap: anywhere; }
+.update-notice { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; padding: .55rem .8rem; margin-bottom: .7rem; border: 1px solid #b9ded8; border-radius: .5rem; background: #e9f7f4; color: #11625b; font-size: .83rem; }
+.update-notice .text-button { display: inline-flex; align-items: center; gap: .25rem; }
+.update-notice svg { width: .9rem; height: .9rem; }
+.update-notes { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow-y: auto; font-size: .78rem; }

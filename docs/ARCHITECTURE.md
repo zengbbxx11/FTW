@@ -1,10 +1,16 @@
 # Core 进程与存储
 
+当前版本为 1.1.7，Schema 27；[当前实现与验证范围](PROJECT_STATUS.md)。本轮没有新增数据库迁移。
+
 `workbench.exe` 的本地 WebView 通过 Tauri 命令 `core_health`、`core_changes`、`crm_request`、`mail_request`、`inbox_request` 和 `data_request` 调用 Core。`ftw-mcp.exe` 通过同一 Core 的受限入口执行已授权的 CRM、文件、审计、任务及邮件操作。Core 负责输入校验、主体识别、权限、版本检查和事务。MCP 可在桌面关闭时按需启动 Core。[MCP 工具和权限](MCP_MAIL.md)
 
 `ftw-core.exe` 按数据目录持有独占的 `core.lock` 文件句柄。命名管道按 Windows 账户 SID 和数据目录的卷与文件标识定位。Core 显式拒绝远程客户端，管道 ACL 授权当前 Windows 账户。人工批准由 Core 的 Windows 确认窗口记录，发件队列在入队及提交前重新检查版本、内容哈希、收件人和拒发规则。
 
-手动启动的 Core 由终端前台管理，Ctrl+C 后关闭管道和 SQLite。客户端按需启动的 Core 在后台独立运行，连续五分钟没有连接后退出。「系统状态」显示最近一次健康检查结果，并提供手动复查入口。
+手动启动的 Core 由终端前台管理，Ctrl+C 后关闭管道和 SQLite。客户端按需启动的 Core 在后台独立运行，连续五分钟没有连接且审批、IMAP 和发送互斥锁空闲后退出。「系统状态」显示最近一次健康检查结果，并提供手动复查入口。
+
+便携版从本项目公开的 GitHub Releases 获取正式更新。桌面负责展示版本，更新器验证内置公钥签名的清单及 ZIP 校验值，再替换同一目录中的程序文件；业务数据、邮箱凭据、附件和发送安全账本留在原位。Core 准备更新时先获取审批、同步与发信互斥锁，停止接收请求后关闭数据库。MCP 客户端占用程序时由用户关闭。更新和签名流程见[发行说明](RELEASING.md)。
+
+更新相关桌面命令为 mcp_connection_config、check_for_update、download_update、install_update，均在处理器、AppManifest 和 main capability 中声明。Core 的 prepare_update 返回 update_ready 后停收请求并安全关闭；忙碌时返回 update_mail_busy，不提前取消正在发送的邮件。更新功能不暴露 MCP 自行扩大权限入口。
 
 ## 健康检查协议
 
@@ -18,7 +24,7 @@
 
 从「系统状态 → 导出诊断报告」另存 JSON。窗口无法打开时，双击便携目录的 `FTW-Diagnostics.cmd`，命令窗口会显示报告位置。也可运行 `ftw-core.exe diagnostics` 获取同口径 JSON。该命令不启动 Core 服务，也不打开 CRM 数据库。便携目录缺少 Core 或 Core 无法运行时，脚本仍会生成包含 Windows 版本与三个程序存在状态的最小报告。
 
-完整报告包含程序版本、Windows 版本、WebView2 Runtime 安装版本、存储模式、三个程序文件的 SHA-256、最近一次观测到的 SQLite Schema、各组件最近的诊断事件和可用的发信任务编号。采集器只读取规定的结构化事件，排除历史自由文本日志、业务数据库、邮件、客户资料、附件、凭据、令牌以及机器目录路径。诊断与「数据与审计」里的业务历史分开保存。跨设备排障时，先查看导出的本地 JSON，再随出错时间、所用页面或 MCP 工具及复现步骤发给维护者。
+完整报告包含程序版本、Windows 版本、WebView2 Runtime 安装版本、存储模式、三个程序文件的 SHA-256、最近一次观测到的 SQLite Schema、各组件最近的诊断事件和可用的发信作业编号。发信任务以不可直接阅读的摘要关联 MCP 入队与 Core 处理事件，不输出原任务名称。采集器只读取规定的结构化事件，排除历史自由文本日志、业务数据库、邮件、客户资料、附件、凭据、令牌以及机器目录路径。诊断与「数据与审计」里的业务历史分开保存。跨设备排障时，先查看导出的本地 JSON，再随出错时间、所用页面或 MCP 工具及复现步骤发给维护者。
 
 ## SQLite 路径和迁移
 

@@ -181,6 +181,14 @@ pub enum Command {
         paths: Vec<String>,
     },
     ListAssets,
+    PrepareDraftAssets {
+        id: String,
+        revision: i64,
+    },
+    CustomerDocumentAsset {
+        contact_id: String,
+        document_id: String,
+    },
     ListSuppression {
         offset: u32,
     },
@@ -522,6 +530,8 @@ pub enum Result {
         outcome: Option<String>,
         contact_ids: Vec<String>,
         same_domain_contact_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        same_domain_contacts: Vec<crate::crm::DevelopmentRelated>,
     },
     AgentMailSettings {
         policy: AgentMailPolicy,

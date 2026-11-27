@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "ftw-core"
-version = "1.1.5"
+version = "1.1.7"
 dependencies = [
  "async-imap",
  "base64 0.22.1",
@@ -1212,9 +1212,10 @@ dependencies = [
 
 [[package]]
 name = "ftw-desktop"
-version = "1.1.5"
+version = "1.1.7"
 dependencies = [
  "ftw-ipc",
+ "ftw-updater",
  "serde",
  "serde_json",
  "tauri",
@@ -1225,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "ftw-ipc"
-version = "1.1.5"
+version = "1.1.7"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -1238,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "ftw-mcp"
-version = "1.1.5"
+version = "1.1.7"
 dependencies = [
  "ftw-ipc",
  "rmcp",
@@ -1246,6 +1247,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "ftw-updater"
+version = "1.1.7"
+dependencies = [
+ "base64 0.22.1",
+ "ftw-ipc",
+ "ring",
+ "semver",
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ use std::{
     env, io,
     path::{Path, PathBuf},
     process::{ExitCode, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -32,6 +33,118 @@ const QUERY_LIMIT: Duration = Duration::from_secs(12);
 struct CoreAccess {
     gate: Mutex<()>,
     diagnostics: Log,
+    updating: AtomicBool,
+}
+
+struct UpdateAccess {
+    prepared: Mutex<Option<ftw_updater::PreparedUpdate>>,
+}
+
+fn portable_directory() -> Result<PathBuf, Issue> {
+    let exe = env::current_exe().map_err(|error| Issue::new("profile_unavailable", error))?;
+    let root = exe.parent().ok_or_else(|| Issue::new("profile_unavailable", "Application directory unavailable"))?;
+    if development_root().is_some() || !root.join("portable.flag").is_file() {
+        return Err(Issue::new("update_requires_portable", "Updating is available for portable FTW"));
+    }
+    Ok(root.to_owned())
+}
+
+fn update_issue(error: impl ToString) -> Issue {
+    let value = error.to_string();
+    let code = if value.starts_with("update_") { value } else { "update_failed".to_owned() };
+    Issue::new(code, "Update operation did not complete")
+}
+
+#[tauri::command]
+async fn check_for_update(access: State<'_, CoreAccess>) -> Result<Option<ftw_updater::UpdateInfo>, Issue> {
+    portable_directory()?;
+    let result = tokio::task::spawn_blocking(|| ftw_updater::check_latest(env!("CARGO_PKG_VERSION")))
+        .await.map_err(|_| Issue::new("update_failed", "Update worker unavailable"))?
+        .map_err(update_issue);
+    access.diagnostics.event("update", result.as_ref().map_or_else(|error| error.code.as_str(), |_| "checked"));
+    result
+}
+
+#[tauri::command]
+async fn download_update(
+    access: State<'_, CoreAccess>,
+    updates: State<'_, UpdateAccess>,
+    version: String,
+) -> Result<(), Issue> {
+    portable_directory()?;
+    let result = tokio::task::spawn_blocking(move || ftw_updater::prepare_latest(env!("CARGO_PKG_VERSION"), &version))
+        .await.map_err(|_| Issue::new("update_failed", "Update worker unavailable"))?
+        .map_err(update_issue);
+    access.diagnostics.event("update", result.as_ref().map_or_else(|error| error.code.as_str(), |_| "downloaded"));
+    *updates.prepared.lock().await = Some(result?);
+    Ok(())
+}
+
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    access: State<'_, CoreAccess>,
+    updates: State<'_, UpdateAccess>,
+) -> Result<(), Issue> {
+    use std::os::windows::process::CommandExt;
+    let target = portable_directory()?;
+    let source = updates.prepared.lock().await.as_ref()
+        .map(|update| update.directory.clone())
+        .ok_or_else(|| Issue::new("update_not_downloaded", "Download the update first"))?;
+    let check_target = target.clone();
+    let busy = tokio::task::spawn_blocking(move || ftw_updater::running_adapters(&check_target))
+        .await.map_err(|_| Issue::new("update_failed", "Could not check MCP clients"))?
+        .map_err(update_issue)?;
+    if busy { return Err(Issue::new("update_mcp_busy", "Close WorkBuddy and other FTW connectors")); }
+
+    let _guard = access.gate.lock().await;
+    access.updating.store(true, Ordering::SeqCst);
+    match call_profile_core(&Operation::PrepareUpdate).await {
+        Ok(Response::UpdateReady) => {}
+        Ok(_) => {
+            access.updating.store(false, Ordering::SeqCst);
+            return Err(Issue::new("update_core_incompatible", "Core could not prepare for an update"));
+        }
+        Err(error) => {
+            access.updating.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+    }
+    let result = std::process::Command::new(source.join("FTW-Update.exe"))
+        .arg("--apply").arg(&target).current_dir(&source)
+        .creation_flags(0x00000010).spawn();
+    if result.is_err() {
+        access.updating.store(false, Ordering::SeqCst);
+        return Err(Issue::new("update_start_failed", "Could not start updater"));
+    }
+    access.diagnostics.event("update", "install_started");
+    app.exit(0);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct McpConnectionConfig {
+    command: String,
+    args: Vec<String>,
+}
+
+#[tauri::command]
+fn mcp_connection_config() -> Result<McpConnectionConfig, Issue> {
+    let executable = env::current_exe()
+        .map_err(|error| Issue::new("profile_unavailable", error))?
+        .with_file_name("ftw-mcp.exe");
+    if !executable.is_file() {
+        return Err(Issue::new("mcp_missing", "ftw-mcp.exe is unavailable"));
+    }
+    let mut args = Vec::new();
+    if let Some(root) = development_root() {
+        args.push("--dev-root".to_owned());
+        args.push(root.to_string_lossy().into_owned());
+    }
+    Ok(McpConnectionConfig {
+        command: executable.to_string_lossy().into_owned(),
+        args,
+    })
 }
 
 #[derive(Serialize)]
@@ -383,6 +496,9 @@ async fn data_request(
 
 async fn call_core(access: &CoreAccess, operation: &Operation) -> Result<Response, Issue> {
     let _guard = access.gate.lock().await;
+    if access.updating.load(Ordering::SeqCst) {
+        return Err(Issue::new("update_in_progress", "FTW is preparing an update"));
+    }
     let result = call_profile_core(operation).await;
     if let Err(error) = &result {
         access
@@ -523,10 +639,16 @@ fn main() -> ExitCode {
         .manage(CoreAccess {
             gate: Mutex::new(()),
             diagnostics: diagnostics.clone(),
+            updating: AtomicBool::new(false),
         })
+        .manage(UpdateAccess { prepared: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
+            check_for_update,
+            download_update,
+            install_update,
             core_health,
             mcp_status,
+            mcp_connection_config,
             export_support_report,
             report_webview_failure,
             core_changes,

@@ -1,5 +1,9 @@
 fn main() {
     let manifest = tauri_build::AppManifest::new().commands(&[
+        "mcp_connection_config",
+        "check_for_update",
+        "download_update",
+        "install_update",
         "core_health",
         "mcp_status",
         "export_support_report",

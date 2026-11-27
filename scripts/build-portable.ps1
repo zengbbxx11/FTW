@@ -1,17 +1,27 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$ForRelease,
+    [string]$SigningKey = $env:FTW_RELEASE_KEY_FILE
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'common.ps1')
+$declaredVersion = (Get-Content -LiteralPath (Join-Path $root 'apps\desktop\package.json') -Raw | ConvertFrom-Json).version
+$packages = Join-Path $root '.ftw-dev\packages'
+$releaseDirectory = Join-Path $packages "v$declaredVersion"
+if ($ForRelease -and (Test-Path -LiteralPath $releaseDirectory)) {
+    throw "Release v$declaredVersion already exists. Increase the version for a new release; do not overwrite an existing release."
+}
 
 Push-Location -LiteralPath $root
 try {
-    Invoke-Checked cargo @('build', '--release', '--locked', '-p', 'ftw-core', '-p', 'ftw-mcp')
+    Invoke-Checked cargo @('build', '--release', '--locked', '-p', 'ftw-core', '-p', 'ftw-mcp', '-p', 'ftw-updater')
     $metadata = cargo metadata --locked --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
     $workspace = $metadata | ConvertFrom-Json
     $version = ($workspace.packages | Where-Object { $_.name -eq 'ftw-core' }).version
+    if ($version -ne $declaredVersion) { throw 'Cargo and desktop versions do not match.' }
     $binaries = Join-Path $workspace.target_directory 'release'
 
     Set-Location -LiteralPath (Join-Path $root 'apps\desktop')
@@ -21,12 +31,11 @@ try {
     Pop-Location
 }
 
-$packages = Join-Path $root '.ftw-dev\packages'
 $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
-$name = "FTW-Portable-$version-win-x64-$stamp"
-$destination = Join-Path $packages $name
+$buildDirectory = Join-Path $root ".ftw-dev\builds\v$version\$stamp"
+$destination = Join-Path $buildDirectory 'FTW-Portable'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
-foreach ($binary in @('workbench.exe', 'ftw-core.exe', 'ftw-mcp.exe')) {
+foreach ($binary in @('workbench.exe', 'ftw-core.exe', 'ftw-mcp.exe', 'FTW-Update.exe')) {
     Copy-Item -LiteralPath (Join-Path $binaries $binary) -Destination (Join-Path $destination $binary)
 }
 New-Item -ItemType File -Path (Join-Path $destination 'portable.flag') | Out-Null
@@ -48,7 +57,15 @@ FTW portable for Windows x64
 
 Extract the whole folder to a writable location and run workbench.exe.
 WebView2 Evergreen Runtime must be available on the machine.
-Keep the three executables and portable.flag together with the data directory.
+Keep workbench.exe, ftw-core.exe, ftw-mcp.exe and portable.flag with the data directory.
+
+To update an older portable workbench, open that workbench, then run
+FTW-Update.exe from this package and follow the prompts. After updating,
+check for later versions in Workbench > System Status > Software Updates.
+
+Current implementation and validation status:
+https://github.com/zengbbxx11/FTW/blob/main/docs/PROJECT_STATUS.md
+Release publication does not mean all regression and device checks were run.
 
 For a problem report, go to System Status > Export Diagnostics in Workbench.
 If the window will not open, double-click FTW-Diagnostics.cmd in this folder.
@@ -85,8 +102,28 @@ agent-send-safety.sqlite and mail-objects files. The application will take
 a database backup before applying new migrations.
 '@ | Set-Content -LiteralPath (Join-Path $destination 'README.txt') -Encoding UTF8
 
-$zip = Join-Path $packages "$name.zip"
+$assetDirectory = Join-Path $buildDirectory 'assets'
+New-Item -ItemType Directory -Path $assetDirectory -Force | Out-Null
+$zip = Join-Path $assetDirectory 'FTW-Portable-win-x64.zip'
 Compress-Archive -LiteralPath $destination -DestinationPath $zip -CompressionLevel Optimal
 $hash = Get-FileHash -LiteralPath $zip -Algorithm SHA256
+if (-not $SigningKey) { $SigningKey = Join-Path $root '.ftw-dev\release\FTW-signing.dpapi' }
+if (Test-Path -LiteralPath $SigningKey) {
+    Invoke-Checked (Join-Path $binaries 'ftw-release.exe') @('sign', $zip, $version, $SigningKey)
+} elseif ($ForRelease) {
+    throw 'Release signing key not found. Initialize the key before publishing a signed update.'
+} else {
+    Write-Warning 'No signing key found; this package cannot be published as an automatic update.'
+}
+if ($ForRelease) {
+    New-Item -ItemType Directory -Path $releaseDirectory | Out-Null
+    foreach ($asset in @('FTW-Portable-win-x64.zip', 'FTW-Update.json', 'FTW-Update.json.sig')) {
+        Copy-Item -LiteralPath (Join-Path $assetDirectory $asset) -Destination $releaseDirectory
+    }
+    Write-Output "Release assets: $releaseDirectory"
+    $zip = Join-Path $releaseDirectory 'FTW-Portable-win-x64.zip'
+} else {
+    Write-Output "Development build: $buildDirectory"
+}
 Write-Output $zip
 Write-Output "SHA-256 $($hash.Hash)"

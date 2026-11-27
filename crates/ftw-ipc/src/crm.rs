@@ -294,6 +294,9 @@ pub enum Command {
     GetContact {
         id: String,
     },
+    DevelopmentOverview {
+        id: String,
+    },
     StateCatalog,
     ListFields {
         #[serde(default)]
@@ -513,6 +516,9 @@ pub enum Result {
     Contact {
         record: Box<Contact>,
     },
+    DevelopmentOverview {
+        record: Box<DevelopmentOverview>,
+    },
     Leads {
         rows: Vec<LeadRow>,
         has_more: bool,
@@ -572,6 +578,46 @@ pub struct MailOutreach {
     pub thread_id: Option<String>,
     pub sync_outcome: Option<String>,
     pub sync_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DevelopmentOverview {
+    pub id: String,
+    pub record_revision: i64,
+    pub data_epoch: String,
+    pub display_name: String,
+    pub company_name: String,
+    pub country_region: String,
+    pub stage: String,
+    pub customer_level: String,
+    pub sample_status: String,
+    pub main_need: String,
+    pub main_need_truncated: bool,
+    pub product_interests: Vec<String>,
+    pub interests_has_more: bool,
+    pub email: Option<String>,
+    pub mail_outreach: MailOutreach,
+    pub activities: Vec<DevelopmentActivity>,
+    pub related_contacts: Vec<DevelopmentRelated>,
+    pub related_has_more: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DevelopmentActivity {
+    pub id: String,
+    pub event_type: String,
+    pub summary: String,
+    pub occurred_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DevelopmentRelated {
+    pub id: String,
+    pub display_name: String,
+    pub company_name: String,
+    pub reason: String,
+    pub last_contact_at: Option<i64>,
+    pub mail_status: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

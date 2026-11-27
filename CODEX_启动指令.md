@@ -1,6 +1,6 @@
 # 发给 Codex 的第一条开发指令
 
-> 项目启动时的历史记录。继续维护现有 FTW 时，当前工作流、接口和验收状态见 [README](README.md) 与 [AGENTS.md](AGENTS.md)。发信以 V1.1 的逐封人工审批或工作台持续授权规则为准。[当前邮件规则](docs/MCP_MAIL.md#agent-发信权限)
+> 项目启动时的历史记录。继续维护现有 FTW 时，当前版本为 1.1.7，工作流、接口和验收状态见 [项目状态](docs/PROJECT_STATUS.md)、[README](README.md) 与 [AGENTS.md](AGENTS.md)。发信以 V1.1 的逐封人工审批或工作台持续授权规则为准。[当前邮件规则](docs/MCP_MAIL.md#agent-发信权限)
 
 我准备开发一个本地优先的外贸智能工作台，项目代号 **FTW（Foreign Trade Workbench）**。请你作为此项目的技术负责人和主力开发者，在当前工作目录中实际开发，而不是仅给我代码示例或提出抽象建议。
 

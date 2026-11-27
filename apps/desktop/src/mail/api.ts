@@ -70,6 +70,8 @@ export type MailCommand =
   | { action: 'render_template'; id: string; contact_id: string }
   | { action: 'preview_template'; input: TemplateInput; contact_id: string }
   | { action: 'agent_mail_settings' | 'list_assets' }
+  | { action: 'prepare_draft_assets'; id: string; revision: number }
+  | { action: 'customer_document_asset'; contact_id: string; document_id: string }
   | { action: 'list_suppression'; offset: number }
   | { action: 'set_asset_access'; id: string; allowed: boolean }
   | { action: 'save_draft_with_assets'; id: string | null; input: DraftInput; asset_ids: string[] }

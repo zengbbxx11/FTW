@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Collaboration {
     Context,
+    CustomerDevelopmentOverview {
+        contact_id: String,
+    },
+    CustomerDocumentAsset {
+        contact_id: String,
+        document_id: String,
+    },
     Definitions {
         kind: DefinitionKind,
         known_version: Option<String>,

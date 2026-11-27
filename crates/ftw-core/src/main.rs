@@ -133,7 +133,8 @@ async fn run() -> Result<(), CoreError> {
             Ok(())
         }
         Response::Error { code, .. } => Err(CoreError::Health(code)),
-        Response::Crm { .. }
+        Response::UpdateReady
+        | Response::Crm { .. }
         | Response::Mail { .. }
         | Response::Inbox { .. }
         | Response::Changes { .. }

@@ -88,7 +88,7 @@ async fn run(
     let _ = worker.await;
     drop(pipe);
     database.close().await;
-    result?;
+    let _update_guards = result?;
     log_event(log, "stopped");
     diagnostics.event("process", "stopped");
     Ok(())
@@ -101,7 +101,7 @@ async fn run_requests(
     profile: &Profile,
     diagnostics: &Log,
     idle_exit: bool,
-) -> Result<(), CoreError> {
+) -> Result<Option<Vec<tokio::sync::OwnedMutexGuard<()>>>, CoreError> {
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
@@ -110,20 +110,24 @@ async fn run_requests(
         tokio::select! {
             signal = &mut shutdown => {
                 signal.map_err(|error| CoreError::Io("shutdown_unavailable", error))?;
-                return Ok(());
+                return Ok(None);
             },
-            () = idle, if idle_exit => { if !mail.approval_in_progress() { return Ok(()); } continue; },
+            () = idle, if idle_exit => {
+                if let Some(guards) = mail.try_pause_for_update() { return Ok(Some(guards)); }
+                continue;
+            },
             client = pipe.connect() => client.map_err(|error| CoreError::Io("pipe_unavailable", error))?,
         }
 
         tokio::select! {
             signal = &mut shutdown => {
                 signal.map_err(|error| CoreError::Io("shutdown_unavailable", error))?;
-                return Ok(());
+                return Ok(None);
             },
             result = tokio::time::timeout(REQUEST_LIMIT, respond(pipe, database, mail, profile, diagnostics)) => {
                 match result {
                     Err(_) => diagnostics.event("ipc", "request_timeout"),
+                    Ok(Ok(Some(guards))) => return Ok(Some(guards)),
                     Ok(Err(error)) if error.raw_os_error() != Some(ERROR_PIPE_NOT_CONNECTED)
                         && error.kind() != io::ErrorKind::UnexpectedEof => diagnostics.event("ipc", "exchange_failed"),
                     _ => {}
@@ -145,8 +149,9 @@ async fn respond(
     mail: &MailService,
     profile: &Profile,
     diagnostics: &Log,
-) -> io::Result<()> {
+) -> io::Result<Option<Vec<tokio::sync::OwnedMutexGuard<()>>>> {
     let mut group = "ipc";
+    let mut update_guards = None;
     let response = match read_frame::<Request>(pipe).await {
         Ok(request) if request.version == PROTOCOL_VERSION => {
             group = request.operation.diagnostic_group();
@@ -167,6 +172,10 @@ async fn respond(
                     Ok(versions) => Response::Changes { versions },
                     Err(_) => error_response("database_unavailable"),
                 },
+                Operation::PrepareUpdate => {
+                    update_guards = mail.try_pause_for_update();
+                    if update_guards.is_some() { Response::UpdateReady } else { error_response("update_mail_busy") }
+                }
                 Operation::Crm(command) => {
                     crm::dispatch(database, *command, crm::Actor::DESKTOP).await
                 }
@@ -210,7 +219,7 @@ async fn respond(
     write_frame(pipe, &response).await?;
     // DisconnectNamedPipe can discard unread bytes. Wait until the client has the response.
     let _ = tokio::time::timeout(Duration::from_millis(400), pipe.read_u8()).await;
-    Ok(())
+    Ok(update_guards)
 }
 
 fn error_response(code: &str) -> Response {

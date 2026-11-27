@@ -82,6 +82,21 @@ impl MailService {
         };
         let mail = match command {
             Collaboration::Context => return agent_data(self.agent_context(&id).await),
+            Collaboration::CustomerDevelopmentOverview { contact_id } => {
+                return crm::dispatch(
+                    &self.pool,
+                    CrmCommand::DevelopmentOverview { id: contact_id },
+                    actor,
+                )
+                .await;
+            }
+            Collaboration::CustomerDocumentAsset {
+                contact_id,
+                document_id,
+            } => {
+                self.customer_document_asset(&contact_id, &document_id, true)
+                    .await
+            }
             Collaboration::Definitions {
                 kind,
                 known_version,

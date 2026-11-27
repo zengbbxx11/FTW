@@ -35,6 +35,7 @@ pub struct Request<T = Operation> {
 pub enum Operation {
     Health,
     Changes,
+    PrepareUpdate,
     Crm(Box<crm::Command>),
     Mail(Box<mail::Command>),
     DesktopMail {
@@ -70,6 +71,7 @@ impl Operation {
         match self {
             Self::Health => "health",
             Self::Changes => "changes",
+            Self::PrepareUpdate => "update",
             Self::Crm(_) => "crm",
             Self::Mail(_) | Self::DesktopMail { .. } => "mail",
             Self::Inbox(_) => "inbox",
@@ -103,6 +105,7 @@ pub struct ChangeVersions {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
+    UpdateReady,
     Ready {
         health: Health,
     },

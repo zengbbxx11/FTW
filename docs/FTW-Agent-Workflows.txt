@@ -1,12 +1,14 @@
 FTW · 可直接粘贴给 Codex 或 WorkBuddy 的任务模板
 
-每次选择一段。把方括号中的内容换成实际目标。先按 FTW-Agent-Quickstart.txt 登记并连接 MCP。会话开始时可用 get_workbench_context 获取定义版本和发件规则，已有定义时把版本交给 get_workbench_definitions，按需更新。
+适用于 FTW 1.1.7。使用同一 Windows 用户的本机 Agent，无需登记令牌。资料来源和证据按实际需要保留，不要求每次额外创建。
+
+每次选择一段。把方括号中的内容换成实际目标。先按 FTW-Agent-Quickstart.txt 连接 MCP。会话开始时可用 get_workbench_context 获取定义版本和发件规则，已有定义时把版本交给 get_workbench_definitions，按需更新。
 
 【1｜验证接入 / 查客户】
-请只用 FTW MCP 的 list_customers 搜索「[客户名称，已导入验收 CSV 时可填验收样本]」。列出返回的姓名、公司、阶段、客户等级和主要邮箱。若明确指定了某位客户，再用 get_customer 和 get_customer_timeline 给我最新联系记录。本次只查询。工具不可用时报告实际错误。
+请只用 FTW MCP 的 list_customers 搜索「[客户名称]」。列出返回的姓名、公司、阶段、客户等级和主要邮箱。若明确指定了某位客户，用 get_customer_development_overview 读取开发概况，需要完整信息时再读取客户详情或时间线。本次只查询。工具不可用时报告实际错误。
 
 【2｜录入候选与跟进】
-请处理这份调查资料：[粘贴公司、联系人、邮箱、网址、来源和已核实信息]。通过 list_customers 查姓名、公司和邮箱，有邮箱时用 check_customer_outreach 查看精确邮箱、同域客户和历史。如果已有唯一对应的客户，先读 get_customer；已核实的新事实才可更新，带最新修订和数据纪元；推断用 update_customer 的 review_only=true 提交待核对。若无对应客户，把调查当作候选，用 create_lead_candidate 保存来源和待核实点。若匹配歧义或返回重复，列给我核对。每次写入使用稳定的 request_id。若我提供的是一次已发生的沟通，再用 add_customer_activity 记录实际发生时间和内容。返回客户或候选 ID、做了什么以及待确认项。这次不发邮件。
+请处理这份客户资料：[粘贴公司、联系人、邮箱、网址和已核实信息]。通过 list_customers 查姓名、公司和邮箱，有邮箱时用 check_customer_outreach 查看精确邮箱、同域客户和历史。如果已有唯一对应的客户，先读 get_customer_development_overview；需要编辑时再读取详情，使用最新修订和数据纪元。明确区分事实与推断，待确认信息不要写成已确认事实。若无对应客户，用 create_lead_candidate 保存候选资料。若匹配歧义或返回重复，列给我核对。每次写入使用稳定的 request_id。若我提供的是一次已发生的沟通，再用 add_customer_activity 记录实际发生时间和内容。返回客户或候选 ID、做了什么以及待确认项。这次不发邮件。
 
 【3｜起草并转人工审核】
 请用 FTW 给「[客户名或邮箱]」准备一封[语言]的[邮件用途]邮件。重点写[产品、需求或本次跟进内容]，发件邮箱指定为[发件邮箱]。先查询客户、沟通历史和真实收发件地址。首次开发先用 check_customer_outreach 查重；发现阻拦或归属不明确时暂停。用 create_email_draft 创建纯文本草稿，再用 request_email_approval 提交人工审核。返回草稿 ID、主题、收发件邮箱和当前状态，到此停止，等我在 FTW 批准。
@@ -21,11 +23,11 @@ FTW · 可直接粘贴给 Codex 或 WorkBuddy 的任务模板
 请核查「[客户名或邮箱]」在「[发件账号]」上的最新回复。查询客户和账号，若我授权同步则调用 sync_mailbox，再用 get_mailbox_sync_status 核对同步结果及时间，然后用 list_inbox 和 get_email_thread 查会话。告诉我同步是否覆盖有关发信、最近一封来信日期、客户明确说了什么、哪些事实仍待确认。若邮件归属不明，列出待核对项。若我要求回写，只记确认过的独立沟通事实，邮件事件由 FTW 入库。本次先给我下一步建议，不发送。
 
 【6｜从发现客户到持续跟进】
-按我给出的市场、产品和来源范围，通过当前客户端获准的搜索或资料工具收集潜在客户。整理每条事实的来源。用 search_workbench、list_lead_candidates、list_customers 和 check_customer_outreach 查 FTW 里的已有资料、重复与联系资格。把待核实的资料保存为候选并用 add_lead_evidence 添加来源。需要建立完整正式档案时用 create_customer_profile 同时提交联系方式、产品兴趣和已授权自定义字段。候选已由桌面复核保存且当前客户端有转正权限时，可用 review_lead_candidate。发现重复、缺少复核或遇到身份歧义时，把资料交给我核对。
+按我给出的市场和产品范围，通过当前客户端获准的搜索或资料工具收集潜在客户。用 search_workbench、list_lead_candidates、list_customers 和 check_customer_outreach 查 FTW 里的已有资料、重复与联系资格。把待核实的资料保存为候选，区分事实与推断。需要建立完整正式档案时用 create_customer_profile 同时提交联系方式、产品兴趣和已授权自定义字段。候选已由桌面复核保存且当前客户端有转正权限时，可用 review_lead_candidate。发现重复、缺少复核或遇到身份歧义时，把资料交给我核对。
 
 对我明确要求联系的客户，根据历史与产品需求起草个性化邮件。首次开发必须执行查重。只有我已明确要求发送且当前账户与用途已获授权，才使用 send_authorized_email。逐封模式走申请审批与有效审批流程。核对 get_email_draft 或 get_mail_task 的实际结果和作业编号，发送结果未知时停止并报告。
 
-回复已确认关联的业务来信时，从 list_inbox 取得来信 ID，使用 create_reply_draft 写入同一会话，再按本次指令选择保存或发送。同步未覆盖对应时间时保留未确认提示。用 update_customer、set_customer_field_values、add_contact_evidence 和 add_customer_activity 保存新事实、采购需求、样品和跟进进展。指明记录来源、客户 ID、草稿或作业编号，以及仍需我核对的事项。
+回复已确认关联的业务来信时，从 list_inbox 取得来信 ID，使用 create_reply_draft 写入同一会话，再按本次指令选择保存或发送。同步未覆盖对应时间时保留未确认提示。用 update_customer、set_customer_field_values 和 add_customer_activity 保存新事实、采购需求、样品和跟进进展。指明客户 ID、草稿或作业编号，以及仍需我核对的事项。
 
 【7｜继续处理工作台共享视图】
-请从 list_customer_views 找到「[共享视图名]」，用 query_customer_view 按当前筛选和排序读取客户。仅在我指定的范围内处理「[更新目标]」。修改前读取最新档案、字段定义和记录版本。明确的更新用 update_customer 或 set_customer_field_values，带来源的待核实结论交工作台核对。若要求批量修改阶段、等级或样品状态，先用 preview_customer_batch 核对范围和匹配数，再按授权提交 update_customer_batch。记录处理结果、冲突和待核对项。本次只管理资料与跟进，不发邮件。
+请从 list_customer_views 找到「[共享视图名]」，用 query_customer_view 按当前筛选和排序读取客户。仅在我指定的范围内处理「[更新目标]」。修改前读取最新档案、字段定义和记录版本。明确的更新用 update_customer 或 set_customer_field_values，待核实结论交工作台核对。若要求批量修改阶段、等级或样品状态，先用 preview_customer_batch 核对范围和匹配数，再按授权提交 update_customer_batch。记录处理结果、冲突和待核对项。本次只管理资料与跟进，不发邮件。

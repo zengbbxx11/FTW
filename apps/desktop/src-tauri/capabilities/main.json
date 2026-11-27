@@ -5,6 +5,10 @@
     "main"
   ],
   "permissions": [
+    "allow-mcp-connection-config",
+    "allow-check-for-update",
+    "allow-download-update",
+    "allow-install-update",
     "allow-core-health",
     "allow-mcp-status",
     "allow-export-support-report",

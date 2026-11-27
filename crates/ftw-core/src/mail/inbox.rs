@@ -34,6 +34,7 @@ impl MailService {
                 destination,
             } => self.save_inbox_attachment(&id, index, &destination).await,
             Command::Accounts => self.imap_accounts().await,
+            Command::ReplyUpdates { after } => self.reply_updates(after).await,
             Command::Configure {
                 account_id,
                 host,
@@ -191,6 +192,21 @@ impl MailService {
                 username: r.get("username"), last_sync: r.get("last_sync"), outcome: r.get("outcome"),
             }).fetch_all(&self.pool).await?;
         Ok(Reply::Accounts { rows })
+    }
+
+    async fn reply_updates(&self, after: Option<i64>) -> Result<Reply> {
+        let (cursor, count): (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(MAX(a.rowid),0), COUNT(*) FILTER(WHERE ?1 IS NOT NULL AND a.rowid>?1
+             AND a.event_type='email_received' AND i.message_role='correspondence'
+             AND i.match_state IN ('thread','manual') AND (i.reply_to_sent_id IS NOT NULL OR EXISTS(
+               SELECT 1 FROM email_messages e WHERE e.contact_id=i.contact_id AND e.account_id=i.account_id
+               AND COALESCE(e.conversation_id,'sent:' || e.id)=i.thread_id)))
+             FROM activities a LEFT JOIN inbox_messages i ON i.id=a.related_message_id",
+        )
+        .bind(after)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(Reply::ReplyUpdates { cursor, count })
     }
 
     async fn sync_status(&self, account_id: Option<&str>) -> Result<Reply> {

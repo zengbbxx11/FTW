@@ -7,6 +7,7 @@ import { dateLabel, request, type ContactQuery } from '../crm/api'
 import { Empty, Field, Pagination } from '../crm/components'
 import { mailError } from './api'
 import { MailSearch } from './MailWorkspace'
+import { useSyncFrequency } from './syncSettings'
 
 export type ImapAccount = {
   account_id: string; display_name: string; email_address: string; host: string | null
@@ -19,7 +20,7 @@ type Row = {
 type ReviewCandidate = { id: string; name: string; company: string; country: string; exact_sender: boolean; suggested_by?: string[] }
 type Message = Row & { body: string; attachments: string[] }
 export type ReplyTarget = Pick<Row, 'id' | 'account_id' | 'sender' | 'subject'> & { contact_id: string }
-type Reply =
+export type InboxReply =
   | { kind: 'body'; text: string; next_offset: number | null }
   | { kind: 'accounts'; rows: ImapAccount[] }
   | { kind: 'rows'; rows: Row[]; has_more: boolean }
@@ -29,8 +30,9 @@ type Reply =
   | { kind: 'saved'; id: string }
   | { kind: 'sync_started'; account_id: string }
   | { kind: 'connection_verified' }
+  | { kind: 'reply_updates'; cursor: number; count: number }
 
-type Command =
+export type InboxCommand =
   | { action: 'accounts' }
   | { action: 'configure'; account_id: string; host: string; port: number; username: string; password: string }
   | { action: 'test' | 'sync'; account_id: string }
@@ -42,12 +44,14 @@ type Command =
   | { action: 'download_full'; id: string }
   | { action: 'read_body'; id: string; offset: number }
   | { action: 'link'; id: string; contact_id: string }
+  | { action: 'reply_updates'; after: number | null }
 
-async function call<K extends Reply['kind']>(command: Command, expected: K): Promise<Extract<Reply, { kind: K }>> {
-  const result = await invoke<Reply>('inbox_request', { command })
+export async function inboxCall<K extends InboxReply['kind']>(command: InboxCommand, expected: K): Promise<Extract<InboxReply, { kind: K }>> {
+  const result = await invoke<InboxReply>('inbox_request', { command })
   if (result.kind !== expected) throw new Error('收到意外的收件服务响应。')
-  return result as Extract<Reply, { kind: K }>
+  return result as Extract<InboxReply, { kind: K }>
 }
+const call = inboxCall
 
 const syncLabels: Record<string, string> = {
   running: '同步中', ok: '已同步', more_available: '本批已同步，仍有较早或新增来信可继续取回',
@@ -70,7 +74,7 @@ export function ImapAccountSettings({ account }: { account: ImapAccount }) {
   const cache = useQueryClient()
   const [notice, setNotice] = useState('')
   const mutate = useMutation({
-    mutationFn: async (command: Command) => command.action === 'configure' ? call(command, 'saved') : call(command, 'connection_verified'),
+    mutationFn: async (command: InboxCommand) => command.action === 'configure' ? call(command, 'saved') : call(command, 'connection_verified'),
     onMutate: () => setNotice(''),
     onSuccess: async result => {
       setNotice(result.kind === 'saved' ? '收件设置已保存。' : 'IMAP TLS、登录与 INBOX 访问均通过。')
@@ -105,6 +109,7 @@ export function ImapAccountSettings({ account }: { account: ImapAccount }) {
 
 export function InboxView({ contactId, initialMessageId, initiallyReviewing, openContact, onReply }: { contactId?: string; initialMessageId?: string; initiallyReviewing?: boolean; openContact: (id: string) => void; onReply?: (message: ReplyTarget) => void }) {
   const accounts = useImapAccounts()
+  const [frequency, setFrequency] = useSyncFrequency()
   const [accountId, setAccount] = useState('')
   const unmatched = Boolean(!contactId && initiallyReviewing)
   const [input, setInput] = useState('')
@@ -155,6 +160,10 @@ export function InboxView({ contactId, initialMessageId, initiallyReviewing, ope
         <small className="mail-sync-status">{active?.host ? active.outcome ? syncLabels[active.outcome] ?? mailError(active.outcome) : '尚未同步'
           : configured.length ? '选择一个邮箱后同步' : '请先配置 IMAP'}
           {active?.last_sync ? ' · ' + dateLabel(active.last_sync) : ''}</small>
+        <label className="mail-auto-sync">自动同步 <select aria-label="自动收件同步频率" value={frequency} onChange={event => setFrequency(Number(event.target.value))}>
+          <option value={0}>关闭</option><option value={5}>每 5 分钟</option><option value={10}>每 10 分钟</option>
+          <option value={30}>每 30 分钟</option><option value={60}>每小时</option>
+        </select><small>FTW 运行时生效</small></label>
       </header>
       <div className="mail-list-scroll">
         {accounts.isError && <ErrorBox error={accounts.error} />}

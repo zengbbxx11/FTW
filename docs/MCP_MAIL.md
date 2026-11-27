@@ -1,5 +1,7 @@
 # FTW MCP 客户开发、邮件和协作
 
+适用于 1.1.7、Schema 27，当前共有 102 个 MCP 工具。既有工具保持兼容。工具是否按需加载由客户端决定；FTW 不宣称工具数量对 Token 消耗没有影响。优先查询精简概况，再按需读取正文和完整历史。[当前状态](PROJECT_STATUS.md)
+
 桌面邮件中心将收件、草稿与审批、SMTP 已接受、发送队列、发送失败、提交结果未知和退信分开查询。收发件搜索按主题与地址在 Core 中筛选，再返回当前页。已发未见回复入口打开原有 CRM 视图，记录仍以最后一次有效的 IMAP 同步为准。
 
 工作台、Core 和 MCP 三个 EXE 放在同一目录。便携模式用同一个 `portable.flag` 和数据目录。MCP 适配器按需启动 Core，工作台可以在 Agent 查客户和写草稿时关闭。进行人工审核时需要打开工作台。
@@ -8,11 +10,11 @@
 
 ## 从发现客户到持续跟进
 
-Agent 用宿主中已获准的搜索或资料来源发现潜在客户。FTW 负责现有资料查重、调查证据、客户身份、联系资格和后续业务记录。
+Agent 用宿主中已获准的搜索或资料来源发现潜在客户。FTW 负责已有资料查重、客户身份、联系资格和后续业务记录。已有来源和证据功能保留，当前工作流不要求为每次调查额外建立来源证据。
 
 | 阶段 | MCP 工具和业务结果 |
 | --- | --- |
-| 查重和沉淀线索 | 用 `search_workbench`、`list_customers` 和 `list_lead_candidates` 查已有资料。有地址时用 `check_customer_outreach` 查看精确邮箱、同域线索、开发历史和禁止联系状态。用 `create_lead_candidate` 与 `add_lead_evidence` 保留待核实资料、来源和日期。 |
+| 查重和沉淀线索 | 用 `search_workbench`、`list_customers` 和 `list_lead_candidates` 查已有资料。有地址时用 `check_customer_outreach` 查看精确邮箱、同域线索、开发历史和禁止联系状态。需要时用 `create_lead_candidate` 保存待核实资料。 |
 | 建档和管理 | 授权后用 `create_customer_profile` 在同一事务写入联系人、联系渠道、产品兴趣和共享可写属性。已有客户先读 `get_customer`，再用 `update_customer` 或 `set_customer_field_values` 提交增量变更。用 `review_lead_candidate` 核对并转正候选。 |
 | 起草和发信 | 用 `create_email_draft` 或模板渲染创建草稿。用户选择持续授权时调用 `send_authorized_email`，选择逐封模式时调用 `request_email_approval` 并在工作台批准后用 `send_approved_email`。入队后用 `get_email_draft` 或获准的 `get_mail_task` 读回实际结果。 |
 | 收信和原会话回复 | 用 `sync_mailbox` 同步，`get_mailbox_sync_status` 核对进度与时间，`list_inbox` 和 `get_email_thread` 查会话。确认来信归属后用 `create_reply_draft`，再走相应发送模式。 |
@@ -56,7 +58,7 @@ Core 在入队及提交前检查审批、最新快照、收件人关系和拒发
 
 ## 收件与后续跟进
 
-在「邮件中心 → 收件设置」为对应发件账户配置 IMAP 主机、端口、登录名及凭据。支持使用密码或应用授权码的隐式 TLS IMAP。点击「测试 IMAP」，然后从收件箱同步。每次同步至多拉取 25 封新邮件，收件箱会显示同步结果及是否还有新邮件。
+在「邮件中心 → 收件设置」为对应发件账户配置 IMAP 主机、端口、登录名及凭据。支持使用密码或应用授权码的隐式 TLS IMAP。FTW 运行期间默认每 10 分钟同步已配置的账户，可在收件箱调整频率或关闭；手动同步及 Agent 同步仍可使用。每批最多拉取 25 封，仍有邮件时继续分批处理。工作台提示新关联的客户回复和同步结果；FTW 关闭后不为此常驻后台。
 
 Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启动同步，再用 `get_mailbox_sync_status` 核对该邮箱最近一次结果和时间。`complete` 为 `false` 或同步早于有关发信时，只能报告「截至已同步范围，未看到回复」。用 `list_inbox` 查找来信，`get_email_thread` 读取纯文本会话，`create_reply_draft` 从已确认关联的业务来信起草原会话回复。超过 2 MiB 的来信先保留邮件头，支持按需下载完整邮件。
 
@@ -69,6 +71,8 @@ Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启�
 `get_workbench_definitions` 接收 `kind`（`fields`、`states` 或 `views`）和可选的 `known_version`。版本相同时返回 `version` 和 `unchanged: true`，变化时附完整定义 `data`。工作区恢复会更换版本所用的数据纪元。旧的字段、状态和视图查询可继续使用。
 
 `list_customers` 和 `query_customers` 返回联系人摘要、记录版本和发信状态，使用 `next_offset` 翻页。`query_customers` 支持结构化筛选、排序及显式的 `custom_columns`。通过 `get_customer` 读取详情。附件列表仅传元数据，内容用文件 ID 分段读取。邮件列表按主题和状态查询，正文按草稿或会话读取。
+
+`get_customer_development_overview` 接收 `contact_id`，返回客户摘要、最近五条活动、邮件开发和同步状态，以及最多二十条同公司或同域联系人；`related_has_more` 表示还有更多。结果不包含邮件正文。同域仅是提示，不自动阻止联系。`check_customer_outreach` 保留原有编号字段，并补充同域联系人的姓名、最近联系时间和邮件状态。
 
 | 批量工具 | `items` 每项 |
 | --- | --- |
@@ -132,6 +136,8 @@ Core 按回复头和客户邮箱关联会话。Agent 可用 `sync_mailbox` 启�
 | `send_authorized_email` | `draft_id`、`revision`、`purpose`、`task_id`、`request_id` |
 | `list_email_assets` | 空对象，读取用户允许 Agent 使用的附件 |
 | `attach_email_assets` | `draft_id`、`revision`、`asset_ids` |
+| `get_customer_development_overview` | `contact_id`。读取精简客户开发概况。 |
+| `get_customer_document_mail_asset` | `contact_id`、`document_id`。查找已获 Agent 使用权限的客户文件素材，再用 `attach_email_assets` 附加到草稿。 |
 | `fetch_inbox_message` | `message_id` |
 | `read_inbox_body` | `message_id`、可选 `offset` |
 
@@ -289,6 +295,8 @@ Core 在人工采纳时复核资料和目标行。更正邮箱实际地址时保
 桌面写邮件支持 PDF、JPEG、PNG、WebP，最多四件，合计 10 MiB 原文件，实际收发上限仍受邮箱服务器限制。保存位置是数据目录下的 `mail-objects`。同名文件内容变化会产生新的校验值，批准和发送以草稿保存的文件为准。
 
 在「Agent 发信权限 → Agent 可用附件」导入并授权后，本机 Agent 用 `list_email_assets` 查文件 ID，用 `attach_email_assets` 更新共享草稿的附件，再读回最新修订送审或授权入队。
+
+桌面撰写邮件时可逐个添加或移除附件，也可从当前客户的文件中选择。在客户文件详情点击「允许 Agent 用于邮件」，即可授权本机 Agent 使用该文件；也可在「Agent 可用附件」管理授权。Agent 可用 `get_customer_document_mail_asset` 查找已授权的同一文件素材；该操作不自行扩大附件权限。
 
 收件同步对超过 2 MiB 的邮件保存邮件头，桌面可在会话中按需下载最多 16 MiB 的完整邮件。Agent 可用 `fetch_inbox_message` 开始下载，并用 `read_inbox_body` 的分页偏移读取纯文本。附件可在桌面通过 Windows 另存窗口写入指定新文件。迁移前或手工备份复制 `backups/mail-objects` 与 `workbench-*.db`，恢复时 Core 校验引用的对象完整性。
 

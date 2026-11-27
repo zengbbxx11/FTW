@@ -73,6 +73,15 @@ export type Outreach = {
   sync_outcome: string | null; sync_at: number | null
 }
 
+export type DevelopmentOverview = {
+  id: string; record_revision: number; data_epoch: string; display_name: string; company_name: string
+  country_region: string; stage: string; customer_level: string; email: string | null; mail_outreach: Outreach
+  sample_status: string; main_need: string; main_need_truncated: boolean; product_interests: string[]; interests_has_more: boolean
+  activities: { id: string; event_type: string; summary: string; occurred_at: number }[]
+  related_contacts: { id: string; display_name: string; company_name: string; reason: string; last_contact_at: number | null; mail_status: Outreach['status'] }[]
+  related_has_more: boolean
+}
+
 export type ContactRow = Pick<ContactInput, 'display_name' | 'company_name' | 'country_region' | 'stage' | 'customer_level' | 'last_contact_at'> & {
   id: string
   sample_status: string
@@ -227,6 +236,7 @@ type Result =
   | { kind: 'contacts'; rows: ContactRow[]; has_more: boolean }
   | { kind: 'contact_preview'; rows: ContactRow[]; total: number }
   | { kind: 'contact'; record: Contact }
+  | { kind: 'development_overview'; record: DevelopmentOverview }
   | { kind: 'leads'; rows: LeadRow[]; has_more: boolean }
   | { kind: 'lead_workspace'; rows: LeadWorkspaceRow[]; has_more: boolean }
   | { kind: 'lead_evidence'; rows: LeadEvidence[]; total: number; verified: number; pending: number; has_more: boolean; epoch: string }
@@ -268,6 +278,7 @@ type Command =
   | { action: 'list_contacts'; query: ContactQuery }
   | { action: 'preview_contacts'; query: ContactQuery }
   | { action: 'get_contact' | 'get_lead'; id: string }
+  | { action: 'development_overview'; id: string }
   | { action: 'list_lead_evidence'; lead_id: string; offset: number }
   | { action: 'add_lead_evidence'; lead_id: string; input: LeadEvidenceInput }
   | { action: 'list_contact_evidence'; contact_id: string; offset: number }

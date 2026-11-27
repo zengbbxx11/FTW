@@ -108,3 +108,26 @@
   .global-search-form kbd, .global-search-results time { display: none; }
   .dashboard-events time { display: none; }
 }
+.guide-workspace { max-width: 1160px; margin: 0 auto; }
+.guide-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.guide-card { padding: 18px; }
+.guide-card h2 { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; font-size: 15px; }
+.guide-card h2 svg { width: 18px; height: 18px; color: var(--ftw-brand, #008c88); }
+.guide-card p, .guide-card li { color: var(--ftw-muted); line-height: 1.65; }
+.guide-card ol { padding-left: 20px; }
+.guide-card .row-actions { flex-wrap: wrap; }
+.guide-connection { grid-column: 1 / -1; }
+.guide-code { overflow: auto; max-height: 240px; padding: 12px; border-radius: 8px; background: var(--ftw-canvas, #f4f7fb); font-size: 12px; }
+@media (max-width: 760px) { .guide-grid { grid-template-columns: minmax(0, 1fr); } .guide-connection { grid-column: auto; } }
+.mail-auto-sync { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--ftw-muted); font-size: 12px; }
+.mail-auto-sync select { min-width: 115px; }
+.reply-notice { display: flex; align-items: center; gap: 8px; padding: 9px 12px; margin-bottom: 12px; border: 1px solid #a7dcd4; border-radius: 8px; background: #e6f5f3; color: #075e59; }
+.reply-notice svg { width: 17px; height: 17px; }
+.customer-development-summary { padding: 14px; margin-bottom: 12px; }
+.customer-related-hint { margin-top: 12px; border-top: 1px solid var(--ftw-border, #dfe7ef); padding-top: 10px; }
+.customer-related-hint ul { list-style: none; padding: 0; margin: 5px 0; }
+.customer-related-hint li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.customer-related-hint li span { color: var(--ftw-muted); font-size: 12px; }
+.draft-documents { margin: 10px 0; padding: 10px; background: var(--ftw-canvas, #f4f7fb); border-radius: 8px; }
+.draft-documents ul { list-style: none; margin: 0; padding: 0; }
+.draft-documents li, .draft-attachment { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; }

@@ -1,5 +1,7 @@
 # FTW CRM 内部接口与共享数据合约
 
+适用于 1.1.7，数据库 Schema 27。本轮增加的开发概况查询由桌面与 MCP 共用，未新增数据库迁移。当前实现和验证范围见[项目状态](PROJECT_STATUS.md)。
+
 桌面 WebView 通过 Tauri 的 `crm_request` 调用 Core，参数对象包含 `command`。Rust 调用者可以使用 `ftw_ipc::crm::Command` 与 `ftw_ipc::crm::Result`。桌面操作由 Core 识别为 `manual`。MCP 经受限命令进入同一套 CRM 校验，Core 记录 Agent 来源和请求标识。下表是主要桌面接口，MCP 客户端用 [MCP 工具合约](MCP_MAIL.md)。
 
 内部 IPC 请求示例
@@ -14,6 +16,7 @@ IPC 响应返回 `{"status":"crm","data":{...}}`。桌面命令直接返回 `dat
 | --- | --- | --- |
 | `list_contacts` | `query` 支持关键字与基础筛选，也支持 `filter`、`order`、`custom_columns`、`page_size`、`offset` | `contacts` |
 | `get_contact` | `id` | `contact`，含资料、渠道、兴趣、计算的联系日期、`record_revision` 与 `data_epoch` |
+| `development_overview` | `id` | `development_overview`，返回精简身份与需求、最近五条活动、邮件与同步状态，以及最多二十条同公司或同域联系人；`related_has_more` 标记剩余结果。 |
 | `state_catalog` | 无 | `state_catalog`，含稳定代码、标签和兼容别名 |
 | `save_contact_checked` | `id`、`input`、`allow_duplicate`、`expected_revision`、可选 `expected_epoch` | `saved` 或 `duplicates`，旧版本时返回 `crm_revision_conflict` |
 | `save_contact` | `id`（新建为空）、`input`、`allow_duplicate` | `saved` 或 `duplicates` |

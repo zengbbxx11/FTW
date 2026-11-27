@@ -7,6 +7,7 @@ import { Empty } from '../crm/components'
 import { testImapAccount, useImapAccounts, type ImapAccount } from '../mail/Inbox'
 import { mailCall, mailError } from '../mail/api'
 import { OpsTag } from './OpsUI'
+import { UpdatePanel } from './Updates'
 
 type Health = { coreVersion: string; schemaVersion: number; storageMode: 'portable' | 'local_app_data' | 'development';
   dataRoot: string; processId: number; webviewVersion: string | null; architecture: string }
@@ -139,6 +140,7 @@ export function SystemStatus({ audit, mail }: { audit: () => void; mail: (protoc
               : <button type="button" className="button" onClick={() => mail('SMTP')}><Mail aria-hidden="true" />发件账户设置</button>}
           </div>
         </section>
+        <UpdatePanel />
         <section className="panel system-tools"><div className="section-heading"><h2>故障报告</h2></div>
           <p className="muted">导出程序版本、系统信息和近期错误码。你可以先打开文件查看，再决定是否分享。</p>
           <div className="system-actions">

@@ -159,6 +159,7 @@ async fn execute(pool: &SqlitePool, command: Command, actor: Actor<'_>) -> Resul
             direction,
         } => views::move_view(pool, actor, &id, expected_revision, direction).await,
         Command::GetContact { id } => contacts::get(pool, &id).await,
+        Command::DevelopmentOverview { id } => contacts::development_overview(pool, &id).await,
         Command::StateCatalog => contacts::state_catalog(pool).await,
         Command::ListFields { include_archived } => {
             fields::list(pool, actor, include_archived).await

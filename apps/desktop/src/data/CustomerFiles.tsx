@@ -40,7 +40,14 @@ export function CustomerFiles({ contactId, initialDocument, openContact, openMai
   } })
   const download = useMutation({ mutationFn: ({ id, name }: { id: string; name: string }) => exportCustomerDocument(id, name),
     onMutate: () => setNotice(''), onSuccess: saved => { if (saved) setNotice('客户文件已导出。') } })
-  const busy = upload.isPending || download.isPending
+  const allowAgent = useMutation({ mutationFn: async ({ contact, document }: { contact: string; document: string }) => {
+    const asset = await mailCall({ action: 'customer_document_asset', contact_id: contact, document_id: document }, 'assets')
+    await mailCall({ action: 'set_asset_access', id: asset.rows[0].id, allowed: true }, 'saved')
+  }, onMutate: () => setNotice(''), onSuccess: async () => {
+    await cache.invalidateQueries({ queryKey: ['mail-assets'] })
+    setNotice('已允许本机 Agent 将该文件用于邮件附件。')
+  } })
+  const busy = upload.isPending || download.isPending || allowAgent.isPending
   const rows = query.data?.rows ?? []
   const file = rows.find(row => fileKey(row) === selection) ?? rows[0]
   return <section className="file-workspace" aria-label="客户文件与邮件附件">
@@ -60,7 +67,7 @@ export function CustomerFiles({ contactId, initialDocument, openContact, openMai
         placeholder="搜索文件名、客户或邮件主题" value={input} onChange={event => { setInput(event.target.value); setOffset(0); setSelection('') }} /></label>
     </div></>}
     {notice && <p className="review-notice" role="status">{notice}</p>}
-    {(upload.isError || download.isError || contact.isError) && <p className="alert error" role="alert">{mailError(upload.error ?? download.error ?? contact.error)}</p>}
+    {(upload.isError || download.isError || allowAgent.isError || contact.isError) && <p className="alert error" role="alert">{mailError(upload.error ?? download.error ?? allowAgent.error ?? contact.error)}</p>}
     {query.isError && <p className="alert error" role="alert">{mailError(query.error)}</p>}
     {query.isPending && <Empty>正在读取附件…</Empty>}
     {query.data && <div className="sample-layout file-layout" data-selected={Boolean(file)}>
@@ -88,6 +95,8 @@ export function CustomerFiles({ contactId, initialDocument, openContact, openMai
             <PhotoPreview key={file.document_id} id={file.document_id} mime={file.content_type} name={file.filename} />}
           <button className="button primary" disabled={busy} onClick={() => download.mutate({ id: file.document_id!, name: file.filename })}>
             <Download aria-hidden="true" />另存文件</button>
+          <button className="button" disabled={busy} onClick={() => allowAgent.mutate({ contact: file.contact_id, document: file.document_id! })}>
+            <Paperclip aria-hidden="true" />允许 Agent 用于邮件</button>
         </> : <>
           <AttachmentActions key={fileKey(file)} source={file.origin === 'inbox' ? 'inbox' : 'outbound'}
             id={file.message_id} index={file.index} filename={file.filename} />

@@ -1,8 +1,10 @@
 FTW · WorkBuddy 和 Codex 接入说明（Windows）
 
+适用于 FTW 1.1.7。Schema 27，当前提供 102 个 MCP 工具。
+
 1. 使用同一份工作台
 
-完整解压 ZIP，双击 workbench.exe。在「系统状态」查看实际数据目录。保留 workbench.exe、ftw-core.exe、ftw-mcp.exe 和 portable.flag 在同一目录。客户端中的 MCP 命令应指向同目录的 ftw-mcp.exe，例如 D:\FTW工作台\ftw-mcp.exe。移动目录后需要更新该路径。
+完整解压 ZIP，双击 workbench.exe。在「系统状态」查看实际数据目录。保留 workbench.exe、ftw-core.exe、ftw-mcp.exe 和 portable.flag 在同一目录。客户端中的 MCP 命令应指向同目录的 ftw-mcp.exe，例如 D:\FTW工作台\ftw-mcp.exe。移动目录后需要更新该路径；使用工作台的原目录更新时路径不变，无需重新配置连接器。
 
 2. 本机直接连接
 
@@ -12,7 +14,7 @@ FTW · WorkBuddy 和 Codex 接入说明（Windows）
 
 3. 配置 WorkBuddy
 
-在 WorkBuddy 中打开「专家·技能·连接器 → 连接器 → 自定义连接器」，进入 MCP 服务管理。添加或修改 ftw，选择本地 stdio，命令填写当前工作台的 ftw-mcp.exe 完整路径，参数留空。已有 ftw 时请检查路径，无需重复添加。支持 JSON 的版本可参考以下完整示例，保留已有的其他服务：
+打开 FTW 侧边栏的「使用指南」，复制当前工作台生成的 WorkBuddy 配置。在 WorkBuddy 中打开「专家·技能·连接器 → 连接器 → 自定义连接器」，进入 MCP 服务管理并粘贴。已有其他服务时，复制单独的 ftw 片段，放入 mcpServers 的花括号内并用逗号分隔，保留原有服务。已有 ftw 时请更新该条，不要重复添加。保存后按提示信任或刷新连接器。
 
   {
     "mcpServers": {

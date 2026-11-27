@@ -140,6 +140,18 @@ impl MailService {
         }
     }
 
+    fn diagnostic_task_event(
+        &self,
+        operation: &str,
+        code: &str,
+        job_id: Option<&str>,
+        task_id: Option<&str>,
+    ) {
+        if let Some(log) = &self.diagnostics {
+            log.mail_task_result(operation, code, job_id, task_id);
+        }
+    }
+
     pub async fn with_send_ledger(mut self, data: &std::path::Path) -> Self {
         self.object_root = Some(data.join("mail-objects"));
         let path = data.join("agent-send-safety.sqlite");
@@ -169,6 +181,13 @@ impl MailService {
 
     pub fn approval_in_progress(&self) -> bool {
         self.prompt.try_lock().is_err()
+    }
+
+    pub fn try_pause_for_update(&self) -> Option<Vec<tokio::sync::OwnedMutexGuard<()>>> {
+        let approval = self.prompt.clone().try_lock_owned().ok()?;
+        let sync = self.imap.clone().try_lock_owned().ok()?;
+        let delivery = self.delivery.clone().try_lock_owned().ok()?;
+        Some(vec![approval, sync, delivery])
     }
 
     pub fn start_worker(&self) -> tokio::task::JoinHandle<()> {
@@ -454,6 +473,16 @@ impl MailService {
             }
             Command::ImportAssets { paths } => self.import_assets(paths).await,
             Command::ListAssets => self.list_assets(false).await,
+            Command::PrepareDraftAssets { id, revision } => {
+                self.prepare_draft_assets(&id, revision).await
+            }
+            Command::CustomerDocumentAsset {
+                contact_id,
+                document_id,
+            } => {
+                self.customer_document_asset(&contact_id, &document_id, false)
+                    .await
+            }
             Command::SaveDraftWithAssets {
                 id,
                 input,

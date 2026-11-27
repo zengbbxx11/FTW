@@ -1,10 +1,10 @@
 export type Versions = { epoch: string; domains: Record<string, number> }
 
 const keysByDomain: Record<string, string[]> = {
-  contacts: ['contacts', 'contact', 'contact-history', 'lead', 'sample-workspace', 'customer-files', 'audit', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics'],
-  activity: ['contacts', 'contact', 'activities', 'dashboard', 'sample-workspace', 'global-search'],
+  contacts: ['contacts', 'contact', 'development-overview', 'contact-history', 'lead', 'sample-workspace', 'customer-files', 'audit', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics'],
+  activity: ['contacts', 'contact', 'development-overview', 'activities', 'reply-updates', 'dashboard', 'sample-workspace', 'global-search'],
   leads: ['leads', 'lead', 'contact', 'global-search', 'dashboard'],
-  mail: ['contacts', 'contact', 'mail-drafts', 'mail-draft', 'mail-queue-summary', 'mail-accounts', 'mail-suppression', 'customer-files', 'inbox', 'inbox-record', 'inbox-thread', 'imap-accounts', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics'],
+  mail: ['contacts', 'contact', 'development-overview', 'mail-drafts', 'mail-draft', 'mail-queue-summary', 'mail-accounts', 'mail-suppression', 'customer-files', 'inbox', 'inbox-record', 'inbox-thread', 'reply-updates', 'imap-accounts', 'dashboard', 'data-overview', 'global-search', 'agent-runs', 'agent-run-mail', 'mail-analytics'],
   mail_expiration: ['mail-drafts', 'mail-draft', 'dashboard'],
   configuration: ['crm-states', 'contacts', 'contact'],
   audit: ['audit', 'dashboard', 'agent-runs'],

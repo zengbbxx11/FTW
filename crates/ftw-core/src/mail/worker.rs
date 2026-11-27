@@ -49,7 +49,12 @@ impl MailService {
             Err(Failure::Code(reason)) => {
                 finish(&mut tx, &job, "failed", reason).await?;
                 tx.commit().await?;
-                self.diagnostic_event("smtp_preflight", reason, Some(&job.id));
+                self.diagnostic_task_event(
+                    "smtp_preflight",
+                    reason,
+                    Some(&job.id),
+                    job.task_id.as_deref(),
+                );
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -68,7 +73,12 @@ impl MailService {
             Err(error) => {
                 finish(&mut tx, &job, "failed", error.code()).await?;
                 tx.commit().await?;
-                self.diagnostic_event("smtp_prepare", error.code(), Some(&job.id));
+                self.diagnostic_task_event(
+                    "smtp_prepare",
+                    error.code(),
+                    Some(&job.id),
+                    job.task_id.as_deref(),
+                );
                 return Ok(());
             }
         };
@@ -88,7 +98,12 @@ impl MailService {
                 Err(error) => {
                     finish(&mut tx, &job, "failed", error.code()).await?;
                     tx.commit().await?;
-                    self.diagnostic_event("smtp_send_policy", error.code(), Some(&job.id));
+                    self.diagnostic_task_event(
+                        "smtp_send_policy",
+                        error.code(),
+                        Some(&job.id),
+                        job.task_id.as_deref(),
+                    );
                     return Ok(());
                 }
             }
@@ -106,7 +121,12 @@ impl MailService {
                 .await
                 .unwrap_or(("delivery_unknown", "smtp_result_unknown"));
         let recorded = self.record_send_result(&job, &draft, state, outcome).await;
-        self.diagnostic_event("smtp_submission", outcome, Some(&job.id));
+        self.diagnostic_task_event(
+            "smtp_submission",
+            outcome,
+            Some(&job.id),
+            job.task_id.as_deref(),
+        );
         recorded?;
         if let (Some(_), Some(ledger)) = (job.agent_id, &self.ledger) {
             match state {

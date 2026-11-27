@@ -52,6 +52,103 @@ impl MailService {
         Ok(Reply::Assets { rows })
     }
 
+    pub(super) async fn prepare_draft_assets(&self, id: &str, revision: i64) -> Result<Reply> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let draft = sqlx::query(
+            "SELECT attachments_json,asset_ids_json,revision,state FROM email_drafts WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Failure::Code("mail_not_found"))?;
+        if draft.get::<i64, _>("revision") != revision
+            || !matches!(
+                draft.get::<&str, _>("state"),
+                "draft" | "pending_approval" | "approved"
+            )
+        {
+            return Err(Failure::Code("approval_snapshot_changed"));
+        }
+        let mut rows = Vec::new();
+        for inline in super::attachments(&draft)? {
+            let bytes = super::attachment_bytes(&inline)?;
+            check_text(&inline.filename, 180)?;
+            if inline.filename.contains(['/', '\\']) || bytes.is_empty() || bytes.len() > LIMIT {
+                return Err(Failure::Code("invalid_attachments"));
+            }
+            // Older drafts may contain inline files accepted before the current asset type filter.
+            let content_type =
+                mime_for(&inline.filename, &bytes).unwrap_or("application/octet-stream");
+            let file = ImportedObject {
+                filename: inline.filename,
+                size: bytes.len() as i64,
+                content_type,
+                sha256: store(self.objects()?, &bytes).await.map_err(file_error)?,
+            };
+            let row = sqlx::query(
+                "INSERT INTO mail_assets(id,filename,sha256,size,content_type) VALUES (?,?,?,?,?)
+                ON CONFLICT(sha256,filename) DO UPDATE SET filename=excluded.filename RETURNING *",
+            )
+            .bind(new_id())
+            .bind(file.filename)
+            .bind(file.sha256)
+            .bind(file.size)
+            .bind(file.content_type)
+            .map(asset)
+            .fetch_one(&mut *tx)
+            .await?;
+            audit(&mut tx, Source::Manual, "mail_asset", &row.id, "import").await?;
+            rows.push(row);
+        }
+        rows.extend(select(&mut tx, &ids(&draft)?, false).await?);
+        tx.commit().await?;
+        Ok(Reply::Assets { rows })
+    }
+
+    pub(super) async fn customer_document_asset(
+        &self,
+        contact_id: &str,
+        document_id: &str,
+        agent: bool,
+    ) -> Result<Reply> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let document = sqlx::query("SELECT filename,sha256,size,content_type FROM customer_documents WHERE id=? AND contact_id=?")
+            .bind(document_id).bind(contact_id).fetch_optional(&mut *tx).await?
+            .ok_or(Failure::Code("attachment_not_available"))?;
+        let filename: String = document.get("filename");
+        let sha: String = document.get("sha256");
+        let size: i64 = document.get("size");
+        read_object(self.objects()?, &sha, size as usize)
+            .await
+            .map_err(file_error)?;
+        let row = if agent {
+            sqlx::query("SELECT * FROM mail_assets WHERE filename=? AND sha256=? AND agent_allowed")
+                .bind(&filename)
+                .bind(&sha)
+                .map(asset)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Failure::Code("attachment_not_available"))?
+        } else {
+            let row = sqlx::query(
+                "INSERT INTO mail_assets(id,filename,sha256,size,content_type) VALUES (?,?,?,?,?)
+                ON CONFLICT(sha256,filename) DO UPDATE SET filename=excluded.filename RETURNING *",
+            )
+            .bind(new_id())
+            .bind(filename)
+            .bind(sha)
+            .bind(size)
+            .bind(document.get::<String, _>("content_type"))
+            .map(asset)
+            .fetch_one(&mut *tx)
+            .await?;
+            audit(&mut tx, Source::Manual, "mail_asset", &row.id, "import").await?;
+            row
+        };
+        tx.commit().await?;
+        Ok(Reply::Assets { rows: vec![row] })
+    }
+
     pub(super) async fn attach_agent_assets(
         &self,
         identity: super::policy::AgentIdentity<'_>,

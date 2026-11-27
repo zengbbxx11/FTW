@@ -1,7 +1,8 @@
 use super::{audit, fields, id_or_new, new_id, query, validation, Actor, Error, Result};
 use ftw_ipc::crm::{
-    ArchiveFilter, Contact, ContactInput, ContactQuery, ContactRow, ContactSort, Interest,
-    MailOutreach, Method, Result as Reply,
+    ArchiveFilter, Contact, ContactInput, ContactQuery, ContactRow, ContactSort,
+    DevelopmentActivity, DevelopmentOverview, DevelopmentRelated, Interest, MailOutreach, Method,
+    Result as Reply,
 };
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, SqliteConnection, SqlitePool};
 use std::collections::HashMap;
@@ -250,6 +251,92 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Reply> {
     tx.commit().await?;
     Ok(Reply::Contact {
         record: Box::new(record),
+    })
+}
+
+pub async fn development_overview(pool: &SqlitePool, id: &str) -> Result<Reply> {
+    let mut tx = pool.begin().await?;
+    let contact = record_on(&mut tx, id).await?;
+    let activities = sqlx::query(
+        "SELECT id,event_type,substr(summary,1,180) summary,occurred_at FROM activities
+         WHERE contact_id=? ORDER BY occurred_at DESC,id DESC LIMIT 5",
+    )
+    .bind(id)
+    .map(|row: SqliteRow| DevelopmentActivity {
+        id: row.get("id"),
+        event_type: row.get("event_type"),
+        summary: row.get("summary"),
+        occurred_at: row.get("occurred_at"),
+    })
+    .fetch_all(&mut *tx)
+    .await?;
+    let rows = sqlx::query(
+        "SELECT c.id,c.display_name,c.company_name,dates.effective_last,o.mail_status,
+          CASE WHEN owner.company_id IS NOT NULL AND member.company_id=owner.company_id THEN 'company_profile'
+            WHEN anchor.company_name<>'' AND trim(c.company_name)=trim(anchor.company_name) COLLATE NOCASE THEN 'company_name'
+            ELSE 'email_domain' END reason
+         FROM contacts anchor JOIN contacts c ON c.id<>anchor.id AND c.archived_at IS NULL
+         JOIN crm_contact_dates dates ON dates.id=c.id JOIN mail_contact_outreach o ON o.contact_id=c.id
+         LEFT JOIN crm_company_memberships owner ON owner.contact_id=anchor.id
+         LEFT JOIN crm_company_memberships member ON member.contact_id=c.id
+         WHERE anchor.id=? AND (
+           (owner.company_id IS NOT NULL AND member.company_id=owner.company_id)
+           OR (anchor.company_name<>'' AND trim(c.company_name)=trim(anchor.company_name) COLLATE NOCASE)
+           OR EXISTS(SELECT 1 FROM contact_methods a JOIN contact_methods b ON b.contact_id=c.id
+             AND b.kind='email' AND instr(b.normalized,'@')>1
+             WHERE a.contact_id=anchor.id AND a.kind='email' AND instr(a.normalized,'@')>1
+             AND substr(a.normalized,instr(a.normalized,'@')+1)=substr(b.normalized,instr(b.normalized,'@')+1))
+         ) ORDER BY c.display_name COLLATE NOCASE,c.id LIMIT 21",
+    ).bind(id).map(|row: SqliteRow| DevelopmentRelated {
+        id: row.get("id"), display_name: row.get("display_name"), company_name: row.get("company_name"),
+        reason: row.get("reason"), last_contact_at: row.get("effective_last"), mail_status: row.get("mail_status"),
+    }).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+    let related_has_more = rows.len() > 20;
+    let email = contact
+        .input
+        .methods
+        .iter()
+        .find(|method| method.kind == "email" && method.is_primary)
+        .or_else(|| {
+            contact
+                .input
+                .methods
+                .iter()
+                .find(|method| method.kind == "email")
+        })
+        .map(|method| method.value.clone());
+    let main_need_truncated = contact.input.main_need.chars().count() > 300;
+    let main_need = contact.input.main_need.chars().take(300).collect();
+    let interests_has_more = contact.input.interests.len() > 3;
+    let product_interests = contact
+        .input
+        .interests
+        .iter()
+        .take(3)
+        .map(|interest| interest.product_text.clone())
+        .collect();
+    Ok(Reply::DevelopmentOverview {
+        record: Box::new(DevelopmentOverview {
+            id: contact.id,
+            record_revision: contact.record_revision,
+            data_epoch: contact.data_epoch,
+            display_name: contact.input.display_name,
+            company_name: contact.input.company_name,
+            country_region: contact.input.country_region,
+            stage: contact.input.stage,
+            customer_level: contact.input.customer_level,
+            sample_status: contact.input.sample_status,
+            main_need,
+            main_need_truncated,
+            product_interests,
+            interests_has_more,
+            email,
+            mail_outreach: contact.mail_outreach,
+            activities,
+            related_contacts: rows.into_iter().take(20).collect(),
+            related_has_more,
+        }),
     })
 }
 

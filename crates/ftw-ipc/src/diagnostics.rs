@@ -19,7 +19,7 @@ use windows_sys::{
 };
 
 const LOG_LIMIT: u64 = 256 * 1024;
-const EVENTS_PER_COMPONENT: usize = 100;
+const EVENTS_PER_COMPONENT: usize = 200;
 const COMPONENTS: [Component; 3] = [Component::Core, Component::Desktop, Component::Mcp];
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -52,6 +52,8 @@ struct Event {
     schema_version: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     job_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_ref: Option<String>,
 }
 
 #[derive(Clone)]
@@ -73,7 +75,7 @@ impl Log {
     }
 
     pub fn event(&self, operation: &str, code: &str) {
-        self.record(operation, code, None, None);
+        self.record(operation, code, None, None, None);
     }
 
     pub fn install_panic_hook(&self) {
@@ -86,7 +88,7 @@ impl Log {
     }
 
     pub fn ready(&self, schema_version: i64) {
-        self.record("startup", "ready", Some(schema_version), None);
+        self.record("startup", "ready", Some(schema_version), None, None);
     }
 
     pub fn mail_result(&self, operation: &str, code: &str, job_id: Option<&str>) {
@@ -95,6 +97,26 @@ impl Log {
             code,
             None,
             job_id.filter(|id| job_identifier(id)),
+            None,
+        );
+    }
+
+    pub fn mail_task_result(
+        &self,
+        operation: &str,
+        code: &str,
+        job_id: Option<&str>,
+        task_id: Option<&str>,
+    ) {
+        let task_ref = task_id
+            .filter(|id| !id.is_empty() && id.len() <= 120)
+            .map(|id| format!("{:x}", Sha256::digest(id.as_bytes()))[..16].to_owned());
+        self.record(
+            operation,
+            code,
+            None,
+            job_id.filter(|id| job_identifier(id)),
+            task_ref,
         );
     }
 
@@ -104,6 +126,7 @@ impl Log {
         code: &str,
         schema_version: Option<i64>,
         job_id: Option<&str>,
+        task_ref: Option<String>,
     ) {
         if !label(operation) || !label(code) {
             return;
@@ -116,6 +139,7 @@ impl Log {
             code: code.to_owned(),
             schema_version,
             job_id: job_id.map(str::to_owned),
+            task_ref,
         };
         if let Ok(mut line) = serde_json::to_vec(&event) {
             line.push(b'\n');
@@ -217,7 +241,10 @@ fn read_events(path: &Path, component: Component, events: &mut Vec<Event>) {
         (event.component == component
             && label(&event.operation)
             && label(&event.code)
-            && event.job_id.as_deref().is_none_or(job_identifier))
+            && event.job_id.as_deref().is_none_or(job_identifier)
+            && event.task_ref.as_deref().is_none_or(|value| {
+                value.len() == 16 && value.bytes().all(|b| b.is_ascii_hexdigit())
+            }))
         .then_some(event)
     }));
 }
@@ -278,7 +305,7 @@ pub fn report(executable: &Path, dev_root: Option<PathBuf>) -> io::Result<String
         })
         .collect();
     Ok(serde_json::to_string_pretty(&Report {
-        format_version: 1,
+        format_version: 2,
         generated_unix_ms: now(),
         ftw_version: env!("CARGO_PKG_VERSION"),
         architecture: env::consts::ARCH,

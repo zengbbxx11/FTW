@@ -28,6 +28,16 @@ impl MailService {
         .bind(&recipient)
         .fetch_all(&mut *db)
         .await?;
+        let same_domain_contacts = sqlx::query(
+            "SELECT c.id,c.display_name,c.company_name,d.effective_last,o.mail_status FROM contacts c
+             JOIN crm_contact_dates d ON d.id=c.id JOIN mail_contact_outreach o ON o.contact_id=c.id
+             WHERE c.archived_at IS NULL AND c.id IN (SELECT contact_id FROM contact_methods
+               WHERE kind='email' AND normalized<>? AND substr(normalized,instr(normalized,'@')+1)=?)
+             ORDER BY c.display_name COLLATE NOCASE,c.id LIMIT 20",
+        ).bind(&recipient).bind(domain).map(|row: sqlx::sqlite::SqliteRow| ftw_ipc::crm::DevelopmentRelated {
+            id: row.get("id"), display_name: row.get("display_name"), company_name: row.get("company_name"),
+            reason: "email_domain".to_owned(), last_contact_at: row.get("effective_last"), mail_status: row.get("mail_status"),
+        }).fetch_all(&mut *db).await?;
         let same_domain_contact_ids = sqlx::query_scalar(
             "SELECT DISTINCT contact_id FROM contact_methods
             WHERE kind='email' AND normalized<>? AND substr(normalized,instr(normalized,'@')+1)=?
@@ -55,6 +65,7 @@ impl MailService {
             outcome,
             contact_ids,
             same_domain_contact_ids,
+            same_domain_contacts,
         })
     }
 
@@ -138,6 +149,7 @@ impl MailService {
         sqlx::query("INSERT INTO audit_logs(id,actor_id,source,entity,entity_id,operation,task_id) VALUES (?,?,'agent','email_outbox',?,'authorized_enqueue',?)")
             .bind(new_id()).bind(&agent).bind(&job).bind(&submission.task).execute(&mut *tx).await?;
         tx.commit().await?;
+        self.diagnostic_task_event("smtp_queue", "queued", Some(&job), Some(&submission.task));
         Ok(Reply::Queued {
             id: submission.id,
             job_id: job,

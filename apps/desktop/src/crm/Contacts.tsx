@@ -630,6 +630,14 @@ const quickFields = [
   ['level', 'customer_level'], ['sample', 'sample_status'],
 ] as const
 
+function outreachSyncLabel(outreach: Outreach) {
+  if (outreach.last_sent_at === null) return '暂无关联发信'
+  if (outreach.sync_at === null) return '尚未同步'
+  const time = dateLabel(outreach.sync_at)
+  if (outreach.sync_outcome !== 'ok') return `同步未完成 · ${time}`
+  return outreach.sync_at > outreach.last_sent_at ? `已同步 · ${time}` : `同步早于最近发信 · ${time}`
+}
+
 export function ContactDetail({ id, entry, back, openRelated, compose, history, files, company, drawer }: {
   id: string; back: () => void; openRelated: (id: string) => void; compose: (contact: Contact) => void; history: (id: string) => void
   files: (id: string) => void; company: (id: string) => void; drawer?: boolean; entry?: 'edit' | 'edit-channels' | 'edit-business' | 'mail'
@@ -643,6 +651,7 @@ export function ContactDetail({ id, entry, back, openRelated, compose, history, 
   const catalog = useStateCatalog()
   const cache = useQueryClient()
   const query = useQuery({ queryKey: ['contact', id], queryFn: () => request({ action: 'get_contact', id }, 'contact') })
+  const overview = useQuery({ queryKey: ['development-overview', id], queryFn: () => request({ action: 'development_overview', id }, 'development_overview') })
   const recent = useQuery({
     queryKey: ['activities', id, '', 0],
     enabled: Boolean(drawer && section === 'overview' && !editing),
@@ -712,6 +721,23 @@ export function ContactDetail({ id, entry, back, openRelated, compose, history, 
     {section === 'evidence' && <LeadEvidencePanel id={id} contact readOnly={archived} />}
     {section === 'changes' && <ContactHistory id={id} />}
     <div hidden={section!=='overview'}>
+    {overview.isError && <p className="alert warning" role="status">开发概况暂不可用，请稍后重试。</p>}
+    {overview.data && <section className="panel customer-development-summary">
+      <div className="section-heading"><h2>开发概况</h2><button type="button" className="text-button" onClick={() => openSection('mail')}>查看邮件</button></div>
+      <dl className="profile-grid">
+        <div><dt>邮件状态</dt><dd><span className="customer-status" data-status={overview.data.record.mail_outreach.status}>{outreachLabels[overview.data.record.mail_outreach.status]}</span></dd></div>
+        <div><dt>最近发信</dt><dd>{dateLabel(overview.data.record.mail_outreach.last_sent_at)}</dd></div>
+        <div><dt>最近回复</dt><dd>{dateLabel(overview.data.record.mail_outreach.last_reply_at)}</dd></div>
+        <div><dt>收件同步</dt><dd>{outreachSyncLabel(overview.data.record.mail_outreach)}</dd></div>
+      </dl>
+      {overview.data.record.related_contacts.length > 0 && <div className="customer-related-hint"><strong>相关公司或同域联系人</strong>
+        <p className="muted">以下为资料关联提示，可分别维护和联系。</p>
+        <ul>{overview.data.record.related_contacts.map(row => <li key={row.id}>
+          <button type="button" className="text-button" onClick={() => openRelated(row.id)}>{row.display_name}</button>
+          <span>{row.reason === 'email_domain' ? '邮箱域名相同' : row.reason === 'company_profile' ? '同公司档案' : '公司名称相同'} · {outreachLabels[row.mail_status]} · 最近联系 {dateLabel(row.last_contact_at)}</span>
+        </li>)}</ul>{overview.data.record.related_has_more && <small>仅显示前 20 条关联联系人，可在客户管理中继续搜索。</small>}
+      </div>}
+    </section>}
     {drawer && <div className="customer-contact-summary">
       {primaryEmail && <div>
         <CustomerIcon name="mail" /><span title={primaryEmail.value}>{primaryEmail.value}</span>
