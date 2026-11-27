@@ -75,6 +75,8 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\build-po
 
 普通构建保存在 `.ftw-dev\builds`，不会混入正式发行目录。正式发行使用 `-ForRelease`，每个版本只生成一套 `.ftw-dev\packages\v版本号` 发行文件；已存在的发行版本不能覆盖。ZIP 内固定为 `FTW-Portable` 文件夹，日常更新继续使用原工作台位置。详见[发行说明](docs/RELEASING.md)。
 
+本地日常体验包统一使用项目内的 `.ftw-dev\packages\FTW-LastTest`，后续构建在此原位置更新并保留数据。其他设备使用相同的项目相对路径，也可通过不提交到 Git 的本机配置指定位置。详见[跨设备开发与固定体验目录](docs/RELEASING.md#跨设备开发与固定体验目录)。
+
 ## 更多文档
 
 - [WorkBuddy 与 Codex 接入说明](docs/FTW-Agent-Quickstart.txt)
